@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>webdartc E2E Browser Client</title>
+</head>
+<body>
+<pre id="log"></pre>
+<script>
+'use strict';
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function log(msg) {
+  console.log(msg);
+  document.getElementById('log').textContent += msg + '\n';
+}
+
+function setStatus(key, value) {
+  // Expose test state on window so WebDriver can poll it.
+  window.__testState = window.__testState || {};
+  window.__testState[key] = value;
+  log('[state] ' + key + ' = ' + JSON.stringify(value));
+}
+
+// ── Config from query params ──────────────────────────────────────────────────
+
+const params   = new URLSearchParams(location.search);
+const wsPort   = params.get('port')   || '8080';
+const role     = params.get('role')   || 'answerer';  // 'offerer' | 'answerer'
+const scenario = params.get('scenario') || 'data';    // 'data' | 'trickle' | 'media' | 'media-video' | 'media-echo'
+
+log('Starting: role=' + role + ' scenario=' + scenario + ' wsPort=' + wsPort);
+
+// ── Signaling via WebSocket ───────────────────────────────────────────────────
+
+const ws = new WebSocket('ws://127.0.0.1:' + wsPort);
+
+function sendSignal(msg) {
+  ws.send(JSON.stringify(msg));
+}
+
+// ── RTCPeerConnection setup ───────────────────────────────────────────────────
+
+const pc = new RTCPeerConnection({
+  iceServers: [],           // loopback only — no STUN/TURN needed
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require',
+});
+window.__pc = pc;
+
+// Poll ICE stats every 2s and store in __testState for WebDriver.
+setInterval(async () => {
+  if (!window.__testState) return;
+  try {
+    const report = await pc.getStats();
+    const pairs = [], cands = {};
+    for (const [id, s] of report) {
+      if (s.type === 'candidate-pair') {
+        pairs.push({
+          state: s.state, nominated: s.nominated,
+          reqRx: s.requestsReceived, reqTx: s.requestsSent,
+          respRx: s.responsesReceived, respTx: s.responsesSent,
+          lcId: s.localCandidateId, rcId: s.remoteCandidateId,
+        });
+      } else if (s.type === 'local-candidate' || s.type === 'remote-candidate') {
+        cands[id] = { t: s.type, addr: s.address, port: s.port, ctype: s.candidateType };
+      } else if (s.type === 'transport') {
+        window.__testState.transportBytesRx = s.bytesReceived || 0;
+        window.__testState.transportBytesTx = s.bytesSent || 0;
+      } else if (s.type === 'outbound-rtp') {
+        if (s.kind === 'audio') {
+          window.__testState.rtpPacketsSent = s.packetsSent || 0;
+          window.__testState.rtpBytesSent = s.bytesSent || 0;
+        } else if (s.kind === 'video') {
+          window.__testState.videoRtpPacketsSent = s.packetsSent || 0;
+          window.__testState.videoRtpBytesSent = s.bytesSent || 0;
+        }
+        if (s.kind === 'video') {
+          window.__testState.videoPliCount = s.pliCount || 0;
+          window.__testState.videoFirCount = s.firCount || 0;
+          window.__testState.videoKeyFramesEncoded = s.keyFramesEncoded || 0;
+        }
+      } else if (s.type === 'inbound-rtp') {
+        if (s.kind === 'audio') {
+          window.__testState.rtpPacketsReceived = s.packetsReceived || 0;
+          window.__testState.audioConcealed = s.concealedSamples || 0;
+          window.__testState.audioTotalSamples = s.totalSamplesReceived || 0;
+        } else if (s.kind === 'video') {
+          window.__testState.videoRtpPacketsReceived = s.packetsReceived || 0;
+          window.__testState.videoFramesDecoded = s.framesDecoded || 0;
+        }
+      }
+    }
+    window.__testState.icePairs = JSON.stringify(pairs);
+    window.__testState.iceCands = JSON.stringify(cands);
+  } catch(e) {}
+}, 2000);
+
+// ICE candidate → relay via signaling
+pc.onicecandidate = (evt) => {
+  if (evt.candidate) {
+    sendSignal({ type: 'candidate', candidate: evt.candidate.toJSON() });
+  } else {
+    // Gathering complete — send null sentinel
+    sendSignal({ type: 'candidate', candidate: null });
+  }
+};
+
+pc.oniceconnectionstatechange = () => {
+  log('ICE: ' + pc.iceConnectionState);
+  setStatus('iceState', pc.iceConnectionState);
+};
+
+pc.onicecandidateerror = (e) => {
+  log('ICE candidate error: url=' + e.url + ' errorCode=' + e.errorCode + ' errorText=' + e.errorText);
+  window.__testState = window.__testState || {};
+  window.__testState.iceError = e.errorText;
+};
+
+pc.onnegotiationneeded = () => { log('negotiationneeded'); };
+
+pc.onicegatheringstatechange = () => {
+  log('ICE gathering: ' + pc.iceGatheringState);
+  setStatus('iceGatheringState', pc.iceGatheringState);
+};
+
+pc.ondatachannel = (evt) => {
+  log('ondatachannel: ' + evt.channel.label);
+  attachDataChannel(evt.channel);
+};
+
+// ── Data channel ─────────────────────────────────────────────────────────────
+
+let dc = null;
+let receivedMessages = [];
+
+function attachDataChannel(channel) {
+  dc = channel;
+  dc.onopen = () => {
+    log('DataChannel open: ' + dc.label);
+    setStatus('dcOpen', true);
+  };
+  dc.onmessage = (evt) => {
+    const isStr = typeof evt.data === 'string';
+    const size  = isStr ? evt.data.length : evt.data.byteLength;
+    log('recv ' + (isStr ? 'text' : 'binary') + ' ' + size + ' bytes');
+    receivedMessages.push(evt.data);
+    setStatus('receivedCount', receivedMessages.length);
+
+    // Echo back
+    dc.send(evt.data);
+  };
+  dc.onclose = () => {
+    log('DataChannel closed');
+    setStatus('dcClosed', true);
+  };
+}
+
+if (role === 'offerer' && (scenario === 'data' || scenario === 'trickle')) {
+  dc = pc.createDataChannel('test', { ordered: true });
+  attachDataChannel(dc);
+}
+
+// Track inbound RTP for echo verification
+const remoteStream = new MediaStream();
+const remoteVideo = document.createElement('video');
+remoteVideo.autoplay = true;
+remoteVideo.playsInline = true;
+remoteVideo.muted = true;
+remoteVideo.srcObject = remoteStream;
+document.body.appendChild(remoteVideo);
+
+pc.ontrack = (evt) => {
+  log('ontrack: kind=' + evt.track.kind + ' readyState=' + evt.track.readyState);
+  remoteStream.addTrack(evt.track);
+  setStatus('remoteTrackKind', evt.track.kind);
+};
+
+// ── Signaling state machine ───────────────────────────────────────────────────
+
+ws.onopen = async () => {
+  log('WS open');
+  sendSignal({ type: 'register', role: role });
+
+  if (role === 'offerer') {
+    // For media scenarios as offerer, add tracks before creating offer
+    if (scenario === 'media-echo' || scenario === 'media-video-reflect') {
+      const constraints = scenario === 'media-video-reflect'
+          ? { audio: true, video: true }
+          : { audio: true };
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        for (const track of stream.getTracks()) {
+          pc.addTrack(track, stream);
+          log('Added track to PC: ' + track.kind);
+        }
+      } catch (e) { log('getUserMedia failed: ' + e); }
+    }
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendSignal({ type: 'offer', sdp: offer.sdp });
+  }
+};
+
+ws.onmessage = async (evt) => {
+  let msg;
+  try { msg = JSON.parse(evt.data); } catch { return; }
+
+  if (msg.type === 'offer') {
+    // For media scenarios, add tracks before creating answer.
+    if (scenario === 'media' || scenario === 'media-video') {
+      try {
+        const constraints = scenario === 'media-video'
+            ? { audio: true, video: true }
+            : { audio: true };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        for (const track of stream.getTracks()) {
+          pc.addTrack(track, stream);
+          log('Added track to PC: ' + track.kind);
+        }
+      } catch (e) {
+        log('getUserMedia failed: ' + e);
+      }
+    }
+    await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    sendSignal({ type: 'answer', sdp: answer.sdp });
+
+  } else if (msg.type === 'answer') {
+    await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+
+  } else if (msg.type === 'candidate') {
+    if (msg.candidate) {
+      try { await pc.addIceCandidate(msg.candidate); } catch (e) { log('addIceCandidate err: ' + e); }
+    }
+  }
+};
+
+ws.onerror = (e) => { log('WS error'); setStatus('wsError', true); };
+ws.onclose = ()  => { log('WS closed'); };
+
+// ── Test control API (called by WebDriver) ────────────────────────────────────
+
+// Returns current test state as JSON string.
+window.getTestState = () => JSON.stringify(window.__testState || {});
+
+// Send a text message (called by test runner to trigger round-trip).
+window.sendText = (text) => { if (dc && dc.readyState === 'open') dc.send(text); };
+
+// Send a binary message of the given byte length.
+window.sendBinary = (byteLength) => {
+  if (dc && dc.readyState === 'open') {
+    const buf = new Uint8Array(byteLength);
+    for (let i = 0; i < byteLength; i++) buf[i] = i & 0xFF;
+    dc.send(buf.buffer);
+  }
+};
+
+// Close the data channel.
+window.closeDataChannel = () => { if (dc) dc.close(); };
+
+setStatus('ready', true);
+
+// Force keyframes from browser side until video decoding starts.
+// The server's SRTCP PLI may not reach Chrome, so we use the browser API.
+if (scenario === 'media-video-reflect') {
+  let attempt = 0;
+  const forceKeyframe = setInterval(async () => {
+    const dec = window.__testState?.videoFramesDecoded || 0;
+    if (dec > 0) { clearInterval(forceKeyframe); return; }
+    attempt++;
+    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+    if (!sender) return;
+    // Try generateKeyFrame() (Chrome 108+), fallback to setParameters
+    if (typeof sender.generateKeyFrame === 'function') {
+      try {
+        await sender.generateKeyFrame();
+        log('generateKeyFrame #' + attempt);
+      } catch (e) { log('generateKeyFrame failed: ' + e); }
+    } else {
+      log('generateKeyFrame not available');
+    }
+  }, 1000);
+}
+</script>
+</body>
+</html>

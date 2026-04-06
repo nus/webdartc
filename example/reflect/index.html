@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>webdartc reflect</title>
+  <style>
+    body { font-family: system-ui; background: #111; color: #eee; margin: 2rem; }
+    h1 { font-size: 1.4rem; }
+    .videos { display: flex; gap: 1rem; flex-wrap: wrap; }
+    video { width: 480px; border-radius: 8px; background: #222; }
+    label { display: block; font-size: 0.85rem; color: #aaa; margin-bottom: 0.3rem; }
+    #log { font-size: 0.8rem; color: #888; white-space: pre-wrap; margin-top: 1rem; max-height: 300px; overflow-y: auto; }
+    button { padding: 0.5rem 1.5rem; font-size: 1rem; cursor: pointer; border-radius: 4px; border: none; background: #2a6; color: #fff; }
+    button:disabled { background: #555; cursor: default; }
+    .status { margin: 1rem 0; }
+    .status span { padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.85rem; }
+    .connected { background: #2a6; }
+    .connecting { background: #a82; }
+    .failed { background: #a22; }
+  </style>
+</head>
+<body>
+<h1>webdartc reflect example</h1>
+<p>Audio + video from camera/microphone are sent to a webdartc server, which reflects them back.</p>
+<button id="startBtn" onclick="start()">Start</button>
+<div class="status">
+  ICE: <span id="iceStatus">-</span>
+  | Sent: <span id="sentCount">0</span> pkts
+  | Received: <span id="recvCount">0</span> pkts
+  <br><span id="debugStats" style="color:#888;font-size:0.8rem"></span>
+  <br><span id="trackStatus" style="padding:0.2rem 0.6rem;border-radius:4px;background:#a22;">ontrack: not fired</span>
+</div>
+<div class="videos">
+  <div>
+    <label>Local (camera + mic)</label>
+    <video id="localVideo" autoplay muted playsinline></video>
+  </div>
+  <div>
+    <label>Remote (reflected)</label>
+    <video id="remoteVideo" autoplay playsinline></video>
+  </div>
+</div>
+<pre id="log"></pre>
+
+<script>
+'use strict';
+
+const params = new URLSearchParams(location.search);
+const wsPort = params.get('port') || '8080';
+
+function log(msg) {
+  console.log(msg);
+  const el = document.getElementById('log');
+  el.textContent += msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+async function start() {
+  document.getElementById('startBtn').disabled = true;
+
+  // 1. Get camera
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+      video: true,
+    });
+  } catch (e) {
+    log('getUserMedia failed: ' + e);
+    return;
+  }
+  document.getElementById('localVideo').srcObject = stream;
+  log('Audio: ' + stream.getAudioTracks()[0].label);
+  if (stream.getVideoTracks().length > 0) {
+    log('Video: ' + stream.getVideoTracks()[0].label);
+  }
+
+  // 2. Create PeerConnection
+  const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' });
+
+  pc.oniceconnectionstatechange = () => {
+    const s = pc.iceConnectionState;
+    log('ICE: ' + s);
+    const el = document.getElementById('iceStatus');
+    el.textContent = s;
+    el.className = s === 'connected' || s === 'completed' ? 'connected'
+                 : s === 'checking' ? 'connecting' : 'failed';
+  };
+
+  const remoteStream = new MediaStream();
+  document.getElementById('remoteVideo').srcObject = remoteStream;
+
+  pc.ontrack = (evt) => {
+    log('ontrack: ' + evt.track.kind + ' readyState=' + evt.track.readyState);
+    remoteStream.addTrack(evt.track);
+    const kinds = remoteStream.getTracks().map(t => t.kind).join('+');
+    document.getElementById('trackStatus').textContent = 'ontrack: ' + kinds;
+    document.getElementById('trackStatus').style.background = '#2a6';
+  };
+
+  // Add camera track
+  for (const track of stream.getTracks()) {
+    pc.addTrack(track, stream);
+  }
+
+  // 3. Signaling via WebSocket
+  const ws = new WebSocket('ws://127.0.0.1:' + wsPort);
+
+  pc.onicecandidate = (evt) => {
+    if (evt.candidate) {
+      ws.send(JSON.stringify({ type: 'candidate', candidate: evt.candidate.toJSON() }));
+    }
+  };
+
+  ws.onopen = async () => {
+    log('WS connected');
+    ws.send(JSON.stringify({ type: 'register', role: 'offerer' }));
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+    log('Offer sent');
+  };
+
+  ws.onmessage = async (evt) => {
+    const msg = JSON.parse(evt.data);
+    if (msg.type === 'answer') {
+      await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      log('Answer received');
+    } else if (msg.type === 'candidate' && msg.candidate) {
+      try { await pc.addIceCandidate(msg.candidate); } catch (e) { log('addIceCandidate err: ' + e); }
+    }
+  };
+
+  ws.onerror = () => log('WS error');
+  ws.onclose = () => log('WS closed');
+
+  // 4. Stats polling
+  setInterval(async () => {
+    try {
+      const report = await pc.getStats();
+      let sent = 0, recv = 0;
+      let debugParts = [];
+      for (const [, s] of report) {
+        if (s.type === 'outbound-rtp') {
+          sent += s.packetsSent || 0;
+          if (s.kind === 'video') {
+            debugParts.push(`v-out: enc=${s.framesEncoded||0} target=${Math.round((s.targetBitrate||0)/1000)}k`);
+          }
+        } else if (s.type === 'inbound-rtp') {
+          recv += s.packetsReceived || 0;
+          if (s.kind === 'video') {
+            const jbDelay = s.jitterBufferDelay && s.jitterBufferEmittedCount
+              ? Math.round(1000 * s.jitterBufferDelay / s.jitterBufferEmittedCount) : '?';
+            debugParts.push(`v-in: recv=${s.packetsReceived} dec=${s.framesDecoded||0} jbuf=${jbDelay}ms`);
+          }
+        } else if (s.type === 'candidate-pair' && s.nominated) {
+          debugParts.push(`bwe=${Math.round((s.availableOutgoingBitrate||0)/1000)}k`);
+        }
+      }
+      document.getElementById('sentCount').textContent = sent;
+      document.getElementById('recvCount').textContent = recv;
+      document.getElementById('debugStats').textContent = debugParts.join(' | ');
+    } catch (_) {}
+  }, 1000);
+}
+</script>
+</body>
+</html>
