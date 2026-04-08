@@ -47,6 +47,8 @@ final class SctpStateMachine implements ProtocolStateMachine {
 
   int _retransmitCount = 0;
   static const int _t3RtxMs = 3000;
+  // RFC 4960 §8.1: Association.Max.Retrans default = 10
+  static const int _maxRetransmit = 10;
 
   // Remote address
   String _remoteIp = '';
@@ -496,8 +498,13 @@ final class SctpStateMachine implements ProtocolStateMachine {
     _remoteRwnd = sack.advertisedRecvWindowCredit;
     // Remove acknowledged TSNs from retransmit queue
     final cumAck = sack.cumulativeTsnAck;
+    final sizeBefore = _retransmitQueue.length;
     _retransmitQueue.removeWhere(
         (tsn, _) => !_sctpTsnGt(tsn, cumAck));
+    // Reset retransmit counter when new data is acknowledged (RFC 4960 §6.3.2)
+    if (_retransmitQueue.length < sizeBefore) {
+      _retransmitCount = 0;
+    }
     return const Ok(ProcessResult.empty);
   }
 
@@ -555,6 +562,10 @@ final class SctpStateMachine implements ProtocolStateMachine {
   Result<ProcessResult, ProtocolError> _retransmit(int tsn) {
     if (_retransmitQueue.isEmpty) { return const Ok(ProcessResult.empty); }
 
+    if (_retransmitCount >= _maxRetransmit) {
+      _state = SctpState.closed;
+      return Err(const StateError('SCTP: max retransmissions exceeded'));
+    }
     _retransmitCount++;
     // Retransmit ALL pending (un-ACKed) chunks, not just the triggered one.
     final packets = <OutputPacket>[];
@@ -572,8 +583,10 @@ final class SctpStateMachine implements ProtocolStateMachine {
       );
       packets.add(_buildPacket([chunk]));
     }
+    // Exponential backoff per RFC 4960 §6.3.3: double RTO each retry, cap 60s
+    final delayMs = (_t3RtxMs * (1 << _retransmitCount)).clamp(0, 60000);
     final timeout = Timeout(
-      at: DateTime.now().add(const Duration(milliseconds: _t3RtxMs)),
+      at: DateTime.now().add(Duration(milliseconds: delayMs)),
       token: SctpT3RtxToken(firstTsn ?? tsn),
     );
     return Ok(ProcessResult(outputPackets: packets, nextTimeout: timeout));

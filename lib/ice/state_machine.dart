@@ -589,11 +589,13 @@ final class IceStateMachine implements ProtocolStateMachine {
     // Try next waiting pair.
     packets.addAll(_doNextCheck());
 
-    // Retransmit in-progress checks that have exceeded the check timeout.
+    // Retransmit in-progress checks that have exceeded their timeout.
+    // Exponential backoff per RFC 8445 §14.3: 500ms * 2^retransmitCount.
     final now = DateTime.now();
     for (final txId in _pendingChecks.keys.toList()) {
       final check = _pendingChecks[txId]!;
-      if (now.difference(check.sentAt) >= _checkTimeout) {
+      final rtoMs = (500 * (1 << check.retransmitCount)).clamp(0, 16000);
+      if (now.difference(check.sentAt) >= Duration(milliseconds: rtoMs)) {
         if (check.retransmitCount >= 7) {
           // RFC 8445 §14.3: max Rc=7 retransmits — fail the pair
           _pendingChecks.remove(txId);
@@ -616,8 +618,18 @@ final class IceStateMachine implements ProtocolStateMachine {
       return const Ok(ProcessResult.empty);
     }
 
+    // Exponential backoff: 500ms * 2^min(retransmitCount), capped at 16s
+    // Find the minimum retransmit count among pending checks to pace the
+    // timer appropriately for the next expected retransmit.
+    var minRc = 0;
+    for (final check in _pendingChecks.values) {
+      if (minRc == 0 || check.retransmitCount < minRc) {
+        minRc = check.retransmitCount;
+      }
+    }
+    final delayMs = (500 * (1 << minRc)).clamp(0, 16000);
     final nextTimeout = Timeout(
-      at: DateTime.now().add(_checkTimeout),
+      at: DateTime.now().add(Duration(milliseconds: delayMs)),
       token: IceTimerToken(++_timerIdCounter),
     );
     return Ok(ProcessResult(outputPackets: packets, nextTimeout: nextTimeout));
