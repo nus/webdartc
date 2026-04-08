@@ -501,14 +501,16 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     }
     final certDer = body.sublist(6, 6 + certLen);
 
-    // Verify fingerprint if set
-    if (expectedRemoteFingerprint != null) {
-      final fp = Sha256.hash(
-        certDer,
-      ).map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(':');
-      if (fp != expectedRemoteFingerprint) {
-        return Err(const CryptoError('DTLS: fingerprint mismatch'));
-      }
+    // Defense-in-depth: reject if no expected fingerprint was set (RFC 8827 §5).
+    if (expectedRemoteFingerprint == null) {
+      return Err(const CryptoError('DTLS: no expected fingerprint set'));
+    }
+    // Verify fingerprint matches the remote certificate.
+    final fp = Sha256.hash(
+      certDer,
+    ).map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(':');
+    if (fp != expectedRemoteFingerprint) {
+      return Err(const CryptoError('DTLS: fingerprint mismatch'));
     }
 
     // Extract EC public key from SubjectPublicKeyInfo in DER

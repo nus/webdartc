@@ -268,12 +268,14 @@ final class PeerConnection {
     final remoteFingerprint = media.fingerprint ?? sa['fingerprint'];
     final setup = media.setup ?? sa['setup'] ?? 'active';
 
-    if (remoteFingerprint != null) {
-      // Strip "sha-256 " prefix if present
-      _dtls.expectedRemoteFingerprint = remoteFingerprint.startsWith('sha-256 ')
-          ? remoteFingerprint.substring(8)
-          : remoteFingerprint;
+    // RFC 8827 §5: a=fingerprint is mandatory in WebRTC offers/answers.
+    if (remoteFingerprint == null) {
+      throw Exception('Remote SDP missing required a=fingerprint attribute (RFC 8827 §5)');
     }
+    // Strip "sha-256 " prefix if present
+    _dtls.expectedRemoteFingerprint = remoteFingerprint.startsWith('sha-256 ')
+        ? remoteFingerprint.substring(8)
+        : remoteFingerprint;
 
     // Set DTLS role: if remote is active, we are passive (server); otherwise client.
     _dtls.role = (setup == 'active') ? DtlsRole.server : DtlsRole.client;

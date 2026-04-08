@@ -102,6 +102,13 @@ final class _PendingTimeout {
   _PendingTimeout(this.at, this.owner, this.token);
 }
 
+/// Set mutual fingerprint expectations (as SDP a=fingerprint would).
+void _setFingerprints(DtlsStateMachine client, EcdsaCertificate clientCert,
+    DtlsStateMachine server, EcdsaCertificate serverCert) {
+  client.expectedRemoteFingerprint = serverCert.sha256Fingerprint;
+  server.expectedRemoteFingerprint = clientCert.sha256Fingerprint;
+}
+
 void main() {
   late EcdsaCertificate clientCert;
   late EcdsaCertificate serverCert;
@@ -115,6 +122,7 @@ void main() {
     test('completes with zero packet loss (baseline)', () {
       final client = DtlsStateMachine(role: DtlsRole.client, localCert: clientCert);
       final server = DtlsStateMachine(role: DtlsRole.server, localCert: serverCert);
+      _setFingerprints(client, clientCert, server, serverCert);
 
       var clientConnected = false;
       var serverConnected = false;
@@ -148,6 +156,7 @@ void main() {
     test('completes with 30% packet loss via retransmission', () {
       final client = DtlsStateMachine(role: DtlsRole.client, localCert: clientCert);
       final server = DtlsStateMachine(role: DtlsRole.server, localCert: serverCert);
+      _setFingerprints(client, clientCert, server, serverCert);
 
       var clientConnected = false;
       var serverConnected = false;
@@ -197,6 +206,7 @@ void main() {
       for (var trial = 0; trial < trials; trial++) {
         final c = DtlsStateMachine(role: DtlsRole.client, localCert: clientCert);
         final s = DtlsStateMachine(role: DtlsRole.server, localCert: serverCert);
+        _setFingerprints(c, clientCert, s, serverCert);
 
         var cConn = false;
         var sConn = false;
@@ -231,6 +241,7 @@ void main() {
     test('application data exchange after lossy handshake', () {
       final client = DtlsStateMachine(role: DtlsRole.client, localCert: clientCert);
       final server = DtlsStateMachine(role: DtlsRole.server, localCert: serverCert);
+      _setFingerprints(client, clientCert, server, serverCert);
 
       var clientConnected = false;
       var serverConnected = false;
@@ -304,6 +315,7 @@ void main() {
     test('SRTP key material matches on both sides', () {
       final client = DtlsStateMachine(role: DtlsRole.client, localCert: clientCert);
       final server = DtlsStateMachine(role: DtlsRole.server, localCert: serverCert);
+      _setFingerprints(client, clientCert, server, serverCert);
 
       Uint8List? clientKeyMaterial;
       Uint8List? serverKeyMaterial;
@@ -340,6 +352,7 @@ void main() {
     test('fails gracefully when all packets are dropped', () {
       final client = DtlsStateMachine(role: DtlsRole.client, localCert: clientCert);
       final server = DtlsStateMachine(role: DtlsRole.server, localCert: serverCert);
+      _setFingerprints(client, clientCert, server, serverCert);
 
       var clientConnected = false;
       client.onConnected = (_) => clientConnected = true;
