@@ -424,30 +424,22 @@ void main() {
   // ── Network impairment tests ──────────────────────────────────────────────
   //
   // These tests mirror the Chrome packet-loss suite with Firefox as the
-  // answerer. They are currently blocked by a UDP proxy / Firefox socket
-  // interaction: Firefox uses separate UDP sockets for ICE connectivity
-  // checks versus DTLS/media transport. The UDP proxy identifies peers by
-  // source port (test/e2e/udp_proxy/udp_proxy.dart:156 — `_portsA` /
-  // `_portsB` sets populated from ICE candidates by the signaling server).
-  // Once ICE checks complete on one socket, Firefox switches to a different
-  // source port for DTLS, which is not in `_portsB`, so the proxy's
-  // `_onReceive` returns without forwarding (line 169 "Unknown source —
-  // ignore"). Observed symptom: `ProxyStats(fwd=1, drop=0, bytes≈80)` in
-  // each direction — only the initial STUN request/response pair traverses
-  // the proxy, then the connection stalls.
-  //
-  // TODO(webdartc): teach UdpProxy to dynamically learn new source ports
-  // on loopback (e.g., associate any unknown port with the peer whose
-  // already-known ports did not send the packet). Until then, these tests
-  // are skipped to match the Chrome packet-loss suite's intent.
-  const _proxyPortBugSkipReason =
-      'blocked by UDP proxy peer identification: Firefox sends DTLS from a '
-      'different source port than its ICE candidates, and UdpProxy._onReceive '
-      'ignores unknown source ports. Only the first STUN exchange makes it '
-      'through; subsequent DTLS/SCTP/SRTP packets are dropped.';
+  // answerer. Currently skipped: after the initial STUN connectivity check
+  // traverses the proxy, Firefox's subsequent DTLS ClientHello never
+  // arrives at the proxy port. Investigation shows the proxy's port-
+  // inference heuristic works for new source ports (UdpProxy._onReceive),
+  // but Firefox appears to route DTLS to an address outside the proxy
+  // entirely — possibly a peer-reflexive candidate discovered via
+  // XOR-MAPPED-ADDRESS that maps to the real peer rather than the proxy.
+  // Resolving this requires packet-capture-level debugging (tcpdump/
+  // Wireshark) of Firefox's ICE pair selection when candidates are
+  // rewritten.
+  const _proxySkipReason =
+      'Firefox DTLS packets bypass the UDP proxy after ICE connects — '
+      'likely using a prflx candidate that resolves to the real peer address';
 
   group('Packet loss — ICE/STUN retransmission (5% loss) [Firefox]',
-      skip: _proxyPortBugSkipReason, () {
+      skip: _proxySkipReason, () {
     late UdpProxy proxy;
     late SignalingServer sigServer;
     late HttpServer htmlServer;
@@ -500,7 +492,7 @@ void main() {
   });
 
   group('Packet loss — DTLS handshake retransmission (5% loss) [Firefox]',
-      skip: _proxyPortBugSkipReason, () {
+      skip: _proxySkipReason, () {
     late UdpProxy proxy;
     late SignalingServer sigServer;
     late HttpServer htmlServer;
@@ -548,7 +540,7 @@ void main() {
   });
 
   group('Packet loss — SCTP data retransmission (5% loss) [Firefox]',
-      skip: _proxyPortBugSkipReason, () {
+      skip: _proxySkipReason, () {
     late UdpProxy proxy;
     late SignalingServer sigServer;
     late HttpServer htmlServer;
@@ -600,7 +592,7 @@ void main() {
   });
 
   group('Packet loss — SRTP media tolerance (5% loss) [Firefox]',
-      skip: _proxyPortBugSkipReason, () {
+      skip: _proxySkipReason, () {
     late UdpProxy proxy;
     late SignalingServer sigServer;
     late HttpServer htmlServer;
@@ -661,7 +653,7 @@ void main() {
   });
 
   group('Packet loss — delay + jitter (50ms ± 20ms) [Firefox]',
-      skip: _proxyPortBugSkipReason, () {
+      skip: _proxySkipReason, () {
     late UdpProxy proxy;
     late SignalingServer sigServer;
     late HttpServer htmlServer;

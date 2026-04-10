@@ -97,6 +97,7 @@ final class UdpProxy {
   _TokenBucket? _bucketBtoA;
 
   bool _closed = false;
+  static final bool _debug = Platform.environment['WEBDARTC_DEBUG'] == '1';
 
   UdpProxy._(
     this._socket, {
@@ -150,6 +151,12 @@ final class UdpProxy {
 
     final srcPort = dg.port;
 
+    if (_debug) {
+      stderr.writeln('[proxy] RX ${dg.data.length}b from ${dg.address.address}:$srcPort '
+          'b0=${dg.data.isNotEmpty ? dg.data[0] : -1} '
+          'portsA=$_portsA portsB=$_portsB');
+    }
+
     // Identify sender by source port and forward to the other peer.
     // Update forward target dynamically — the reply goes to the address
     // that last sent us a packet.
@@ -165,8 +172,27 @@ final class UdpProxy {
       if (_fwdPortA == null) return;
       _forward(dg.data, _fwdAddrA!, _fwdPortA!, impairmentBtoA, statsBtoA,
           _bucketBtoA);
+    } else {
+      // Unknown source port — Firefox uses separate sockets for ICE checks
+      // vs DTLS/media, so its DTLS packets arrive from a port not in
+      // _portsB.  Infer the peer by process-of-elimination: if the source
+      // is NOT in peer A's registered ports, attribute it to peer B (and
+      // vice versa).
+      if (_portsA.isNotEmpty && !_portsA.contains(srcPort) && _fwdPortA != null) {
+        _portsB.add(srcPort);
+        _fwdAddrB = dg.address;
+        _fwdPortB = srcPort;
+        _forward(dg.data, _fwdAddrA!, _fwdPortA!, impairmentBtoA, statsBtoA,
+            _bucketBtoA);
+      } else if (_portsB.isNotEmpty && !_portsB.contains(srcPort) && _fwdPortB != null) {
+        _portsA.add(srcPort);
+        _fwdAddrA = dg.address;
+        _fwdPortA = srcPort;
+        _forward(dg.data, _fwdAddrB!, _fwdPortB!, impairmentAtoB, statsAtoB,
+            _bucketAtoB);
+      }
+      // Else: before addresses are configured — ignore.
     }
-    // Unknown source — ignore (might be before addresses are configured).
   }
 
   void _forward(
