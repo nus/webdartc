@@ -532,18 +532,16 @@ final class PeerConnection {
       case IceState.iceConnected:
         _setIceConnectionState(IceConnectionState.connected);
         _setConnectionState(PeerConnectionState.connected);
-        // Start DTLS handshake
+        // Start DTLS handshake — delegate to transport so it can schedule
+        // the retransmit timer.  The first ClientHello may arrive at the
+        // remote peer before its ICE pair is fully validated, so
+        // retransmission is essential.
         final pair = _ice.selectedPair;
         if (pair != null) {
-          final result = _dtls.startHandshake(
+          _transport.startDtlsHandshake(
             remoteIp: pair.remote.ip,
             remotePort: pair.remote.port,
           );
-          if (result.isOk) {
-            for (final pkt in result.value.outputPackets) {
-              _transport.sendRtp(pkt.data); // re-use UDP path
-            }
-          }
         }
       case IceState.iceFailed:
         _setIceConnectionState(IceConnectionState.failed);
@@ -627,19 +625,37 @@ final class PeerConnection {
 
     // SCTP role follows DTLS role: DTLS client = SCTP client
     if (role == DtlsRole.client) {
-      // We're the DTLS client → initiate SCTP
-      Future<void>.delayed(Duration.zero, () {
-        final pair = _ice.selectedPair;
-        if (pair != null) {
-          final sctpResult = _sctp.connect(
-              remoteIp: pair.remote.ip, remotePort: pair.remote.port);
-          if (sctpResult.isOk) {
-            for (final pkt in sctpResult.value.outputPackets) {
-              _transport.sendSctp(pkt.data);
+      // We're the DTLS client → initiate SCTP.
+      // Skip if the peer already sent INIT (simultaneous open from Firefox
+      // which ignores RFC 8841 §5 and always initiates SCTP).  In that
+      // case the SCTP state machine already yielded to the peer's INIT
+      // and is handling the handshake as server.
+      if (_sctp.receivedRemoteInit) {
+        if (_debug) _log('[pc] peer already sent SCTP INIT — skipping connect');
+      } else {
+        // Delay slightly to let the peer's INIT arrive first when the peer
+        // also initiates (Firefox ignores RFC 8841 §5 and always sends INIT).
+        // 50 ms is long enough for the peer's first SCTP INIT to arrive via
+        // DTLS on loopback, short enough not to impact real-world latency.
+        Future<void>.delayed(const Duration(milliseconds: 50), () {
+          // Re-check — the peer's INIT may have arrived during the delay,
+          // either triggering the yield path or the normal server path.
+          if (_sctp.receivedRemoteInit ||
+              _sctp.state != SctpState.closed) {
+            return;
+          }
+          final pair = _ice.selectedPair;
+          if (pair != null) {
+            final sctpResult = _sctp.connect(
+                remoteIp: pair.remote.ip, remotePort: pair.remote.port);
+            if (sctpResult.isOk) {
+              for (final pkt in sctpResult.value.outputPackets) {
+                _transport.sendSctp(pkt.data);
+              }
             }
           }
-        }
-      });
+        });
+      }
     }
     // If DTLS server, Chrome (DTLS client) will send SCTP INIT
   }

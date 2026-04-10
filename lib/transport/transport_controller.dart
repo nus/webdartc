@@ -98,6 +98,24 @@ final class TransportController {
     _sctp = sctp;
   }
 
+  /// Start the DTLS handshake, sending the initial flight and scheduling
+  /// the retransmit timer.  Must be called after ICE reaches connected.
+  void startDtlsHandshake({
+    required String remoteIp,
+    required int remotePort,
+  }) {
+    final dtls = _dtls;
+    if (dtls == null) return;
+    final result = dtls.startHandshake(
+      remoteIp: remoteIp,
+      remotePort: remotePort,
+    );
+    if (result.isOk) {
+      _sendOutputPackets(result.value.outputPackets);
+      _scheduleTimeout(result.value.nextTimeout, 'dtls-retransmit');
+    }
+  }
+
   // ── Packet sending ────────────────────────────────────────────────────────
 
   void sendRtp(Uint8List rtpBytes) {

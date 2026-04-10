@@ -46,6 +46,13 @@ final class SctpStateMachine implements ProtocolStateMachine {
   final Map<int, _PendingData> _retransmitQueue = {};
 
   int _retransmitCount = 0;
+  // Set when we yield to a simultaneous-open INIT — prevents the peer's
+  // INIT-ACK (for our abandoned INIT) from overwriting remote tags.
+  bool _yieldedToRemoteInit = false;
+  /// True if a remote INIT was received and processed (simultaneous open).
+  /// PeerConnection checks this to skip calling [connect] when the peer
+  /// already initiated the association.
+  bool get receivedRemoteInit => _yieldedToRemoteInit;
   static const int _t3RtxMs = 3000;
   // RFC 4960 §8.1: Association.Max.Retrans default = 10
   static const int _maxRetransmit = 10;
@@ -259,7 +266,29 @@ final class SctpStateMachine implements ProtocolStateMachine {
   }
 
   Result<ProcessResult, ProtocolError> _handleInit(SctpInitChunk init) {
-    if (_state != SctpState.closed && _state != SctpState.established) {
+    // RFC 4960 §5.2.1 — simultaneous open: we already sent our own INIT
+    // (state=cookieWait) but the peer also sent INIT.  Firefox triggers
+    // this because it ignores RFC 8841 §5 SCTP client/server derivation
+    // from the DTLS role and always sends INIT.
+    //
+    // Strategy: yield to the peer's INIT — abandon our own INIT path and
+    // become the SCTP server.  This ensures a single association with the
+    // peer's verification tag, avoiding a tag mismatch where the peer's
+    // INIT tag ≠ INIT-ACK tag on two parallel handshake tracks.
+    if (_state == SctpState.cookieWait || _state == SctpState.cookieEchoed) {
+      if (_debug) {
+        stderr.writeln('[sctp] simultaneous open: INIT in state=$_state '
+            '→ yield to peer, becoming server');
+      }
+      _yieldedToRemoteInit = true;
+      // Fall through to the normal INIT handling below — process as if
+      // we were in CLOSED state.  Our abandoned INIT's INIT-ACK from the
+      // peer will be ignored in _handleInitAck.
+    }
+
+    if (!_yieldedToRemoteInit &&
+        _state != SctpState.closed &&
+        _state != SctpState.established) {
       if (_debug) {
         stderr.writeln('[sctp] ignoring INIT in state=$_state');
       }
@@ -296,6 +325,9 @@ final class SctpStateMachine implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> _handleInitAck(SctpInitAckChunk ack) {
     if (_state != SctpState.cookieWait) { return const Ok(ProcessResult.empty); }
+    // Simultaneous open: we yielded to the peer's INIT and are now in the
+    // server-side cookieWait.  Ignore this INIT-ACK for our abandoned INIT.
+    if (_yieldedToRemoteInit) { return const Ok(ProcessResult.empty); }
     _remoteVerificationTag = ack.initiateTag;
     _remoteInitialTsn = ack.initialTsn;
     _cumulativeRemoteTsn = _remoteInitialTsn - 1;
@@ -317,9 +349,12 @@ final class SctpStateMachine implements ProtocolStateMachine {
   }
 
   Result<ProcessResult, ProtocolError> _handleCookieEcho(SctpCookieEchoChunk echo) {
-    // Server: validate and accept
+    // Server: validate and accept.  Guard against duplicate established
+    // events during simultaneous open (both COOKIE-ECHO and COOKIE-ACK
+    // paths may complete).
+    final wasEstablished = _state == SctpState.established;
     _state = SctpState.established;
-    onEstablished?.call();
+    if (!wasEstablished) onEstablished?.call();
     final ack = const SctpCookieAckChunk();
     return Ok(ProcessResult(outputPackets: [_buildPacket([ack])]));
   }
@@ -330,6 +365,11 @@ final class SctpStateMachine implements ProtocolStateMachine {
     onEstablished?.call();
     return const Ok(ProcessResult.empty);
   }
+
+  // Deferred output packets from callbacks (e.g., DCEP ACK generated during
+  // _deliverOrBuffer → _processPayload → _scheduleDcepAck).  Merged into the
+  // next ProcessResult returned from _handleData.
+  final List<OutputPacket> _deferredOutput = [];
 
   // Buffer for out-of-order received chunks
   final Map<int, SctpDataChunk> _recvBuffer = {};
@@ -379,7 +419,13 @@ final class SctpStateMachine implements ProtocolStateMachine {
       gapAckBlocks: gapBlocks,
     );
 
-    return Ok(ProcessResult(outputPackets: [_buildPacket([sack])]));
+    // Merge any deferred output (e.g., DCEP ACK) generated during delivery
+    final packets = <OutputPacket>[_buildPacket([sack])];
+    if (_deferredOutput.isNotEmpty) {
+      packets.addAll(_deferredOutput);
+      _deferredOutput.clear();
+    }
+    return Ok(ProcessResult(outputPackets: packets));
   }
 
   List<(int, int)> _computeGapBlocks() {
@@ -484,14 +530,17 @@ final class SctpStateMachine implements ProtocolStateMachine {
   }
 
   void _scheduleDcepAck(int streamId) {
-    // In a real implementation this would queue an ACK DATA chunk.
-    // Here we note it — the transport will pick it up on next sendData call.
-    sendData(
+    // Build the DCEP ACK DATA chunk and add it to deferred output so it
+    // gets merged into the ProcessResult from _handleData.
+    final result = sendData(
       data: DcepAckMessage.encoded,
       streamId: streamId,
       ordered: true,
       ppid: SctpPpid.webrtcDcep,
     );
+    if (result.isOk) {
+      _deferredOutput.addAll(result.value.outputPackets);
+    }
   }
 
   Result<ProcessResult, ProtocolError> _handleSack(SctpSackChunk sack) {

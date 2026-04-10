@@ -5,15 +5,17 @@
 ///
 /// Scenarios:
 ///   1.  Data channel: webdartc (offerer) ↔ Firefox (answerer)
+///   1b. Data channel: Firefox (offerer) ↔ webdartc (answerer) — exercises
+///       RFC 8445 §7.3.1.4/5 prflx USE-CANDIDATE nomination
 ///   2.  Media: webdartc (offerer, recvonly) ↔ Firefox (answerer, sendonly)
 ///       — audio only and audio+video BUNDLE
 ///   3.  Trickle ICE: validate addIceCandidate() incremental flow
 ///   Packet loss / delay — webdartc (offerer) ↔ Firefox (answerer) via UDP
 ///       proxy with 5% loss (ICE/STUN, DTLS, SCTP, SRTP) and 50±20 ms jitter
 ///
-/// Skipped scenarios (known webdartc ICE limitation):
-///   1b. Firefox offerer — ICE controlled agent race (non-candidate STUN port)
-///   4.  Media echo — same as 1b (Firefox offerer)
+/// Skipped scenarios:
+///   4.  Media echo (Firefox offerer) — reaches ICE connected but video echo
+///       is blocked by transport-cc requirement (RFC 8888)
 ///
 /// Requires Firefox and GeckoDriver on PATH.
 /// Run with:
@@ -156,11 +158,87 @@ void main() {
     });
   });
 
-  // Scenario 1b (Firefox offerer ↔ webdartc answerer) is skipped.
-  // Firefox sends ICE binding requests from a different port than its
-  // candidates, causing USE-CANDIDATE nomination to be lost when the
-  // webdartc controlled agent creates peer-reflexive candidates. This is
-  // an ICE state machine limitation with early STUN from non-candidate ports.
+  // ── Scenario 1b: Data channel (Firefox offerer ↔ webdartc answerer) ──────
+  //
+  // Firefox sends its first Binding Request from an ephemeral source port
+  // that is not in the candidates it advertises over SDP. The request
+  // carries USE-CANDIDATE because Firefox is the ICE controlling agent.
+  // webdartc (the controlled agent) must therefore:
+  //   1. Create a peer-reflexive remote candidate on demand (RFC 8445
+  //      §7.3.1.4) even if it has not yet entered iceChecking locally.
+  //   2. Form a candidate pair with its local host candidate and mark it
+  //      nominated (§7.3.1.5).
+  //   3. Send a triggered check back to confirm reachability.
+  //   4. Promote the pair to `_selectedPair` when the triggered check
+  //      succeeds.
+  // This is the path fixed by relaxing the state guard in
+  // lib/ice/state_machine.dart:_triggerPeerReflexiveCheck.
+
+  group('Scenario 1b — data channel (Firefox offerer ↔ webdartc answerer)',
+      () {
+    SignalingServer? sigServer;
+    HttpServer? htmlServer;
+    int htmlPort = 0;
+    WebDriverSession? driver;
+
+    setUp(() async {
+      sigServer = await SignalingServer.start();
+      final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
+      htmlServer = srv;
+      htmlPort = port;
+      driver = await createFirefoxSession();
+    });
+
+    tearDown(() async {
+      await driver?.quit();
+      await htmlServer?.close(force: true);
+      await sigServer?.close();
+    });
+
+    test('Firefox offerer sends, webdartc answerer echoes', () async {
+      final d = driver!;
+      final sig = sigServer!;
+
+      // Start webdartc answerer FIRST so it's connected to signaling before
+      // Firefox sends the offer (otherwise the offer would be dropped).
+      final answererFuture = _runWebdartcAnswerer(sig.port);
+      await Future<void>.delayed(const Duration(seconds: 3));
+
+      final url =
+          'http://127.0.0.1:$htmlPort/?port=${sig.port}'
+          '&role=offerer&scenario=data';
+      await d.navigateTo(url);
+
+      await waitFor(
+        () async => await browserState(d, 'ready') == true,
+        timeout: const Duration(seconds: 10),
+      );
+
+      try {
+        await waitFor(
+          () async {
+            final v = await browserState(d, 'iceState');
+            return v == 'connected' || v == 'completed';
+          },
+          timeout: const Duration(seconds: 30),
+          interval: const Duration(seconds: 3),
+        );
+      } catch (e) {
+        await _printBrowserLog(d);
+        rethrow;
+      }
+
+      await waitFor(
+        () async => await browserState(d, 'dcOpen') == true,
+        timeout: const Duration(seconds: 15),
+      );
+
+      // Firefox sends a text message; webdartc answerer echoes it and exits.
+      await d.executeScript('window.sendText("hello from firefox")');
+
+      await answererFuture.timeout(const Duration(seconds: 30));
+    });
+  });
 
   // ── Scenario 2: Media (webdartc recvonly ↔ Firefox sendonly) ──────────────
   //
@@ -683,6 +761,43 @@ Future<void> _runWebdartcOfferer(int signalingPort,
   if (exitCode != 0) {
     throw Exception(
       'webdartc offerer failed (exit $exitCode):\n'
+      '${stderrLines.join('\n')}',
+    );
+  }
+}
+
+// ── webdartc answerer helper ─────────────────────────────────────────────────
+
+/// Runs the webdartc answerer as a subprocess, streaming stderr.
+/// Returns when a data channel message is received (exit 0) or throws.
+Future<void> _runWebdartcAnswerer(int signalingPort) async {
+  final proc = await Process.start(
+    Platform.resolvedExecutable,
+    [
+      'run',
+      'test/e2e/webdartc_answerer_helper.dart',
+      '--port=$signalingPort',
+    ],
+    environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
+  );
+
+  final stderrLines = <String>[];
+  proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(
+        (line) {
+          stderrLines.add(line);
+          // ignore: avoid_print
+          print('[answerer] $line');
+        },
+      );
+  proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(
+        // ignore: avoid_print
+        (line) => print('[answerer-stdout] $line'),
+      );
+
+  final exitCode = await proc.exitCode;
+  if (exitCode != 0) {
+    throw Exception(
+      'webdartc answerer failed (exit $exitCode):\n'
       '${stderrLines.join('\n')}',
     );
   }

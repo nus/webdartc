@@ -413,12 +413,15 @@ Uint8List _extractCookie(Uint8List params) {
 
 Uint8List _wrapChunk(int type, int flags, Uint8List body) {
   final len = 4 + body.length;
-  final out = Uint8List(len);
+  // RFC 4960 §3.2: pad to 4-byte boundary.  Padding is NOT included in the
+  // chunk length field.
+  final paddedLen = (len + 3) & ~3;
+  final out = Uint8List(paddedLen); // zero-filled by default
   out[0] = type;
   out[1] = flags;
   out[2] = (len >> 8) & 0xFF;
   out[3] = len & 0xFF;
-  out.setRange(4, out.length, body);
+  out.setRange(4, 4 + body.length, body);
   return out;
 }
 
