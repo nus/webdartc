@@ -13,9 +13,8 @@
 ///   Packet loss / delay — webdartc (offerer) ↔ Firefox (answerer) via UDP
 ///       proxy with 5% loss (ICE/STUN, DTLS, SCTP, SRTP) and 50±20 ms jitter
 ///
-/// Skipped scenarios:
-///   4.  Media echo (Firefox offerer) — reaches ICE connected but video echo
-///       is blocked by transport-cc requirement (RFC 8888)
+///   4.  Media echo: Firefox (offerer) sends audio → webdartc echoes back
+///       (skipped — Firefox media transport inactive as offerer in echo)
 ///
 /// Requires Firefox and GeckoDriver on PATH.
 /// Run with:
@@ -418,8 +417,87 @@ void main() {
     });
   });
 
-  // Scenario 4 (Firefox offerer ↔ webdartc echo) is skipped for the same
-  // reason as Scenario 1b: Firefox sends STUN from non-candidate ports.
+  // ── Scenario 4: Media echo (Firefox sends audio → webdartc echoes back) ──
+  //
+  // Firefox is offerer (ICE controlling, DTLS server). webdartc is answerer
+  // (ICE controlled, DTLS client → SRTP CM negotiated via ClientHello).
+  // The same ICE prflx nomination and SCTP simultaneous-open fixes that
+  // enabled Scenario 1b also apply here.
+
+  group('Scenario 4 — media echo (Firefox offerer ↔ webdartc echo)',
+      // Firefox ICE reaches connected, webdartc DTLS completes and sends 20
+      // echo packets, but Firefox's outbound-rtp stats show rtpPacketsSent=0
+      // and transportBytesRx=null — the media transport appears inactive
+      // from Firefox's perspective.  The SDP answer is correct (sendrecv,
+      // Opus PT 109, SSRC).  Needs investigation with Firefox's
+      // about:webrtc internals or packet capture.
+      skip: 'Firefox media transport inactive as offerer in echo scenario '
+          '(rtpSent=0, transportBytesRx=null despite DTLS connected)', () {
+    SignalingServer? sigServer;
+    HttpServer? htmlServer;
+    int htmlPort = 0;
+    WebDriverSession? driver;
+
+    setUp(() async {
+      sigServer = await SignalingServer.start();
+      final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
+      htmlServer = srv;
+      htmlPort = port;
+      driver = await createFirefoxSession();
+    });
+
+    tearDown(() async {
+      await driver?.quit();
+      await htmlServer?.close(force: true);
+      await sigServer?.close();
+    });
+
+    test('webdartc echoes audio RTP back to Firefox', () async {
+      final d = driver!;
+      final sig = sigServer!;
+
+      // Start echo helper first (answerer).
+      final echoFuture = _runWebdartcEcho(sig.port);
+      await Future<void>.delayed(const Duration(seconds: 3));
+
+      // Firefox as offerer with audio.
+      final url =
+          'http://127.0.0.1:$htmlPort/?port=${sig.port}'
+          '&role=offerer&scenario=media-echo';
+      await d.navigateTo(url);
+
+      await waitFor(
+        () async => await browserState(d, 'ready') == true,
+        timeout: const Duration(seconds: 10),
+      );
+
+      try {
+        await waitFor(
+          () async {
+            final v = await browserState(d, 'iceState');
+            return v == 'connected' || v == 'completed';
+          },
+          timeout: const Duration(seconds: 30),
+          interval: const Duration(seconds: 3),
+        );
+      } catch (e) {
+        await _printBrowserLog(d);
+        rethrow;
+      }
+
+      // Verify Firefox receives echoed audio RTP from webdartc.
+      await waitFor(
+        () async {
+          final received = await browserState(d, 'rtpPacketsReceived');
+          return received != null && (received as num) > 0;
+        },
+        timeout: const Duration(seconds: 20),
+        interval: const Duration(seconds: 2),
+      );
+
+      await echoFuture.timeout(const Duration(seconds: 30));
+    });
+  });
 
   // ── Network impairment tests ──────────────────────────────────────────────
   //
@@ -790,6 +868,44 @@ Future<void> _runWebdartcAnswerer(int signalingPort) async {
   if (exitCode != 0) {
     throw Exception(
       'webdartc answerer failed (exit $exitCode):\n'
+      '${stderrLines.join('\n')}',
+    );
+  }
+}
+
+// ── webdartc echo helper ─────────────────────────────────────────────────────
+
+/// Runs the webdartc echo helper (answerer) as a subprocess, streaming stderr.
+/// The echo helper receives audio RTP from the browser and echoes it back.
+/// Returns when the echo session completes (exit 0) or throws on failure.
+Future<void> _runWebdartcEcho(int signalingPort) async {
+  final proc = await Process.start(
+    Platform.resolvedExecutable,
+    [
+      'run',
+      'test/e2e/media_echo_helper.dart',
+      '--port=$signalingPort',
+    ],
+    environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
+  );
+
+  final stderrLines = <String>[];
+  proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(
+        (line) {
+          stderrLines.add(line);
+          // ignore: avoid_print
+          print('[echo] $line');
+        },
+      );
+  proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(
+        // ignore: avoid_print
+        (line) => print('[echo-stdout] $line'),
+      );
+
+  final exitCode = await proc.exitCode;
+  if (exitCode != 0) {
+    throw Exception(
+      'webdartc echo failed (exit $exitCode):\n'
       '${stderrLines.join('\n')}',
     );
   }
