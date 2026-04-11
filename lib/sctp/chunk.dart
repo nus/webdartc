@@ -208,33 +208,27 @@ final class SctpSackChunk extends SctpChunk {
 }
 
 final class SctpHeartbeatChunk extends SctpChunk {
+  /// Raw chunk body (contains the Heartbeat Info TLV as parsed from the wire).
   final Uint8List info;
   const SctpHeartbeatChunk(this.info) : super(SctpChunkType.heartbeat, 0);
 
   @override
   Uint8List encode() {
-    // Heartbeat Info parameter (type=0x0001)
-    final param = Uint8List(4 + info.length);
-    param[0] = 0x00; param[1] = 0x01;
-    param[2] = ((info.length + 4) >> 8) & 0xFF;
-    param[3] = (info.length + 4) & 0xFF;
-    param.setRange(4, param.length, info);
-    return _wrapChunk(type, flags, param);
+    // Body already contains the Heartbeat Info TLV from the parser.
+    return _wrapChunk(type, flags, info);
   }
 }
 
 final class SctpHeartbeatAckChunk extends SctpChunk {
+  /// Raw chunk body (the Heartbeat Info TLV as received from the peer).
   final Uint8List info;
   const SctpHeartbeatAckChunk(this.info) : super(SctpChunkType.heartbeatAck, 0);
 
   @override
   Uint8List encode() {
-    final param = Uint8List(4 + info.length);
-    param[0] = 0x00; param[1] = 0x01;
-    param[2] = ((info.length + 4) >> 8) & 0xFF;
-    param[3] = (info.length + 4) & 0xFF;
-    param.setRange(4, param.length, info);
-    return _wrapChunk(type, flags, param);
+    // Echo the body verbatim — it already contains the Heartbeat Info TLV
+    // from the parsed HEARTBEAT chunk.  Do NOT re-wrap in another TLV.
+    return _wrapChunk(type, flags, info);
   }
 }
 
