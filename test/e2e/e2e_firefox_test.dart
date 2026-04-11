@@ -424,15 +424,7 @@ void main() {
   // The same ICE prflx nomination and SCTP simultaneous-open fixes that
   // enabled Scenario 1b also apply here.
 
-  group('Scenario 4 — media echo (Firefox offerer ↔ webdartc echo)',
-      // Firefox ICE reaches connected, webdartc DTLS completes and sends 20
-      // echo packets, but Firefox's outbound-rtp stats show rtpPacketsSent=0
-      // and transportBytesRx=null — the media transport appears inactive
-      // from Firefox's perspective.  The SDP answer is correct (sendrecv,
-      // Opus PT 109, SSRC).  Needs investigation with Firefox's
-      // about:webrtc internals or packet capture.
-      skip: 'Firefox media transport inactive as offerer in echo scenario '
-          '(rtpSent=0, transportBytesRx=null despite DTLS connected)', () {
+  group('Scenario 4 — media echo (Firefox offerer ↔ webdartc echo)', () {
     SignalingServer? sigServer;
     HttpServer? htmlServer;
     int htmlPort = 0;

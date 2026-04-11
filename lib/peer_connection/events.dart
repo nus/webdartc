@@ -121,7 +121,7 @@ enum DtlsTransportState {
 final class RtpSender {
   final String kind;
   final int ssrc;
-  final int payloadType;
+  int payloadType;
   final int clockRate;
   int _sequenceNumber = 0;
   int _timestamp = 0;

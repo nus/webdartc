@@ -428,9 +428,17 @@ final class PeerConnection {
         tIdx++;
       }
       if (tIdx < _transceivers.length && _transceivers[tIdx].sender != null) {
-        _transceivers[tIdx].sender!._mid = mid;
-        _transceivers[tIdx].sender!._midExtId = midExtId;
-        if (_debug) _log('[pc] sender ${_transceivers[tIdx].kind} mid=$mid extId=$midExtId');
+        final sender = _transceivers[tIdx].sender!;
+        sender._mid = mid;
+        sender._midExtId = midExtId;
+        // Update sender PT to match the negotiated codec from the offer.
+        // Firefox uses PT 109 for Opus while Chrome uses 111; the sender
+        // must use the offer's PT so the remote peer can demux incoming RTP.
+        if (m.formats.isNotEmpty) {
+          final negotiatedPt = int.tryParse(m.formats.first);
+          if (negotiatedPt != null) sender.payloadType = negotiatedPt;
+        }
+        if (_debug) _log('[pc] sender ${_transceivers[tIdx].kind} mid=$mid extId=$midExtId pt=${sender.payloadType}');
         tIdx++;
       }
     }
@@ -531,7 +539,9 @@ final class PeerConnection {
         _setConnectionState(PeerConnectionState.connecting);
       case IceState.iceConnected:
         _setIceConnectionState(IceConnectionState.connected);
-        _setConnectionState(PeerConnectionState.connected);
+        // Don't set PeerConnectionState.connected yet — per W3C spec,
+        // connectionState requires BOTH ICE and DTLS to be connected.
+        // PeerConnectionState.connected is set in _onDtlsConnected.
         // Start DTLS handshake — delegate to transport so it can schedule
         // the retransmit timer.  The first ClientHello may arrive at the
         // remote peer before its ICE pair is fully validated, so
@@ -596,6 +606,9 @@ final class PeerConnection {
   static void _log(String msg) => stderr.writeln(msg);
 
   void _onDtlsConnected(Uint8List keyMaterial) {
+    // W3C: connectionState = "connected" when BOTH ICE and DTLS are up.
+    _setConnectionState(PeerConnectionState.connected);
+
     // Determine SRTP profile from DTLS negotiation
     final profileId = _dtls.selectedSrtpProfileId;
     final srtpProfile = profileId == 0x0007
