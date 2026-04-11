@@ -20,6 +20,7 @@
 /// Run with:
 ///   dart test test/e2e/e2e_firefox_test.dart --timeout=180s
 @Tags(['e2e'])
+@Timeout(Duration(seconds: 120))
 library;
 
 import 'dart:async';

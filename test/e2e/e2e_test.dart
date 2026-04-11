@@ -8,6 +8,7 @@
 /// Run with:
 ///   dart test test/e2e/ --timeout=120s
 @Tags(['e2e'])
+@Timeout(Duration(seconds: 120))
 library;
 
 import 'dart:async';
