@@ -265,6 +265,16 @@ final class PeerConnection {
     if (sdp.media.isEmpty) return;
     final media = sdp.media.first;
 
+    // Build PT→kind map from remote SDP for RTP demuxing.
+    // Each m-line type (audio/video) lists its payload types as formats.
+    for (final m in sdp.media) {
+      if (m.type == 'application') continue;
+      for (final fmt in m.formats) {
+        final pt = int.tryParse(fmt);
+        if (pt != null) _ptKindMap[pt] = m.type;
+      }
+    }
+
     // Extract ICE and DTLS parameters (media-level overrides session-level)
     final sa = sdp.sessionAttributes;
     final remoteUfrag = media.iceUfrag ?? sa['ice-ufrag'] ?? '';
@@ -764,21 +774,20 @@ final class PeerConnection {
     }
   }
 
-  // Map payload type → kind using negotiated transceivers.
-  // Known PT: 111=opus(audio), 96=VP8(video). Dynamic PTs checked against transceivers.
-  static const _staticPtKind = <int, String>{
-    111: 'audio', // opus
-    96: 'video', // VP8
-    97: 'video', // VP9
-    102: 'video', // H.264
-  };
+  // Dynamic PT→kind map built from SDP negotiation.
+  final Map<int, String> _ptKindMap = {};
 
   String _resolveTrackKind(int payloadType) {
-    final fromStatic = _staticPtKind[payloadType];
-    if (fromStatic != null) return fromStatic;
-    // Fallback: if we have transceivers, use the kind of the first unmatched one
-    for (final t in _transceivers) {
-      if (!_receivers.containsKey(0)) return t.kind; // fallback
+    // Check dynamically negotiated PTs first (populated from SDP).
+    final fromSdp = _ptKindMap[payloadType];
+    if (fromSdp != null) return fromSdp;
+    // Fallback heuristics for well-known static PTs.
+    if (payloadType <= 34) return 'audio'; // RFC 3551 static audio range
+    if (payloadType >= 96 && payloadType <= 127) {
+      // Dynamic range — check unmatched transceivers
+      for (final t in _transceivers) {
+        if (!_receivers.values.any((r) => r.kind == t.kind)) return t.kind;
+      }
     }
     return 'audio';
   }

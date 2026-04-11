@@ -491,6 +491,82 @@ void main() {
     });
   });
 
+  // ── Scenario 5: Video reflect (Firefox sends video → webdartc reflects) ──
+
+  group('Scenario 5 — video reflect (Firefox offerer ↔ webdartc reflect)',
+      () {
+    SignalingServer? sigServer;
+    HttpServer? htmlServer;
+    int htmlPort = 0;
+    WebDriverSession? driver;
+
+    setUp(() async {
+      sigServer = await SignalingServer.start();
+      final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
+      htmlServer = srv;
+      htmlPort = port;
+      driver = await createFirefoxSession();
+    });
+
+    tearDown(() async {
+      await driver?.quit();
+      await htmlServer?.close(force: true);
+      await sigServer?.close();
+    });
+
+    test('Firefox receives reflected video from webdartc', () async {
+      final d = driver!;
+      final sig = sigServer!;
+
+      // Start reflect helper (answerer) first.
+      final reflectProc = await _startWebdartcReflect(sig.port);
+      await Future<void>.delayed(const Duration(seconds: 3));
+
+      // Firefox as offerer with video.
+      final url =
+          'http://127.0.0.1:$htmlPort/?port=${sig.port}'
+          '&role=offerer&scenario=media-video-reflect';
+      await d.navigateTo(url);
+
+      await waitFor(
+        () async => await browserState(d, 'ready') == true,
+        timeout: const Duration(seconds: 10),
+      );
+
+      // Wait for Firefox ICE connected.
+      try {
+        await waitFor(
+          () async {
+            final v = await browserState(d, 'iceState');
+            return v == 'connected' || v == 'completed';
+          },
+          timeout: const Duration(seconds: 30),
+          interval: const Duration(seconds: 3),
+        );
+      } catch (e) {
+        await _printBrowserLog(d);
+        rethrow;
+      }
+
+      // Wait for Firefox to send video and receive reflected video back.
+      try {
+        await waitFor(
+          () async {
+            final sent = await browserState(d, 'videoRtpPacketsSent');
+            final recv = await browserState(d, 'videoRtpPacketsReceived');
+            // ignore: avoid_print
+            print('[firefox-stats] videoSent=$sent videoRecv=$recv');
+            return recv != null && (recv as num) > 0;
+          },
+          timeout: const Duration(seconds: 30),
+          interval: const Duration(seconds: 2),
+        );
+      } finally {
+        reflectProc.kill();
+      }
+    });
+  });
+
   // ── Network impairment tests ──────────────────────────────────────────────
   //
   // These tests mirror the Chrome packet-loss suite with Firefox as the
@@ -863,6 +939,27 @@ Future<void> _runWebdartcAnswerer(int signalingPort) async {
       '${stderrLines.join('\n')}',
     );
   }
+}
+
+// ── webdartc video reflect helper ────────────────────────────────────────────
+
+/// Starts the video reflect helper and returns the Process.
+/// The caller is responsible for killing the process when done.
+Future<Process> _startWebdartcReflect(int signalingPort) async {
+  final proc = await Process.start(
+    Platform.resolvedExecutable,
+    ['run', 'test/e2e/video_reflect_helper.dart', '--port=$signalingPort'],
+    environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
+  );
+  proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(
+        // ignore: avoid_print
+        (line) => print('[reflect] $line'),
+      );
+  proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(
+        // ignore: avoid_print
+        (line) => print('[reflect-out] $line'),
+      );
+  return proc;
 }
 
 // ── webdartc echo helper ─────────────────────────────────────────────────────
