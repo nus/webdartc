@@ -98,6 +98,10 @@ final class PeerConnection {
   int _twccExtId = 0; // extension ID from SDP (0 = not negotiated)
   final List<_TwccEntry> _twccRecvLog = [];
   int _twccFbCount = 0;
+  // Monotonic clock for transport-cc arrival timestamps.  Stopwatch uses
+  // clock_gettime(CLOCK_MONOTONIC) — immune to NTP adjustments and wall-
+  // clock jumps that DateTime.now() is subject to.
+  final Stopwatch _twccClock = Stopwatch()..start();
 
   // Stream controllers
   final _iceCandidateController =
@@ -724,7 +728,7 @@ final class PeerConnection {
         for (final ext in elements) {
           if (ext.id == _twccExtId && ext.data.length >= 2) {
             final twccSeq = (ext.data[0] << 8) | ext.data[1];
-            _twccRecvLog.add(_TwccEntry(twccSeq, DateTime.now().microsecondsSinceEpoch));
+            _twccRecvLog.add(_TwccEntry(twccSeq, _twccClock.elapsedMicroseconds));
             if (_debug && _twccRecvLog.length <= 3) {
               _log('[pc] twcc seq=$twccSeq (ext elements=${elements.length})');
             }
