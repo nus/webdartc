@@ -994,16 +994,7 @@ final class PeerConnection {
     _twccFbCount++;
 
     final rawFb = fb.build();
-    if (_debug) {
-      final deltaStr = deltas.map((d) => d == null ? '_' : '${d ~/ 1000}ms').join(',');
-      _log('[pc] twcc fb: base=$baseSeq count=$statusCount recv=${seqs.length} '
-          'ref=${referenceTimeMs}ms ssrc=$senderSsrc deltas=[$deltaStr]');
-      // Hex dump first 3 feedback packets for format verification.
-      if (_twccFbCount <= 3) {
-        final hex = rawFb.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-        _log('[pc] twcc hex (${rawFb.length}b): $hex');
-      }
-    }
+    if (_debug) _log('[pc] transport-cc fb: base=$baseSeq count=$statusCount recv=${seqs.length}');
     return rawFb;
   }
 
