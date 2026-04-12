@@ -375,7 +375,7 @@ final class RtcpTransportCc extends RtcpPacket {
       if (d == null) {
         symbols.add(_notReceived);
       } else {
-        final d250 = d ~/ 250; // multiples of 250µs
+        final d250 = d ~/ 250; // multiples of 250µs (truncation, matching Pion)
         if (d250 >= 0 && d250 <= 255) {
           symbols.add(_smallDelta);
           deltaBytes.add(d250);
@@ -421,9 +421,11 @@ final class RtcpTransportCc extends RtcpPacket {
     final chunksLen = statusChunks.length * 2;
     final totalLen = headerLen + chunksLen + deltaBytes.length;
     final paddedTotal = (totalLen + 3) & ~3;
+    final padBytes = paddedTotal - totalLen;
 
     final out = Uint8List(paddedTotal);
-    out[0] = 0x80 | 15; // V=2, FMT=15
+    // V=2, P=(1 if padded), FMT=15
+    out[0] = (padBytes > 0 ? 0xA0 : 0x80) | 15;
     out[1] = 205; // PT=RTPFB
     final wordLen = (paddedTotal ~/ 4) - 1;
     out[2] = (wordLen >> 8) & 0xFF;
@@ -452,6 +454,11 @@ final class RtcpTransportCc extends RtcpPacket {
     // Recv deltas
     for (final d in deltaBytes) {
       out[off++] = d;
+    }
+
+    // RTCP padding: last byte is the padding count (including itself).
+    if (padBytes > 0) {
+      out[paddedTotal - 1] = padBytes;
     }
 
     return out;

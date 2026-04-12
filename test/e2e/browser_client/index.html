@@ -91,6 +91,27 @@ setInterval(async () => {
           window.__testState.videoFramesDecoded = s.framesDecoded || 0;
         }
       }
+      // GoogCC bandwidth estimation diagnostics
+      if (s.type === 'candidate-pair' && s.nominated) {
+        window.__testState.bweAvailableOutgoing = s.availableOutgoingBitrate || 0;
+        window.__testState.bweCurrentRtt = s.currentRoundTripTime || 0;
+      }
+      if (s.type === 'outbound-rtp' && s.kind === 'video') {
+        window.__testState.videoTargetBitrate = s.targetBitrate || 0;
+        window.__testState.videoTotalEncodedBytes = s.totalEncodedBytesTarget || 0;
+        window.__testState.videoFramesSent = s.framesSent || 0;
+        window.__testState.videoFrameWidth = s.frameWidth || 0;
+        window.__testState.videoFrameHeight = s.frameHeight || 0;
+        window.__testState.videoQpSum = s.qpSum || 0;
+        window.__testState.videoQualityLimitationReason = s.qualityLimitationReason || 'none';
+        window.__testState.videoRetransmittedPacketsSent = s.retransmittedPacketsSent || 0;
+        window.__testState.videoNackCount = s.nackCount || 0;
+      }
+      if (s.type === 'remote-inbound-rtp' && s.kind === 'video') {
+        window.__testState.videoRemotePacketsLost = s.packetsLost || 0;
+        window.__testState.videoRemoteJitter = s.jitter || 0;
+        window.__testState.videoRemoteRtt = s.roundTripTime || 0;
+      }
     }
     window.__testState.icePairs = JSON.stringify(pairs);
     window.__testState.iceCands = JSON.stringify(cands);

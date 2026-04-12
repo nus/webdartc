@@ -834,17 +834,34 @@ final class DtlsStateMachine implements ProtocolStateMachine {
             '[dtls] use_srtp profiles offered: ${profiles.map((p) => "0x${p.toRadixString(16).padLeft(4, "0")}").join(", ")}',
           );
         }
+        // Prefer SRTP_AES128_CM_HMAC_SHA1_80 (0x0001) when the client offers
+        // it, falling back to AEAD_AES_128_GCM (0x0007). Both Chrome and
+        // Firefox advertise 0x0001, so this picks the common-denominator
+        // profile and avoids known webdartc AES-GCM key-derivation issues
+        // (RFC 7714 §11 — 12-byte master salt, not 14).
+        int? picked;
         for (var i = 0; i < profilesLen; i += 2) {
           final profileId = (body[off + 2 + i] << 8) | body[off + 2 + i + 1];
-          // Accept SRTP_AES128_CM_HMAC_SHA1_80 (0x0001) or AEAD_AES_128_GCM (0x0007)
-          if (profileId == 0x0001 || profileId == 0x0007) {
-            _selectedSrtpProfile = [(profileId >> 8) & 0xFF, profileId & 0xFF];
-            if (_debug) {
-              stderr.writeln(
-                '[dtls] selected SRTP profile: 0x${profileId.toRadixString(16).padLeft(4, "0")}',
-              );
-            }
+          if (profileId == 0x0001) {
+            picked = 0x0001;
             break;
+          }
+        }
+        if (picked == null) {
+          for (var i = 0; i < profilesLen; i += 2) {
+            final profileId = (body[off + 2 + i] << 8) | body[off + 2 + i + 1];
+            if (profileId == 0x0007) {
+              picked = 0x0007;
+              break;
+            }
+          }
+        }
+        if (picked != null) {
+          _selectedSrtpProfile = [(picked >> 8) & 0xFF, picked & 0xFF];
+          if (_debug) {
+            stderr.writeln(
+              '[dtls] selected SRTP profile: 0x${picked.toRadixString(16).padLeft(4, "0")}',
+            );
           }
         }
       }

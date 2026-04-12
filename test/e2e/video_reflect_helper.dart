@@ -104,6 +104,7 @@ Future<int> _run(int sigPort) async {
 
   RtpSender? videoSender;
   int reflected = 0;
+  bool passed = false;
   final done = Completer<int>();
 
   pc.onIceCandidate.listen((evt) {
@@ -112,16 +113,17 @@ Future<int> _run(int sigPort) async {
     }});
   });
 
-  // Reflect received video RTP back, count video packets
+  // Reflect received video RTP back, keep running for BWE measurement.
   pc.onTrack.listen((evt) {
     stderr.writeln('[reflect] onTrack: ${evt.kind} ssrc=${evt.ssrc}');
     if (evt.kind == 'video' && videoSender != null) {
       evt.receiver.onRtp.listen((rtp) {
         videoSender!.sendRtp(rtp.payload, marker: rtp.marker, timestamp: rtp.timestamp);
         reflected++;
-        if (reflected == 50 && !done.isCompleted) {
+        if (reflected == 50 && !passed) {
+          passed = true;
           stdout.writeln('[reflect] PASS (reflected $reflected video packets)');
-          done.complete(0);
+          // Keep running — don't complete yet so Chrome can measure BWE.
         }
       });
     }
@@ -153,12 +155,20 @@ Future<int> _run(int sigPort) async {
             sdpMLineIndex: (c['sdpMLineIndex'] as int?) ?? 0,
           ));
         }
+
+      case 'close':
+        if (!done.isCompleted) done.complete(passed ? 0 : 1);
     }
   });
 
+  // Keep connection alive for up to 60s for BWE measurement.
+  // Test side will close via signaling 'close' message or timeout.
   final result = await done.future.timeout(
-    const Duration(seconds: 30),
-    onTimeout: () { stderr.writeln('[reflect] TIMEOUT (reflected=$reflected)'); return 1; },
+    const Duration(seconds: 60),
+    onTimeout: () {
+      stderr.writeln('[reflect] timeout (reflected=$reflected passed=$passed)');
+      return passed ? 0 : 1;
+    },
   );
   await pc.close();
   await ws.close();

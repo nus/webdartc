@@ -8,6 +8,7 @@
 /// Run with:
 ///   dart test test/e2e/ --timeout=120s
 @Tags(['e2e'])
+@Timeout(Duration(seconds: 120))
 library;
 
 import 'dart:async';
@@ -619,45 +620,71 @@ void main() {
       final d = driver!;
       final sig = sigServer!;
 
-      // Start reflect helper (answerer) first.
-      final reflectFuture = _runWebdartcReflect(sig.port);
+      // Start reflect helper (answerer) — keeps running until killed.
+      final reflectProc = await _startWebdartcReflect(sig.port);
       await Future<void>.delayed(const Duration(seconds: 3));
 
-      // Chrome as offerer with video.
-      final url =
-          'http://127.0.0.1:$htmlPort/?port=${sig.port}'
-          '&role=offerer&scenario=media-video-reflect';
-      await d.navigateTo(url);
+      try {
+        // Chrome as offerer with video.
+        final url =
+            'http://127.0.0.1:$htmlPort/?port=${sig.port}'
+            '&role=offerer&scenario=media-video-reflect';
+        await d.navigateTo(url);
 
-      await waitFor(
-        () async => await browserState(d, 'ready') == true,
-        timeout: const Duration(seconds: 10),
-      );
+        await waitFor(
+          () async => await browserState(d, 'ready') == true,
+          timeout: const Duration(seconds: 10),
+        );
 
-      // Wait for Chrome ICE connected.
-      await waitFor(
-        () async {
-          final v = await browserState(d, 'iceState');
-          return v == 'connected' || v == 'completed';
-        },
-        timeout: const Duration(seconds: 30),
-        interval: const Duration(seconds: 3),
-      );
+        // Wait for Chrome ICE connected.
+        await waitFor(
+          () async {
+            final v = await browserState(d, 'iceState');
+            return v == 'connected' || v == 'completed';
+          },
+          timeout: const Duration(seconds: 30),
+          interval: const Duration(seconds: 3),
+        );
 
-      // Wait for Chrome to send video and receive reflected video back.
-      await waitFor(
-        () async {
+        // Wait for Chrome to send video and receive reflected video back.
+        await waitFor(
+          () async {
+            final sent = await browserState(d, 'videoRtpPacketsSent');
+            final recv = await browserState(d, 'videoRtpPacketsReceived');
+            // ignore: avoid_print
+            print('[chrome-stats] videoSent=$sent videoRecv=$recv');
+            return recv != null && (recv as num) > 0;
+          },
+          timeout: const Duration(seconds: 30),
+          interval: const Duration(seconds: 2),
+        );
+
+        // ── BWE diagnostic: poll bandwidth/quality stats for 20 seconds ──
+        // Reflect helper is still running so transport-cc feedback continues.
+        for (var i = 0; i < 10; i++) {
+          await Future<void>.delayed(const Duration(seconds: 2));
+          final bwe = await browserState(d, 'bweAvailableOutgoing');
+          final rtt = await browserState(d, 'bweCurrentRtt');
+          final target = await browserState(d, 'videoTargetBitrate');
+          final width = await browserState(d, 'videoFrameWidth');
+          final height = await browserState(d, 'videoFrameHeight');
+          final qpSum = await browserState(d, 'videoQpSum');
+          final qlReason = await browserState(d, 'videoQualityLimitationReason');
+          final lost = await browserState(d, 'videoRemotePacketsLost');
+          final jitter = await browserState(d, 'videoRemoteJitter');
+          final nack = await browserState(d, 'videoNackCount');
+          final retx = await browserState(d, 'videoRetransmittedPacketsSent');
           final sent = await browserState(d, 'videoRtpPacketsSent');
-          final recv = await browserState(d, 'videoRtpPacketsReceived');
           // ignore: avoid_print
-          print('[chrome-stats] videoSent=$sent videoRecv=$recv');
-          return recv != null && (recv as num) > 0;
-        },
-        timeout: const Duration(seconds: 30),
-        interval: const Duration(seconds: 2),
-      );
-
-      await reflectFuture.timeout(const Duration(seconds: 30));
+          print('[bwe-diag] t=${i * 2 + 2}s bwe=$bwe target=$target '
+              'rtt=$rtt ${width}x$height qp=$qpSum ql=$qlReason '
+              'lost=$lost jitter=$jitter nack=$nack retx=$retx sent=$sent');
+        }
+      } finally {
+        reflectProc.kill();
+        await reflectProc.exitCode.timeout(const Duration(seconds: 5),
+            onTimeout: () { reflectProc.kill(ProcessSignal.sigkill); return -1; });
+      }
     });
 
     test('Chrome receives reflected video via RTP Transport API', () async {
@@ -1132,25 +1159,23 @@ Future<void> _runWebdartcAnswerer(int signalingPort) async {
 
 // ── webdartc video reflect helper ─────────────────────────────────────────────
 
-Future<void> _runWebdartcReflect(int signalingPort) async {
+/// Starts the video reflect helper and returns the Process.
+/// The caller is responsible for killing the process when done.
+Future<Process> _startWebdartcReflect(int signalingPort) async {
   final proc = await Process.start(
     Platform.resolvedExecutable,
     ['run', 'test/e2e/video_reflect_helper.dart', '--port=$signalingPort'],
     environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
   );
-  final stderrLines = <String>[];
   proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
-    stderrLines.add(line);
     // ignore: avoid_print
     print('[reflect] $line');
   });
   proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen(
+    // ignore: avoid_print
     (line) => print('[reflect-stdout] $line'),
   );
-  final exitCode = await proc.exitCode;
-  if (exitCode != 0) {
-    throw Exception('webdartc reflect failed (exit $exitCode):\n${stderrLines.join('\n')}');
-  }
+  return proc;
 }
 
 // ── webdartc video reflect helper (RTP Transport API) ───────────────────────

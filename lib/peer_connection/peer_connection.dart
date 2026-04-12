@@ -261,6 +261,16 @@ final class PeerConnection {
     if (sdp.media.isEmpty) return;
     final media = sdp.media.first;
 
+    // Build PT→kind map from remote SDP for RTP demuxing.
+    // Each m-line type (audio/video) lists its payload types as formats.
+    for (final m in sdp.media) {
+      if (m.type == 'application') continue;
+      for (final fmt in m.formats) {
+        final pt = int.tryParse(fmt);
+        if (pt != null) _ptKindMap[pt] = m.type;
+      }
+    }
+
     // Extract ICE and DTLS parameters (media-level overrides session-level)
     final sa = sdp.sessionAttributes;
     final remoteUfrag = media.iceUfrag ?? sa['ice-ufrag'] ?? '';
@@ -428,9 +438,17 @@ final class PeerConnection {
         tIdx++;
       }
       if (tIdx < _transceivers.length && _transceivers[tIdx].sender != null) {
-        _transceivers[tIdx].sender!._mid = mid;
-        _transceivers[tIdx].sender!._midExtId = midExtId;
-        if (_debug) _log('[pc] sender ${_transceivers[tIdx].kind} mid=$mid extId=$midExtId');
+        final sender = _transceivers[tIdx].sender!;
+        sender._mid = mid;
+        sender._midExtId = midExtId;
+        // Update sender PT to match the negotiated codec from the offer.
+        // Firefox uses PT 109 for Opus while Chrome uses 111; the sender
+        // must use the offer's PT so the remote peer can demux incoming RTP.
+        if (m.formats.isNotEmpty) {
+          final negotiatedPt = int.tryParse(m.formats.first);
+          if (negotiatedPt != null) sender.payloadType = negotiatedPt;
+        }
+        if (_debug) _log('[pc] sender ${_transceivers[tIdx].kind} mid=$mid extId=$midExtId pt=${sender.payloadType}');
         tIdx++;
       }
     }
@@ -531,19 +549,19 @@ final class PeerConnection {
         _setConnectionState(PeerConnectionState.connecting);
       case IceState.iceConnected:
         _setIceConnectionState(IceConnectionState.connected);
-        _setConnectionState(PeerConnectionState.connected);
-        // Start DTLS handshake
+        // Don't set PeerConnectionState.connected yet — per W3C spec,
+        // connectionState requires BOTH ICE and DTLS to be connected.
+        // PeerConnectionState.connected is set in _onDtlsConnected.
+        // Start DTLS handshake — delegate to transport so it can schedule
+        // the retransmit timer.  The first ClientHello may arrive at the
+        // remote peer before its ICE pair is fully validated, so
+        // retransmission is essential.
         final pair = _ice.selectedPair;
         if (pair != null) {
-          final result = _dtls.startHandshake(
+          _transport.startDtlsHandshake(
             remoteIp: pair.remote.ip,
             remotePort: pair.remote.port,
           );
-          if (result.isOk) {
-            for (final pkt in result.value.outputPackets) {
-              _transport.sendRtp(pkt.data); // re-use UDP path
-            }
-          }
         }
       case IceState.iceFailed:
         _setIceConnectionState(IceConnectionState.failed);
@@ -598,6 +616,9 @@ final class PeerConnection {
   static void _log(String msg) => stderr.writeln(msg);
 
   void _onDtlsConnected(Uint8List keyMaterial) {
+    // W3C: connectionState = "connected" when BOTH ICE and DTLS are up.
+    _setConnectionState(PeerConnectionState.connected);
+
     // Determine SRTP profile from DTLS negotiation
     final profileId = _dtls.selectedSrtpProfileId;
     final srtpProfile = profileId == 0x0007
@@ -627,19 +648,37 @@ final class PeerConnection {
 
     // SCTP role follows DTLS role: DTLS client = SCTP client
     if (role == DtlsRole.client) {
-      // We're the DTLS client → initiate SCTP
-      Future<void>.delayed(Duration.zero, () {
-        final pair = _ice.selectedPair;
-        if (pair != null) {
-          final sctpResult = _sctp.connect(
-              remoteIp: pair.remote.ip, remotePort: pair.remote.port);
-          if (sctpResult.isOk) {
-            for (final pkt in sctpResult.value.outputPackets) {
-              _transport.sendSctp(pkt.data);
+      // We're the DTLS client → initiate SCTP.
+      // Skip if the peer already sent INIT (simultaneous open from Firefox
+      // which ignores RFC 8841 §5 and always initiates SCTP).  In that
+      // case the SCTP state machine already yielded to the peer's INIT
+      // and is handling the handshake as server.
+      if (_sctp.receivedRemoteInit) {
+        if (_debug) _log('[pc] peer already sent SCTP INIT — skipping connect');
+      } else {
+        // Delay slightly to let the peer's INIT arrive first when the peer
+        // also initiates (Firefox ignores RFC 8841 §5 and always sends INIT).
+        // 50 ms is long enough for the peer's first SCTP INIT to arrive via
+        // DTLS on loopback, short enough not to impact real-world latency.
+        Future<void>.delayed(const Duration(milliseconds: 50), () {
+          // Re-check — the peer's INIT may have arrived during the delay,
+          // either triggering the yield path or the normal server path.
+          if (_sctp.receivedRemoteInit ||
+              _sctp.state != SctpState.closed) {
+            return;
+          }
+          final pair = _ice.selectedPair;
+          if (pair != null) {
+            final sctpResult = _sctp.connect(
+                remoteIp: pair.remote.ip, remotePort: pair.remote.port);
+            if (sctpResult.isOk) {
+              for (final pkt in sctpResult.value.outputPackets) {
+                _transport.sendSctp(pkt.data);
+              }
             }
           }
-        }
-      });
+        });
+      }
     }
     // If DTLS server, Chrome (DTLS client) will send SCTP INIT
   }
@@ -677,7 +716,7 @@ final class PeerConnection {
 
   // ── RTP/RTCP handling ──────────────────────────────────────────────────────
 
-  void _onRtpReceived(Uint8List data) {
+  void _onRtpReceived(Uint8List data, int arrivalUs) {
     final result = RtpParser.parseRtp(data);
     if (result.isErr) return;
     final rtp = result.value;
@@ -695,7 +734,7 @@ final class PeerConnection {
         for (final ext in elements) {
           if (ext.id == _twccExtId && ext.data.length >= 2) {
             final twccSeq = (ext.data[0] << 8) | ext.data[1];
-            _twccRecvLog.add(_TwccEntry(twccSeq, DateTime.now().microsecondsSinceEpoch));
+            _twccRecvLog.add(_TwccEntry(twccSeq, arrivalUs));
             if (_debug && _twccRecvLog.length <= 3) {
               _log('[pc] twcc seq=$twccSeq (ext elements=${elements.length})');
             }
@@ -731,21 +770,20 @@ final class PeerConnection {
     }
   }
 
-  // Map payload type → kind using negotiated transceivers.
-  // Known PT: 111=opus(audio), 96=VP8(video). Dynamic PTs checked against transceivers.
-  static const _staticPtKind = <int, String>{
-    111: 'audio', // opus
-    96: 'video', // VP8
-    97: 'video', // VP9
-    102: 'video', // H.264
-  };
+  // Dynamic PT→kind map built from SDP negotiation.
+  final Map<int, String> _ptKindMap = {};
 
   String _resolveTrackKind(int payloadType) {
-    final fromStatic = _staticPtKind[payloadType];
-    if (fromStatic != null) return fromStatic;
-    // Fallback: if we have transceivers, use the kind of the first unmatched one
-    for (final t in _transceivers) {
-      if (!_receivers.containsKey(0)) return t.kind; // fallback
+    // Check dynamically negotiated PTs first (populated from SDP).
+    final fromSdp = _ptKindMap[payloadType];
+    if (fromSdp != null) return fromSdp;
+    // Fallback heuristics for well-known static PTs.
+    if (payloadType <= 34) return 'audio'; // RFC 3551 static audio range
+    if (payloadType >= 96 && payloadType <= 127) {
+      // Dynamic range — check unmatched transceivers
+      for (final t in _transceivers) {
+        if (!_receivers.values.any((r) => r.kind == t.kind)) return t.kind;
+      }
     }
     return 'audio';
   }
@@ -778,9 +816,7 @@ final class PeerConnection {
 
   void _startRtcpTimer() {
     _rtcpTimer?.cancel();
-    // Send RTCP RR every 1 second (RFC 3550 §6.2 recommends 5s, but Chrome
-    // needs faster feedback to start/sustain its video encoder).
-    // Send RTCP RR + transport-cc every 100ms for fast feedback
+    // Send RTCP RR + transport-cc every 100ms for fast feedback.
     _rtcpTimer = Timer.periodic(const Duration(milliseconds: 100), (_) => _sendRtcpRR());
     Future<void>.delayed(const Duration(milliseconds: 50), _sendRtcpRR);
   }
@@ -858,7 +894,7 @@ final class PeerConnection {
       }).toList();
       if (remoteSsrcs.isNotEmpty) {
         compound.addAll(RtcpRemb(
-          senderSsrc: _localRtcpSsrc,
+          senderSsrc: compoundSsrc,
           bitrate: 10000000, // 10 Mbps
           mediaSsrcs: remoteSsrcs,
         ).build());
@@ -887,15 +923,28 @@ final class PeerConnection {
       if (_debug) _log('[pc] PLI+FIR for ssrcs=$_pendingPliSsrcs (sender=$compoundSsrc)');
     }
 
-    // Transport-cc feedback
-    final ccBytes = _buildTransportCcFeedback();
-    if (ccBytes != null) compound.addAll(ccBytes);
+    // Transport-cc feedback — use a consistent known SSRC so Chrome's
+    // transport-cc processor always matches it to our session.
+    final videoSender = _transceivers
+        .where((t) => t.kind == 'video' && t.sender != null)
+        .map((t) => t.sender!)
+        .firstOrNull;
+    if (videoSender != null) {
+      // mediaSsrc: Chrome expects the SSRC of the media stream being fed
+      // back, despite the spec saying 0. Use first known remote video SSRC.
+      final remoteVideoSsrc = _receivers.entries
+          .where((e) => e.value.kind == 'video')
+          .map((e) => e.key)
+          .firstOrNull ?? _rtpRecvStats.keys.firstOrNull ?? 0;
+      final ccBytes = _buildTransportCcFeedback(videoSender.ssrc, remoteVideoSsrc);
+      if (ccBytes != null) compound.addAll(ccBytes);
+    }
 
     _transport.sendRtp(srtp.encryptRtcp(Uint8List.fromList(compound)));
     if (_debug) _log('[pc] sent compound RTCP (${compound.length}b): RR(${blocks.length})');
   }
 
-  Uint8List? _buildTransportCcFeedback() {
+  Uint8List? _buildTransportCcFeedback(int senderSsrc, int mediaSsrc) {
     if (_twccRecvLog.isEmpty) return null;
 
     // Consume all pending entries
@@ -935,8 +984,8 @@ final class PeerConnection {
     }
 
     final fb = RtcpTransportCc(
-      senderSsrc: _localRtcpSsrc,
-      mediaSsrc: 0, // always 0 for transport-wide CC
+      senderSsrc: senderSsrc,
+      mediaSsrc: mediaSsrc,
       baseSeq: baseSeq,
       referenceTimeMs: referenceTimeMs,
       fbPktCount: _twccFbCount & 0xFF,

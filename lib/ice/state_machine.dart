@@ -488,13 +488,27 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   /// Creates a peer-reflexive remote candidate for [remoteIp]:[remotePort]
   /// and immediately sends a triggered connectivity check to it.
+  ///
+  /// RFC 8445 §7.3.1.4: "If the source transport address of the request does
+  /// not match any existing remote candidates, it represents a new peer-
+  /// reflexive remote candidate." §7.3.1.5 then says the USE-CANDIDATE
+  /// nomination on such a pair is recorded and honored once the pair's
+  /// triggered check succeeds.
+  ///
+  /// This path must fire regardless of whether we have already started
+  /// connectivity checking locally. Firefox, in particular, sends its first
+  /// Binding Request (as controlling agent, carrying USE-CANDIDATE) from an
+  /// ephemeral source port that is not in any candidate it advertises —
+  /// webdartc may still be in iceGathering/iceGatheringComplete at that
+  /// point. Skip only for terminally dead states.
   List<OutputPacket> _triggerPeerReflexiveCheck(
       String remoteIp, int remotePort, bool nominated) {
     if (_localCandidates.isEmpty) return const [];
 
-    // Guard: only trigger new checks while actively checking (or already
-    // connected — Chrome may send checks after ICE connects).
-    if (_state != IceState.iceChecking && _state != IceState.iceConnected) {
+    // Terminal states: the agent is no longer processing checks.
+    if (_state == IceState.iceFailed ||
+        _state == IceState.iceDisconnected ||
+        _state == IceState.iceClosed) {
       return const [];
     }
 
@@ -562,15 +576,19 @@ final class IceStateMachine implements ProtocolStateMachine {
   void _checkConnectivityComplete() {
     // If no pairs yet, remote candidates haven't arrived — keep waiting.
     if (_pairs.isEmpty) return;
-    final allDone = _pairs.every(
-      (p) => p.state == CandidatePairState.succeeded ||
-             p.state == CandidatePairState.failed,
-    );
-    if (!allDone) return;
 
-    if (_selectedPair != null) {
-      _setState(IceState.iceConnected);
-    } else {
+    // A pair being selected is what transitions us to iceConnected — that
+    // happens in [_selectPair], not here.  This method only decides when
+    // to give up.  For the controlled agent in particular, a succeeded-
+    // but-not-yet-nominated pair must NOT cause a failed transition,
+    // because the USE-CANDIDATE request from the controlling agent may
+    // still be in flight (RFC 8445 §7.3.1.5).  We therefore only declare
+    // failure when every pair has terminally failed — a succeeded pair is
+    // proof of bidirectional reachability and we should wait for the
+    // controlling agent to nominate it.
+    final allFailed = _pairs
+        .every((p) => p.state == CandidatePairState.failed);
+    if (allFailed && _selectedPair == null) {
       _setState(IceState.iceFailed);
     }
   }
@@ -578,6 +596,11 @@ final class IceStateMachine implements ProtocolStateMachine {
   void _selectPair(CandidatePair pair) {
     if (_selectedPair == null || pair.priority > _selectedPair!.priority) {
       _selectedPair = pair;
+      // First nomination immediately concludes connectivity checking
+      // (RFC 8445 §8.1.1).  Don't wait for in-progress pairs to time out.
+      if (_state == IceState.iceChecking) {
+        _setState(IceState.iceConnected);
+      }
     }
   }
 

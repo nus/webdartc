@@ -29,8 +29,14 @@ final class TransportController {
 
   final _timers = <String, Timer>{};
 
+  /// Monotonic clock for transport-cc arrival timestamps.  Stopwatch uses
+  /// clock_gettime(CLOCK_MONOTONIC) — immune to NTP adjustments and wall-
+  /// clock jumps that DateTime.now() is subject to.
+  final Stopwatch _arrivalClock = Stopwatch()..start();
+
   /// Called when an RTP packet is decrypted (SRTP → RTP).
-  void Function(Uint8List)? onRtp;
+  /// The [int] parameter is the monotonic arrival timestamp in microseconds.
+  void Function(Uint8List, int arrivalUs)? onRtp;
 
   /// Called when an RTCP packet is decrypted (SRTCP → RTCP).
   void Function(Uint8List)? onRtcp;
@@ -98,6 +104,24 @@ final class TransportController {
     _sctp = sctp;
   }
 
+  /// Start the DTLS handshake, sending the initial flight and scheduling
+  /// the retransmit timer.  Must be called after ICE reaches connected.
+  void startDtlsHandshake({
+    required String remoteIp,
+    required int remotePort,
+  }) {
+    final dtls = _dtls;
+    if (dtls == null) return;
+    final result = dtls.startHandshake(
+      remoteIp: remoteIp,
+      remotePort: remotePort,
+    );
+    if (result.isOk) {
+      _sendOutputPackets(result.value.outputPackets);
+      _scheduleTimeout(result.value.nextTimeout, 'dtls-retransmit');
+    }
+  }
+
   // ── Packet sending ────────────────────────────────────────────────────────
 
   void sendRtp(Uint8List rtpBytes) {
@@ -128,6 +152,8 @@ final class TransportController {
 
   void _onEvent(RawSocketEvent event) {
     if (event != RawSocketEvent.read) return;
+    // Record arrival timestamp immediately, before any processing.
+    final arrivalUs = _arrivalClock.elapsedMicroseconds;
     final datagram = _socket?.receive();
     if (datagram == null) return;
 
@@ -144,10 +170,10 @@ final class TransportController {
       }
     }
 
-    _dispatch(data, remoteIp, remotePort);
+    _dispatch(data, arrivalUs, remoteIp, remotePort);
   }
 
-  void _dispatch(Uint8List data, String remoteIp, int remotePort) {
+  void _dispatch(Uint8List data, int arrivalUs, String remoteIp, int remotePort) {
     if (data.isEmpty) return;
     final firstByte = data[0];
 
@@ -158,7 +184,7 @@ final class TransportController {
       _processDtls(data, remoteIp, remotePort);
     } else if (firstByte >= 128 && firstByte <= 191) {
       // RTP or RTCP
-      _processSrtp(data, remoteIp, remotePort);
+      _processSrtp(data, arrivalUs, remoteIp, remotePort);
     }
     // Else: unknown — discard
   }
@@ -183,7 +209,7 @@ final class TransportController {
     }
   }
 
-  void _processSrtp(Uint8List data, String remoteIp, int remotePort) {
+  void _processSrtp(Uint8List data, int arrivalUs, String remoteIp, int remotePort) {
     final srtp = _srtp;
     if (srtp == null) return;
 
@@ -197,7 +223,7 @@ final class TransportController {
     } else {
       final decResult = srtp.decryptRtp(data);
       if (decResult.isOk) {
-        onRtp?.call(decResult.value);
+        onRtp?.call(decResult.value, arrivalUs);
       } else if (_debug) {
         stderr.writeln('[transport] SRTP decrypt failed: ${decResult.error} len=${data.length}'
             ' b0=0x${data[0].toRadixString(16)}');
@@ -262,7 +288,6 @@ final class TransportController {
       if (_debug) {
         stderr.writeln('[transport] TX ${data.length}b to $ip:$port'
             ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
-        // Hex dump STUN packets (binding requests and responses)
         if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
           final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
           stderr.writeln('[transport] TX hex: $hex');

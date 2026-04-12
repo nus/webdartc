@@ -387,22 +387,18 @@ abstract final class SdpBuilder {
             for (final fmtp in rm.getAll('fmtp')) {
               if (fmtp.startsWith('$pt ')) rawAttrs.add('fmtp:$fmtp');
             }
-            // Copy rtcp-fb for this PT.
-            // Exclude transport-cc: our transport-cc feedback arrival timestamps
-            // include event-loop processing jitter that Chrome's GoogCC interprets
-            // as congestion, causing BWE to drop. Use REMB-based BWE instead.
+            // Copy rtcp-fb for this PT (including transport-cc).
             for (final fb in rm.getAll('rtcp-fb')) {
-              if (fb.startsWith('$pt ') && !fb.contains('transport-cc')) {
+              if (fb.startsWith('$pt ')) {
                 rawAttrs.add('rtcp-fb:$fb');
               }
             }
           }
         }
 
-        // Copy extmap lines from offer.
-        // Exclude transport-wide-cc (see transport-cc note above).
+        // Copy extmap lines from offer (including transport-wide-cc).
         for (final extmap in rm.getAll('extmap')) {
-          if (!extmap.contains('transport-wide-cc')) rawAttrs.add('extmap:$extmap');
+          rawAttrs.add('extmap:$extmap');
         }
 
         if (selectedFormats.isEmpty) {
