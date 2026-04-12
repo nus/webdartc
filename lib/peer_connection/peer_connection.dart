@@ -98,10 +98,6 @@ final class PeerConnection {
   int _twccExtId = 0; // extension ID from SDP (0 = not negotiated)
   final List<_TwccEntry> _twccRecvLog = [];
   int _twccFbCount = 0;
-  // Monotonic clock for transport-cc arrival timestamps.  Stopwatch uses
-  // clock_gettime(CLOCK_MONOTONIC) — immune to NTP adjustments and wall-
-  // clock jumps that DateTime.now() is subject to.
-  final Stopwatch _twccClock = Stopwatch()..start();
 
   // Stream controllers
   final _iceCandidateController =
@@ -720,7 +716,7 @@ final class PeerConnection {
 
   // ── RTP/RTCP handling ──────────────────────────────────────────────────────
 
-  void _onRtpReceived(Uint8List data) {
+  void _onRtpReceived(Uint8List data, int arrivalUs) {
     final result = RtpParser.parseRtp(data);
     if (result.isErr) return;
     final rtp = result.value;
@@ -738,7 +734,7 @@ final class PeerConnection {
         for (final ext in elements) {
           if (ext.id == _twccExtId && ext.data.length >= 2) {
             final twccSeq = (ext.data[0] << 8) | ext.data[1];
-            _twccRecvLog.add(_TwccEntry(twccSeq, _twccClock.elapsedMicroseconds));
+            _twccRecvLog.add(_TwccEntry(twccSeq, arrivalUs));
             if (_debug && _twccRecvLog.length <= 3) {
               _log('[pc] twcc seq=$twccSeq (ext elements=${elements.length})');
             }
@@ -820,9 +816,7 @@ final class PeerConnection {
 
   void _startRtcpTimer() {
     _rtcpTimer?.cancel();
-    // Send RTCP RR every 1 second (RFC 3550 §6.2 recommends 5s, but Chrome
-    // needs faster feedback to start/sustain its video encoder).
-    // Send RTCP RR + transport-cc every 100ms for fast feedback
+    // Send RTCP RR + transport-cc every 100ms for fast feedback.
     _rtcpTimer = Timer.periodic(const Duration(milliseconds: 100), (_) => _sendRtcpRR());
     Future<void>.delayed(const Duration(milliseconds: 50), _sendRtcpRR);
   }
@@ -900,7 +894,7 @@ final class PeerConnection {
       }).toList();
       if (remoteSsrcs.isNotEmpty) {
         compound.addAll(RtcpRemb(
-          senderSsrc: _localRtcpSsrc,
+          senderSsrc: compoundSsrc,
           bitrate: 10000000, // 10 Mbps
           mediaSsrcs: remoteSsrcs,
         ).build());
@@ -929,15 +923,28 @@ final class PeerConnection {
       if (_debug) _log('[pc] PLI+FIR for ssrcs=$_pendingPliSsrcs (sender=$compoundSsrc)');
     }
 
-    // Transport-cc feedback
-    final ccBytes = _buildTransportCcFeedback();
-    if (ccBytes != null) compound.addAll(ccBytes);
+    // Transport-cc feedback — use a consistent known SSRC so Chrome's
+    // transport-cc processor always matches it to our session.
+    final videoSender = _transceivers
+        .where((t) => t.kind == 'video' && t.sender != null)
+        .map((t) => t.sender!)
+        .firstOrNull;
+    if (videoSender != null) {
+      // mediaSsrc: Chrome expects the SSRC of the media stream being fed
+      // back, despite the spec saying 0. Use first known remote video SSRC.
+      final remoteVideoSsrc = _receivers.entries
+          .where((e) => e.value.kind == 'video')
+          .map((e) => e.key)
+          .firstOrNull ?? _rtpRecvStats.keys.firstOrNull ?? 0;
+      final ccBytes = _buildTransportCcFeedback(videoSender.ssrc, remoteVideoSsrc);
+      if (ccBytes != null) compound.addAll(ccBytes);
+    }
 
     _transport.sendRtp(srtp.encryptRtcp(Uint8List.fromList(compound)));
     if (_debug) _log('[pc] sent compound RTCP (${compound.length}b): RR(${blocks.length})');
   }
 
-  Uint8List? _buildTransportCcFeedback() {
+  Uint8List? _buildTransportCcFeedback(int senderSsrc, int mediaSsrc) {
     if (_twccRecvLog.isEmpty) return null;
 
     // Consume all pending entries
@@ -977,8 +984,8 @@ final class PeerConnection {
     }
 
     final fb = RtcpTransportCc(
-      senderSsrc: _localRtcpSsrc,
-      mediaSsrc: 0, // always 0 for transport-wide CC
+      senderSsrc: senderSsrc,
+      mediaSsrc: mediaSsrc,
       baseSeq: baseSeq,
       referenceTimeMs: referenceTimeMs,
       fbPktCount: _twccFbCount & 0xFF,
@@ -987,7 +994,16 @@ final class PeerConnection {
     _twccFbCount++;
 
     final rawFb = fb.build();
-    if (_debug) _log('[pc] transport-cc fb: base=$baseSeq count=$statusCount recv=${seqs.length}');
+    if (_debug) {
+      final deltaStr = deltas.map((d) => d == null ? '_' : '${d ~/ 1000}ms').join(',');
+      _log('[pc] twcc fb: base=$baseSeq count=$statusCount recv=${seqs.length} '
+          'ref=${referenceTimeMs}ms ssrc=$senderSsrc deltas=[$deltaStr]');
+      // Hex dump first 3 feedback packets for format verification.
+      if (_twccFbCount <= 3) {
+        final hex = rawFb.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+        _log('[pc] twcc hex (${rawFb.length}b): $hex');
+      }
+    }
     return rawFb;
   }
 

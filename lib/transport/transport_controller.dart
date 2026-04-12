@@ -1,6 +1,7 @@
 // ignore_for_file: unawaited_futures
 import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import '../core/state_machine.dart';
@@ -11,41 +12,115 @@ import '../sctp/state_machine.dart';
 import '../srtp/context.dart';
 import '../stun/parser.dart';
 
+/// Top-level entry point for the UDP receive isolate.
+///
+/// Runs a dedicated event loop that only handles socket I/O and timestamping.
+/// This eliminates event-loop jitter from SRTP decryption, RTP parsing, and
+/// GC pauses in the main isolate — critical for accurate transport-cc
+/// timestamps that Chrome's GoogCC uses for bandwidth estimation.
+void _udpIsolateEntry(List<dynamic> args) async {
+  final sendToMain = args[0] as SendPort;
+  final port = args[1] as int;
+
+  final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
+  final clock = Stopwatch()..start();
+
+  // Receive channel for send requests from main isolate.
+  final recvFromMain = ReceivePort();
+  // Notify main isolate: ready with our SendPort and actual bound port.
+  sendToMain.send(['ready', recvFromMain.sendPort, socket.port]);
+
+  // Handle send requests and close command from main isolate.
+  recvFromMain.listen((msg) {
+    if (msg is List && msg[0] == 'send') {
+      final data = msg[1] as Uint8List;
+      final ip = msg[2] as String;
+      final destPort = msg[3] as int;
+      try {
+        final addr = InternetAddress.tryParse(ip);
+        if (addr != null && addr.type != InternetAddressType.IPv6) {
+          socket.send(data, addr, destPort);
+        }
+      } catch (_) {}
+    } else if (msg == 'close') {
+      socket.close();
+      recvFromMain.close();
+      Isolate.exit();
+    }
+  });
+
+  // Receive loop — record timestamp immediately on event delivery.
+  socket.listen((event) {
+    if (event != RawSocketEvent.read) return;
+    final timestampUs = clock.elapsedMicroseconds;
+    final datagram = socket.receive();
+    if (datagram == null) return;
+    sendToMain
+        .send([datagram.data, timestampUs, datagram.address.address, datagram.port]);
+  });
+}
+
 /// The only module in webdartc that uses dart:io.
 ///
-/// Owns a [RawDatagramSocket] and dispatches incoming packets to the correct
-/// state machine. Drives timers on behalf of all protocol modules.
+/// Owns a UDP socket (via a dedicated [Isolate]) and dispatches incoming
+/// packets to the correct state machine. Drives timers on behalf of all
+/// protocol modules.
 final class TransportController {
-  RawDatagramSocket? _socket;
+  SendPort? _isolateSendPort;
+  ReceivePort? _recvPort;
+  int _localPort = 0;
 
   IceStateMachine? _ice;
   DtlsStateMachine? _dtls;
   SrtpContext? _srtp;
   SctpStateMachine? _sctp;
 
-  int get localPort => _socket?.port ?? 0;
+  int get localPort => _localPort;
   String _localAddress = '0.0.0.0';
   String get localAddress => _localAddress;
 
   final _timers = <String, Timer>{};
 
   /// Called when an RTP packet is decrypted (SRTP → RTP).
-  void Function(Uint8List)? onRtp;
+  /// The [int] parameter is the monotonic arrival timestamp in microseconds,
+  /// recorded in the receive isolate before any processing delay.
+  void Function(Uint8List, int arrivalUs)? onRtp;
 
   /// Called when an RTCP packet is decrypted (SRTCP → RTCP).
   void Function(Uint8List)? onRtcp;
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-  /// Bind to a UDP port and start receiving packets.
+  /// Bind to a UDP port (in a dedicated isolate) and start receiving packets.
   ///
   /// If [candidateAddress] is provided, it's used as the local address for
   /// ICE candidates (e.g. '127.0.0.1' for loopback testing, or a LAN IP).
   /// If null, auto-detects a suitable local IPv4 address.
   Future<void> start({int port = 0, String? candidateAddress}) async {
-    _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
-    _socket!.listen(_onEvent);
+    final recvFromIsolate = ReceivePort();
+    final completer = Completer<void>();
+
+    await Isolate.spawn(_udpIsolateEntry, [recvFromIsolate.sendPort, port]);
+
+    recvFromIsolate.listen((msg) {
+      if (msg is List && msg[0] == 'ready') {
+        _isolateSendPort = msg[1] as SendPort;
+        _localPort = msg[2] as int;
+        completer.complete();
+      } else if (msg is List && msg[0] is Uint8List) {
+        // Received packet: [data, timestampUs, ip, port]
+        _onIsolatePacket(
+          msg[0] as Uint8List,
+          msg[1] as int,
+          msg[2] as String,
+          msg[3] as int,
+        );
+      }
+    });
+
+    _recvPort = recvFromIsolate;
     _localAddress = candidateAddress ?? await _findLocalIpv4();
+    await completer.future;
   }
 
   static Future<String> _findLocalIpv4() async {
@@ -76,8 +151,10 @@ final class TransportController {
       timer.cancel();
     }
     _timers.clear();
-    _socket?.close();
-    _socket = null;
+    _isolateSendPort?.send('close');
+    _isolateSendPort = null;
+    _recvPort?.close();
+    _recvPort = null;
   }
 
   // ── Module attachment ─────────────────────────────────────────────────────
@@ -144,15 +221,8 @@ final class TransportController {
   // Debug logging — set WEBDARTC_DEBUG=1 env var to trace packet flow.
   static final bool _debug = Platform.environment['WEBDARTC_DEBUG'] == '1';
 
-  void _onEvent(RawSocketEvent event) {
-    if (event != RawSocketEvent.read) return;
-    final datagram = _socket?.receive();
-    if (datagram == null) return;
-
-    final data = datagram.data;
-    final remoteIp = datagram.address.address;
-    final remotePort = datagram.port;
-
+  /// Called on the main isolate when a packet arrives from the receive isolate.
+  void _onIsolatePacket(Uint8List data, int arrivalUs, String remoteIp, int remotePort) {
     if (_debug) {
       stderr.writeln('[transport] RX ${data.length}b from $remoteIp:$remotePort'
           ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
@@ -162,10 +232,10 @@ final class TransportController {
       }
     }
 
-    _dispatch(data, remoteIp, remotePort);
+    _dispatch(data, arrivalUs, remoteIp, remotePort);
   }
 
-  void _dispatch(Uint8List data, String remoteIp, int remotePort) {
+  void _dispatch(Uint8List data, int arrivalUs, String remoteIp, int remotePort) {
     if (data.isEmpty) return;
     final firstByte = data[0];
 
@@ -176,7 +246,7 @@ final class TransportController {
       _processDtls(data, remoteIp, remotePort);
     } else if (firstByte >= 128 && firstByte <= 191) {
       // RTP or RTCP
-      _processSrtp(data, remoteIp, remotePort);
+      _processSrtp(data, arrivalUs, remoteIp, remotePort);
     }
     // Else: unknown — discard
   }
@@ -201,7 +271,7 @@ final class TransportController {
     }
   }
 
-  void _processSrtp(Uint8List data, String remoteIp, int remotePort) {
+  void _processSrtp(Uint8List data, int arrivalUs, String remoteIp, int remotePort) {
     final srtp = _srtp;
     if (srtp == null) return;
 
@@ -215,7 +285,7 @@ final class TransportController {
     } else {
       final decResult = srtp.decryptRtp(data);
       if (decResult.isOk) {
-        onRtp?.call(decResult.value);
+        onRtp?.call(decResult.value, arrivalUs);
       } else if (_debug) {
         stderr.writeln('[transport] SRTP decrypt failed: ${decResult.error} len=${data.length}'
             ' b0=0x${data[0].toRadixString(16)}');
@@ -268,25 +338,28 @@ final class TransportController {
   }
 
   void _sendUdp(Uint8List data, String ip, int port) {
+    final sendPort = _isolateSendPort;
+    if (sendPort == null) return;
     try {
-      var addr = InternetAddress.tryParse(ip);
+      final addr = InternetAddress.tryParse(ip);
       if (addr == null) {
         // Check DNS cache for hostname (async resolution happens in _sendOutputPackets).
-        addr = _dnsCache[ip];
-        if (addr == null) return;
+        final cached = _dnsCache[ip];
+        if (cached == null) return;
+        ip = cached.address;
+      } else if (addr.type == InternetAddressType.IPv6) {
+        // Skip IPv6 destinations.
+        return;
       }
-      // Skip IPv6 destinations on IPv4-only sockets.
-      if (addr.type == InternetAddressType.IPv6) return;
       if (_debug) {
         stderr.writeln('[transport] TX ${data.length}b to $ip:$port'
             ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
-        // Hex dump STUN packets (binding requests and responses)
         if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
           final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
           stderr.writeln('[transport] TX hex: $hex');
         }
       }
-      _socket?.send(data, addr, port);
+      sendPort.send(['send', data, ip, port]);
     } catch (_) {
       // Network errors are non-fatal in UDP
     }
