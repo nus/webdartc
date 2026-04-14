@@ -1,2 +1,4 @@
 .dart_tool
-.local.claude
+.local
+.claude
+pubspec.lock
