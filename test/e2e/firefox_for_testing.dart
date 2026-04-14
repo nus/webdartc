@@ -9,6 +9,7 @@
 ///   GeckoDriver:      https://api.github.com/repos/mozilla/geckodriver/releases/latest
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -29,6 +30,8 @@ class FirefoxForTesting {
   late final String version;
   late final Process _geckodriverProcess;
   late final int geckodriverPort;
+  final List<StreamSubscription<ProcessSignal>> _signalSubs = [];
+  bool _disposed = false;
 
   FirefoxForTesting._();
 
@@ -54,6 +57,12 @@ class FirefoxForTesting {
 
   /// Kill the GeckoDriver process.
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    for (final s in _signalSubs) {
+      s.cancel();
+    }
+    _signalSubs.clear();
     _geckodriverProcess.kill();
   }
 
@@ -178,6 +187,18 @@ class FirefoxForTesting {
       geckodriverPath,
       ['--port=$geckodriverPort', '--log=warn'],
     );
+
+    // Ensure geckodriver (and its Firefox child) are killed if the test
+    // process is interrupted (Ctrl-C, SIGTERM from test runner timeout,
+    // etc.). Without this, geckodriver orphans leak their Firefox child.
+    void handleSignal(ProcessSignal sig) {
+      dispose();
+      exit(sig == ProcessSignal.sigint ? 130 : 143);
+    }
+    _signalSubs.add(ProcessSignal.sigint.watch().listen(handleSignal));
+    if (!Platform.isWindows) {
+      _signalSubs.add(ProcessSignal.sigterm.watch().listen(handleSignal));
+    }
 
     // Drain output to prevent pipe deadlock.
     _geckodriverProcess.stdout.listen((_) {});
