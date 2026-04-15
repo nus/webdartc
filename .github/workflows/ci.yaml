@@ -8,19 +8,29 @@ on:
     branches: [main]
 
 jobs:
-  analyze:
-    name: Analyze
+  # ── dart (pure Dart) ──────────────────────────────────────────────────
+  # Resolve the dart package standalone (drop root workspace pubspec + the
+  # member's `resolution: workspace` line) so the Dart-only jobs don't need
+  # Flutter.
+  dart-analyze:
+    name: dart / Analyze
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
-      - run: dart pub get
-      - run: dart analyze --fatal-infos
+      - name: Detach from workspace
+        run: |
+          rm -f pubspec.yaml
+          sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
+      - working-directory: dart
+        run: dart pub get
+      - working-directory: dart
+        run: dart analyze --fatal-infos
 
-  test-unit:
-    name: Unit Tests (${{ matrix.os }})
+  dart-test-unit:
+    name: dart / Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -31,21 +41,63 @@ jobs:
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
-      - name: Install OpenSSL (Linux)
-        if: runner.os == 'Linux'
+      - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
-      - run: dart pub get
-      - run: dart test --exclude-tags e2e --timeout=60s
+      - name: Detach from workspace
+        run: |
+          rm -f pubspec.yaml
+          sed -i '' -e '/^resolution: workspace$/d' dart/pubspec.yaml 2>/dev/null \
+            || sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
+      - working-directory: dart
+        run: dart pub get
+      - working-directory: dart
+        run: dart test --exclude-tags e2e --timeout=60s
 
-  test-e2e:
-    name: E2E Tests
+  dart-test-e2e:
+    name: dart / E2E Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
-      - name: Install OpenSSL
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: Detach from workspace
+        run: |
+          rm -f pubspec.yaml
+          sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
+      - working-directory: dart
+        run: dart pub get
+      - working-directory: dart
+        run: dart test test/e2e/ --timeout=120s
+
+  # ── flutter (Flutter) ─────────────────────────────────────────────────
+  flutter-analyze:
+    name: flutter / Analyze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - working-directory: flutter
+        run: flutter analyze --fatal-infos
+
+  flutter-test:
+    name: flutter / Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
-      - run: dart pub get
-      - run: dart test test/e2e/ --timeout=120s
+      - run: flutter pub get
+      - working-directory: flutter
+        run: flutter test
