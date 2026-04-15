@@ -13,7 +13,7 @@ dependencies:
   flutter:
     sdk: flutter
   webdartc:
-    path: ../webdartc
+    path: ../dart
 
 dev_dependencies:
   flutter_test:
