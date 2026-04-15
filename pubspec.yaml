@@ -6,4 +6,4 @@ environment:
 
 workspace:
   - dart
-  - webdartc_flutter
+  - flutter
