@@ -14,189 +14,37 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:convert' show LineSplitter;
 
 import 'package:test/test.dart';
 
+import 'cdp_browser.dart';
 import 'chrome_for_testing.dart';
 import 'signaling_server/signaling_server.dart';
 import 'udp_proxy/udp_proxy.dart';
 
-// ── CDP (Chrome DevTools Protocol) browser controller ─────────────────────────
+/// Chrome flags this suite requires on top of [CdpBrowser.create] defaults:
+/// fake media devices for getUserMedia, and verbose WebRTC logging for
+/// diagnostics on failure.
+const _scenarioChromeFlags = [
+  '--use-fake-device-for-media-stream',
+  '--use-fake-ui-for-media-stream',
+  '--enable-logging=stderr',
+  '--v=1',
+  '--vmodule=*p2p*=5,*stun*=5,*ice*=5,*dtls*=3',
+];
 
-/// Thin CDP client — launches Chrome directly with --remote-debugging-port,
-/// controls it via WebSocket. No chromedriver required.
-final class CdpBrowser {
-  final Process _process;
-  final WebSocket _ws;
-  int _nextId = 0;
-  final Map<int, Completer<Map<String, dynamic>>> _pending = {};
-
-  CdpBrowser._(this._process, this._ws) {
-    _ws.listen(
-      (data) {
-        try {
-          final msg = jsonDecode(data as String) as Map<String, dynamic>;
-          final id = msg['id'] as int?;
-          if (id != null && _pending.containsKey(id)) {
-            _pending.remove(id)!.complete(msg);
-          }
-        } catch (_) {
-          // Ignore CDP events and non-JSON messages.
-        }
-      },
-      onError: (_) {},
-    );
-  }
-
-  static Future<CdpBrowser> create(
-    ChromeForTesting cft, {
-    List<String> extraArgs = const [],
-  }) async {
-    final (proc, debugPort) = await cft.launchChrome(extraArgs: [
-      '--headless=new',
-      '--no-sandbox',
-      '--use-fake-device-for-media-stream',
-      '--use-fake-ui-for-media-stream',
-      '--allow-loopback-in-peer-connection',
-      '--network-service-in-process',
-      '--enable-logging=stderr',
-      '--v=1',
-      '--vmodule=*p2p*=5,*stun*=5,*ice*=5,*dtls*=3',
-      ...extraArgs,
-    ]);
-
-    // Drain Chrome's stdout/stderr to prevent pipe buffer deadlock.
-    // With verbose WebRTC logging, Chrome produces large amounts of output.
-    proc.stdout.listen((_) {});
-    proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(
-      (line) {
-        if (line.contains('ERROR') || line.contains('FATAL')) {
-          // ignore: avoid_print
-          print('[chrome-err] $line');
-        }
-      },
-    );
-
-    // Get the page target's WebSocket debugger URL.
-    String wsUrl;
-    final client = HttpClient();
-    try {
-      // Retry a few times — Chrome may not have the page target ready yet.
-      List<dynamic> targets = [];
-      for (var i = 0; i < 30; i++) {
-        try {
-          final req = await client
-              .getUrl(Uri.parse('http://127.0.0.1:$debugPort/json/list'));
-          final resp = await req.close();
-          final body = await resp.transform(utf8.decoder).join();
-          targets = jsonDecode(body) as List<dynamic>;
-          if (targets.any((t) =>
-              (t as Map<String, dynamic>)['type'] == 'page')) {
-            break;
-          }
-        } catch (_) {
-          // not ready yet
-        }
-        await Future<void>.delayed(const Duration(milliseconds: 200));
+/// Launches a browser with this suite's required flags and attaches a
+/// stderr listener that surfaces ERROR/FATAL lines.
+Future<CdpBrowser> _launchScenarioBrowser(ChromeForTesting cft) {
+  return CdpBrowser.create(
+    cft,
+    extraArgs: _scenarioChromeFlags,
+    onStderrLine: (line) {
+      if (line.contains('ERROR') || line.contains('FATAL')) {
+        // ignore: avoid_print
+        print('[chrome-err] $line');
       }
-
-      final page = targets.firstWhere(
-        (t) => (t as Map<String, dynamic>)['type'] == 'page',
-        orElse: () => throw StateError(
-            'No page target found at http://127.0.0.1:$debugPort/json/list'),
-      ) as Map<String, dynamic>;
-      wsUrl = page['webSocketDebuggerUrl'] as String;
-    } finally {
-      client.close();
-    }
-
-    final ws = await WebSocket.connect(wsUrl);
-    final browser = CdpBrowser._(proc, ws);
-
-    // Enable Page domain for navigation.
-    await browser._send('Page.enable');
-
-    return browser;
-  }
-
-  Future<Map<String, dynamic>> _send(String method,
-      [Map<String, dynamic>? params]) {
-    final id = ++_nextId;
-    final completer = Completer<Map<String, dynamic>>();
-    _pending[id] = completer;
-    _ws.add(jsonEncode({
-      'id': id,
-      'method': method,
-      if (params != null) 'params': params,
-    }));
-    return completer.future
-        .timeout(const Duration(seconds: 10), onTimeout: () {
-      _pending.remove(id);
-      throw TimeoutException('CDP command $method (id=$id) timed out');
-    });
-  }
-
-  Future<void> navigateTo(String url) async {
-    await _send('Page.navigate', {'url': url});
-    // Wait briefly for page load.
-    await Future<void>.delayed(const Duration(milliseconds: 500));
-  }
-
-  /// Execute a synchronous script and return its result.
-  /// Scripts use WebDriver-style `arguments[0]` parameter access and `return`.
-  Future<dynamic> executeScript(String script,
-      [List<dynamic> args = const []]) async {
-    // Wrap the script body in a function that receives arguments, matching
-    // the WebDriver /execute/sync calling convention.
-    final argsJson = jsonEncode(args);
-    final expression =
-        '(function() { $script }).apply(null, $argsJson)';
-    final result = await _send('Runtime.evaluate', {
-      'expression': expression,
-      'returnByValue': true,
-      'awaitPromise': false,
-    });
-    final res = result['result'] as Map<String, dynamic>;
-    if (res.containsKey('exceptionDetails')) {
-      throw Exception('Script error: ${res['exceptionDetails']}');
-    }
-    final value = res['result'] as Map<String, dynamic>;
-    return value['value'];
-  }
-
-  Future<void> quit() async {
-    try {
-      await _send('Browser.close');
-    } catch (_) {
-      // Browser may already be closing.
-    }
-    await _ws.close();
-    _process.kill();
-  }
-}
-
-// ── Poll helper ───────────────────────────────────────────────────────────────
-
-/// Polls [condition] every [interval] until it returns true or [timeout] elapses.
-Future<void> waitFor(
-  Future<bool> Function() condition, {
-  Duration timeout = const Duration(seconds: 30),
-  Duration interval = const Duration(milliseconds: 500),
-}) async {
-  final deadline = DateTime.now().add(timeout);
-  while (DateTime.now().isBefore(deadline)) {
-    if (await condition()) return;
-    await Future<void>.delayed(interval);
-  }
-  throw TimeoutException('waitFor timed out after $timeout');
-}
-
-/// Reads window.__testState[key] from the browser page.
-Future<dynamic> browserState(CdpBrowser driver, String key) {
-  return driver.executeScript(
-    'var s = window.__testState || {}; return s[arguments[0]];',
-    [key],
+    },
   );
 }
 
@@ -238,7 +86,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -321,7 +169,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -393,7 +241,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -523,7 +371,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -607,7 +455,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -753,7 +601,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -832,7 +680,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -884,7 +732,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -932,7 +780,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -985,7 +833,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
@@ -1049,7 +897,7 @@ void main() {
       final (srv, port) = await serveHtml('test/e2e/browser_client/index.html');
       htmlServer = srv;
       htmlPort = port;
-      driver = await CdpBrowser.create(cft);
+      driver = await _launchScenarioBrowser(cft);
     });
 
     tearDown(() async {
