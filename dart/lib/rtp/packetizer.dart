@@ -143,6 +143,171 @@ final class Vp8Depacketizer implements VideoPayloadDepacketizer {
   }
 }
 
+// ── H.264 Packetizer (RFC 6184) ─────────────────────────────────────────────
+
+/// Splits an Annex B H.264 byte-stream into individual NAL units.
+///
+/// Start codes `00 00 01` or `00 00 00 01` delimit NAL units; this function
+/// strips them and returns the NAL payloads (including the NAL header byte).
+List<Uint8List> splitH264AnnexB(Uint8List data) {
+  final starts = <(int, int)>[]; // (payload_start, startcode_len)
+  var i = 0;
+  while (i <= data.length - 3) {
+    if (data[i] == 0 && data[i + 1] == 0) {
+      if (data[i + 2] == 1) {
+        starts.add((i + 3, 3));
+        i += 3;
+        continue;
+      }
+      if (i + 3 < data.length &&
+          data[i + 2] == 0 &&
+          data[i + 3] == 1) {
+        starts.add((i + 4, 4));
+        i += 4;
+        continue;
+      }
+    }
+    i++;
+  }
+  final nals = <Uint8List>[];
+  for (var k = 0; k < starts.length; k++) {
+    final start = starts[k].$1;
+    final end = k + 1 < starts.length
+        ? starts[k + 1].$1 - starts[k + 1].$2
+        : data.length;
+    if (end > start) nals.add(Uint8List.sublistView(data, start, end));
+  }
+  return nals;
+}
+
+/// H.264 RTP payload format packetizer (RFC 6184).
+///
+/// - Single NAL units that fit in [maxPayloadSize] are sent as-is (§5.4).
+/// - Larger NAL units are split using FU-A fragmentation (§5.8).
+/// - Marker=true is set on the RTP packet carrying the last fragment of the
+///   last NAL unit of the frame.
+final class H264Packetizer implements PayloadPacketizer {
+  final int maxPayloadSize;
+
+  H264Packetizer({this.maxPayloadSize = 1200});
+
+  @override
+  List<(Uint8List payload, bool marker)> packetize(
+    Uint8List encodedData, {
+    required bool isKeyFrame,
+  }) {
+    if (encodedData.isEmpty) return const [];
+    final nals = splitH264AnnexB(encodedData);
+    if (nals.isEmpty) return const [];
+
+    final packets = <(Uint8List, bool)>[];
+    for (var i = 0; i < nals.length; i++) {
+      final isLastNal = i == nals.length - 1;
+      final nal = nals[i];
+      if (nal.length <= maxPayloadSize) {
+        // Single NAL unit packet.
+        packets.add((Uint8List.fromList(nal), isLastNal));
+      } else {
+        // FU-A fragmentation.
+        final header = nal[0];
+        final fuIndicator = (header & 0xE0) | 28; // preserve F/NRI, type = FU-A
+        final nalType = header & 0x1F;
+        final body = Uint8List.sublistView(nal, 1);
+        final chunkSize = maxPayloadSize - 2; // minus FU ind + FU header
+        var off = 0;
+        var first = true;
+        while (off < body.length) {
+          final remaining = body.length - off;
+          final take = remaining > chunkSize ? chunkSize : remaining;
+          final last = (off + take) >= body.length;
+          final fuHeader =
+              (first ? 0x80 : 0) | (last ? 0x40 : 0) | nalType;
+          final pkt = Uint8List(2 + take);
+          pkt[0] = fuIndicator;
+          pkt[1] = fuHeader;
+          pkt.setRange(2, 2 + take, body, off);
+          packets.add((pkt, isLastNal && last));
+          off += take;
+          first = false;
+        }
+      }
+    }
+    return packets;
+  }
+}
+
+/// H.264 RTP payload format depacketizer (RFC 6184).
+///
+/// Reassembles Single NAL unit and FU-A packets into an Annex B byte-stream.
+/// STAP-A/B, MTAP, and interleaved modes are not supported.
+final class H264Depacketizer implements VideoPayloadDepacketizer {
+  static const _startCode = [0, 0, 0, 1];
+
+  final List<Uint8List> _nals = [];
+  final List<int> _fuBuffer = [];
+  int _fuHeaderByte = 0;
+  bool _fuStarted = false;
+
+  @override
+  EncodedVideoChunk? depacketize(Uint8List payload, {
+    required bool marker,
+    required int timestamp,
+  }) {
+    if (payload.isEmpty) return null;
+    final type = payload[0] & 0x1F;
+
+    if (type >= 1 && type <= 23) {
+      _nals.add(Uint8List.fromList(payload));
+    } else if (type == 28) {
+      if (payload.length < 2) return null;
+      final fuHeader = payload[1];
+      final start = (fuHeader & 0x80) != 0;
+      final end = (fuHeader & 0x40) != 0;
+      final nalType = fuHeader & 0x1F;
+      if (start) {
+        _fuBuffer.clear();
+        _fuHeaderByte = (payload[0] & 0xE0) | nalType;
+        _fuBuffer.add(_fuHeaderByte);
+        _fuStarted = true;
+      }
+      if (_fuStarted) {
+        _fuBuffer.addAll(payload.sublist(2));
+        if (end) {
+          _nals.add(Uint8List.fromList(_fuBuffer));
+          _fuBuffer.clear();
+          _fuStarted = false;
+        }
+      }
+    }
+    // STAP-A/B (24/25), MTAP (26/27), FU-B (29) — unsupported; silently skip.
+
+    if (!marker) return null;
+
+    var isKey = false;
+    var size = 0;
+    for (final n in _nals) {
+      size += _startCode.length + n.length;
+      final t = n[0] & 0x1F;
+      if (t == 5) isKey = true; // IDR slice
+    }
+    final out = Uint8List(size);
+    var w = 0;
+    for (final n in _nals) {
+      out.setRange(w, w + _startCode.length, _startCode);
+      w += _startCode.length;
+      out.setRange(w, w + n.length, n);
+      w += n.length;
+    }
+    _nals.clear();
+
+    return EncodedVideoChunk(
+      type: isKey ? EncodedVideoChunkType.key : EncodedVideoChunkType.delta,
+      timestamp: timestamp,
+      data: out,
+    );
+  }
+}
+
 // ── Opus Packetizer (RFC 7587) ──────────────────────────────────────────────
 
 /// Opus RTP payload packetizer (RFC 7587).

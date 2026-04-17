@@ -52,6 +52,32 @@ final class SessionDescription {
 
 enum SessionDescriptionType { offer, pranswer, answer, rollback }
 
+/// Returns the default [RtpCodec] for a given video codec name, or null if
+/// the library does not have a built-in entry for it.
+RtpCodec? _videoCodecByName(String name) {
+  switch (name.toUpperCase()) {
+    case 'VP8':
+      return const RtpCodec(
+        payloadType: 96,
+        name: 'VP8',
+        clockRate: 90000,
+        rtcpFb: ['nack', 'nack pli', 'ccm fir', 'goog-remb'],
+      );
+    case 'H264':
+      // Constrained Baseline 3.1 — maximum Chrome/Firefox interop.
+      return const RtpCodec(
+        payloadType: 102,
+        name: 'H264',
+        clockRate: 90000,
+        fmtpParams:
+            'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+        rtcpFb: ['nack', 'nack pli', 'ccm fir', 'goog-remb'],
+      );
+    default:
+      return null;
+  }
+}
+
 /// WebRTC PeerConnection (W3C API without "RTC" prefix).
 ///
 /// Maps to W3C RTCPeerConnection.
@@ -160,10 +186,12 @@ final class PeerConnection {
                 fmtpParams: 'minptime=10;useinbandfec=1'),
           ]);
         } else {
-          return MediaTrack(type: 'video', direction: t.direction, codecs: [
-            const RtpCodec(payloadType: 96, name: 'VP8', clockRate: 90000,
-                rtcpFb: ['nack', 'nack pli', 'ccm fir', 'goog-remb']),
-          ]);
+          final names = t.preferredCodecs ?? const ['VP8'];
+          final codecs = names
+              .map(_videoCodecByName)
+              .whereType<RtpCodec>()
+              .toList();
+          return MediaTrack(type: 'video', direction: t.direction, codecs: codecs);
         }
       }).toList();
       sdp = SdpBuilder.buildMediaSdp(
@@ -383,8 +411,15 @@ final class PeerConnection {
   }
 
   /// Add a media transceiver (audio or video).
-  void addTransceiver(String kind, {String direction = 'sendrecv'}) {
-    final t = _MediaTransceiver(kind: kind, direction: direction);
+  ///
+  /// [preferredCodecs] is an ordered list of codec names (e.g. `['H264', 'VP8']`)
+  /// to offer, in preference order. If null, a library default is used.
+  void addTransceiver(String kind, {
+    String direction = 'sendrecv',
+    List<String>? preferredCodecs,
+  }) {
+    final t = _MediaTransceiver(
+      kind: kind, direction: direction, preferredCodecs: preferredCodecs);
     // Create sender if direction includes sending
     if (direction == 'sendrecv' || direction == 'sendonly') {
       final pt = kind == 'audio' ? 111 : 96;
@@ -1062,6 +1097,11 @@ final class _TwccEntry {
 final class _MediaTransceiver {
   final String kind; // 'audio' or 'video'
   final String direction; // 'sendrecv', 'recvonly', 'sendonly', 'inactive'
+  final List<String>? preferredCodecs;
   RtpSender? sender;
-  _MediaTransceiver({required this.kind, this.direction = 'sendrecv'});
+  _MediaTransceiver({
+    required this.kind,
+    this.direction = 'sendrecv',
+    this.preferredCodecs,
+  });
 }

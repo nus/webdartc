@@ -61,8 +61,11 @@ export 'media/audio_data.dart';
 export 'media/media_stream_track.dart';
 export 'media/media_stream.dart';
 export 'media/media_devices.dart';
+export 'media/fake_video_source.dart';
 
 // Codec (W3C WebCodecs)
 export 'codec/video_codec.dart';
 export 'codec/audio_codec.dart';
 export 'codec/codec_registry.dart';
+export 'codec/vp8/vp8_encoder_backend.dart';
+export 'codec/h264/h264_encoder_backend.dart';
