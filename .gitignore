@@ -1,2 +1,16 @@
 .dart_tool
 .local
+.claude
+pubspec.lock
+
+# Flutter build artifacts (plugin-level and example-level)
+flutter/build/
+
+# macOS / iOS plugin example generated files
+**/macos/Pods/
+**/macos/Flutter/ephemeral/
+**/macos/Flutter/GeneratedPluginRegistrant.swift
+**/ios/Pods/
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/Generated.xcconfig
+**/ios/Runner/GeneratedPluginRegistrant.*

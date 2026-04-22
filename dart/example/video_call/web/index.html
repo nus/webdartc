@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>webdartc video_call sample</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; margin: 20px; }
+    .videos { display: flex; gap: 16px; margin-top: 12px; }
+    .cell { display: flex; flex-direction: column; }
+    .cell label { font-size: 13px; color: #bbb; margin-bottom: 4px; font-family: Menlo, monospace; }
+    video { background: #000; border: 1px solid #444; display: block; }
+    #log { white-space: pre-wrap; font-size: 12px; color: #9c9; max-height: 200px; overflow: auto; border: 1px solid #333; padding: 8px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h2>webdartc video_call — browser peer</h2>
+  <p><b>local</b>: this browser's camera, sent to the remote peer (shown only with <code>?bidir=1</code>).<br>
+     <b>remote</b>: video received from the remote peer (Dart <code>sender.dart</code>, or the Flutter example).</p>
+  <p>Open with <code>?bidir=1</code> for two-way video; otherwise the page is receive-only.</p>
+  <div class="videos">
+    <div class="cell">
+      <label id="localLabel">local</label>
+      <video id="vlocal" autoplay playsinline muted width="320" height="240"></video>
+    </div>
+    <div class="cell">
+      <label>remote</label>
+      <video id="v" autoplay playsinline muted width="320" height="240"></video>
+    </div>
+  </div>
+  <pre id="log"></pre>
+<script type="module">
+'use strict';
+
+const log = (m) => {
+  console.log(m);
+  document.getElementById('log').textContent += m + '\n';
+};
+
+const params = new URLSearchParams(location.search);
+const bidir = params.get('bidir') === '1';
+log('mode: ' + (bidir ? 'sendrecv (bidir)' : 'recvonly'));
+
+const localLabel = document.getElementById('localLabel');
+const vlocal = document.getElementById('vlocal');
+
+const ws = new WebSocket('ws://' + location.host);
+const pc = new RTCPeerConnection({iceServers: []});
+
+// Local send (bidir only). When --use-fake-device-for-media-stream is set
+// on Chrome (E2E), getUserMedia returns a green-bar video source.
+let localStream = null;
+if (bidir) {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: {width: 320, height: 240, frameRate: 30},
+      audio: false,
+    });
+    for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
+    vlocal.srcObject = localStream;
+    try { await vlocal.play(); } catch (_) {}
+    localLabel.textContent = 'local (camera)';
+    log('local media added (tracks=' + localStream.getTracks().length + ')');
+  } catch (err) {
+    localLabel.textContent = 'local (getUserMedia failed)';
+    log('getUserMedia failed: ' + err + ' — falling back to recvonly');
+    pc.addTransceiver('video', {direction: 'recvonly'});
+  }
+} else {
+  localLabel.textContent = 'local (recvonly — append ?bidir=1)';
+  pc.addTransceiver('video', {direction: 'recvonly'});
+}
+
+pc.ontrack = (e) => {
+  log('ontrack kind=' + e.track.kind);
+  document.getElementById('v').srcObject = e.streams[0];
+};
+
+pc.onicecandidate = (e) => {
+  if (e.candidate) {
+    ws.send(JSON.stringify({
+      type: 'candidate',
+      candidate: {
+        candidate: e.candidate.candidate,
+        sdpMid: e.candidate.sdpMid,
+        sdpMLineIndex: e.candidate.sdpMLineIndex,
+      }
+    }));
+  }
+};
+
+pc.oniceconnectionstatechange = () => {
+  log('ICE: ' + pc.iceConnectionState);
+  window.__testState = window.__testState || {};
+  window.__testState.iceState = pc.iceConnectionState;
+};
+
+// Expose decode stats for automated testing.
+setInterval(async () => {
+  try {
+    const report = await pc.getStats();
+    for (const [, s] of report) {
+      if (s.type === 'inbound-rtp' && s.kind === 'video') {
+        window.__testState = window.__testState || {};
+        window.__testState.videoFramesDecoded = s.framesDecoded || 0;
+        window.__testState.videoBytesReceived = s.bytesReceived || 0;
+        window.__testState.videoPacketsReceived = s.packetsReceived || 0;
+      }
+    }
+  } catch (_) {}
+}, 500);
+
+ws.onopen = () => log('ws open');
+
+ws.onmessage = async (ev) => {
+  const msg = JSON.parse(ev.data);
+  log('signal: ' + msg.type);
+  if (msg.type === 'offer') {
+    await pc.setRemoteDescription({type: 'offer', sdp: msg.sdp});
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    ws.send(JSON.stringify({type: 'answer', sdp: answer.sdp}));
+  } else if (msg.type === 'candidate' && msg.candidate) {
+    try {
+      await pc.addIceCandidate(msg.candidate);
+    } catch (e) {
+      log('addIceCandidate error: ' + e);
+    }
+  }
+};
+</script>
+</body>
+</html>

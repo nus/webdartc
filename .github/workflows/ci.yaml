@@ -8,19 +8,29 @@ on:
     branches: [main]
 
 jobs:
-  analyze:
-    name: Analyze
+  # ── dart (pure Dart) ──────────────────────────────────────────────────
+  # Resolve the dart package standalone (drop root workspace pubspec + the
+  # member's `resolution: workspace` line) so the Dart-only jobs don't need
+  # Flutter.
+  dart-analyze:
+    name: dart / Analyze
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
-      - run: dart pub get
-      - run: dart analyze --fatal-infos
+      - name: Detach from workspace
+        run: |
+          rm -f pubspec.yaml
+          sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
+      - working-directory: dart
+        run: dart pub get
+      - working-directory: dart
+        run: dart analyze --fatal-infos
 
-  test-unit:
-    name: Unit Tests (${{ matrix.os }})
+  dart-test-unit:
+    name: dart / Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -31,21 +41,122 @@ jobs:
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
-      - name: Install OpenSSL (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
-      - run: dart pub get
-      - run: dart test --exclude-tags e2e --timeout=60s
+      - if: runner.os == 'Linux'
+        name: Install native codec libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev libvpx-dev libopenh264-dev
+      - name: Detach from workspace
+        run: |
+          rm -f pubspec.yaml
+          sed -i '' -e '/^resolution: workspace$/d' dart/pubspec.yaml 2>/dev/null \
+            || sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
+      - working-directory: dart
+        run: dart pub get
+      - working-directory: dart
+        # `dart test` runs the build hook (dart/hook/build.dart) on macOS to
+        # compile the VideoToolbox C helper. On Linux the hook is a no-op.
+        run: dart test --exclude-tags e2e --timeout=60s
 
-  test-e2e:
-    name: E2E Tests
+  dart-test-e2e-linux:
+    name: dart / E2E Tests (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
-      - name: Install OpenSSL
+      - name: Install native codec libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev libvpx-dev libopenh264-dev
+      - name: Detach from workspace
+        run: |
+          rm -f pubspec.yaml
+          sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
+      - working-directory: dart
+        run: dart pub get
+      - working-directory: dart
+        # Runs the sendonly video_call test with VP8 and H.264 (via OpenH264
+        # on Linux). The bidirectional test is @TestOn('mac-os') so skipped.
+        run: dart test test/e2e/ --timeout=180s
+
+  dart-test-e2e-macos:
+    name: dart / E2E Tests (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.11.0'
+      - name: Detach from workspace
+        run: |
+          rm -f pubspec.yaml
+          sed -i '' -e '/^resolution: workspace$/d' dart/pubspec.yaml
+      - working-directory: dart
+        run: dart pub get
+      - working-directory: dart
+        # VideoToolbox-only coverage: sendonly sample (H.264 via VT) +
+        # bidirectional (browser → VT decoder). Chrome for Testing on
+        # macOS has H.264 bundled.
+        run: |
+          dart test \
+            test/e2e/video_call_sample_test.dart \
+            test/e2e/video_call_bidir_test.dart \
+            --timeout=180s
+
+  # ── flutter (Flutter) ─────────────────────────────────────────────────
+  flutter-analyze:
+    name: flutter / Analyze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - working-directory: flutter
+        run: flutter analyze --fatal-infos
+
+  flutter-test:
+    name: flutter / Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
-      - run: dart pub get
-      - run: dart test test/e2e/ --timeout=120s
+      - run: flutter pub get
+      - working-directory: flutter
+        # Widget tests use a mock MethodChannel; native plugin code is not
+        # loaded so this passes on Linux too.
+        run: flutter test
+
+  # Build the macOS example app and run the browser ↔ Flutter
+  # bidirectional E2E test against it. The build step compiles the
+  # plugin's Swift code, runs pod install, and exercises the dart build
+  # hook that produces the VideoToolbox C helper. The E2E step then
+  # spawns the signaling server, Chrome with a fake camera, and the
+  # built Flutter app, and asserts frames flow in both directions.
+  flutter-example-macos:
+    name: flutter / Example build + bidir E2E (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - working-directory: flutter/example
+        run: flutter build macos --debug
+      - working-directory: dart
+        # The workspace pubspec is intact (flutter-action brought Flutter
+        # in), so dart test can resolve via the same root that just built
+        # the Flutter app.
+        run: dart test test/e2e/flutter_video_call_bidir_test.dart --timeout=180s

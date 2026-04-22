@@ -1,13 +1,9 @@
-name: webdartc
-description: WebRTC library for Dart — RFC-compliant, I/O-isolated implementation.
-version: 0.1.0
+name: _webdartc_workspace
+publish_to: none
 
 environment:
-  sdk: '>=3.11.0 <4.0.0'
+  sdk: ^3.6.0
 
-dependencies:
-  crypto: ^3.0.0
-
-dev_dependencies:
-  lints: ^5.0.0
-  test: ^1.25.0
+workspace:
+  - dart
+  - flutter
