@@ -510,6 +510,42 @@ List<KeyShareEntry>? parseClientHelloKeyShareExtData(Uint8List data) {
   return out;
 }
 
+/// Parse the `use_srtp` extension data offered in a ClientHello (RFC 5764 §4.1.1):
+///
+///   struct {
+///     SRTPProtectionProfile profiles<2..2^16-1>;
+///     opaque srtp_mki<0..255>;
+///   } UseSRTPData;
+///
+/// Returns the list of 16-bit profile IDs offered by the client, or null
+/// when the wire bytes are structurally invalid. The MKI field is checked
+/// for size but its bytes are otherwise ignored.
+List<int>? parseUseSrtpExtData(Uint8List data) {
+  if (data.length < 3) return null;
+  final profilesLen = (data[0] << 8) | data[1];
+  if (profilesLen == 0 || profilesLen % 2 != 0) return null;
+  if (2 + profilesLen > data.length) return null;
+  final mkiOffset = 2 + profilesLen;
+  if (mkiOffset >= data.length) return null;
+  final mkiLen = data[mkiOffset];
+  if (mkiOffset + 1 + mkiLen != data.length) return null;
+  final out = <int>[];
+  for (var i = 0; i < profilesLen; i += 2) {
+    out.add((data[2 + i] << 8) | data[3 + i]);
+  }
+  return out;
+}
+
+/// Build the `use_srtp` extension data the server echoes (RFC 5764 §4.1.1):
+/// a list containing exactly one selected profile, followed by an empty MKI.
+Uint8List buildUseSrtpExtData(int selectedProfile) {
+  return Uint8List.fromList([
+    0x00, 0x02, // profiles list length = 2 (one 16-bit profile)
+    (selectedProfile >> 8) & 0xFF, selectedProfile & 0xFF,
+    0x00, // empty MKI
+  ]);
+}
+
 /// `signature_algorithms` extension data: list of 2-byte SignatureScheme
 /// values, prefixed by a 2-byte total length.
 List<int>? parseSignatureAlgorithmsExtData(Uint8List data) {

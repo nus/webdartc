@@ -72,6 +72,11 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   /// (RFC 8446 §7.5). Phase 1 7-3 will plumb this into SRTP key export.
   Uint8List? get exporterMasterSecret => _exporterMasterSecret;
 
+  /// SRTP protection profile (RFC 5764) negotiated via the use_srtp extension,
+  /// or null when the client did not offer one we recognise. Set during
+  /// ClientHello processing; valid from that point forward.
+  int? get selectedSrtpProfileId => _selectedSrtpProfile;
+
   // ─── Callbacks ────────────────────────────────────────────────────────
 
   /// Fired exactly once when the handshake transitions to CONNECTED.
@@ -100,6 +105,11 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
 
   final DtlsV13Transcript _transcript = DtlsV13Transcript();
 
+  /// Selected SRTP profile from RFC 5764 use_srtp negotiation, e.g. 0x0001
+  /// for `SRTP_AES128_CM_HMAC_SHA1_80` or 0x0007 for `SRTP_AEAD_AES_128_GCM`.
+  /// `null` until the ClientHello has been parsed.
+  int? _selectedSrtpProfile;
+
   Uint8List? _earlySecret;
   Uint8List? _handshakeSecret;
   Uint8List? _masterSecret;
@@ -117,6 +127,11 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   /// The most recently emitted server flight, kept so we can re-send it on
   /// receipt of a duplicate ClientHello (RFC 6347-style retransmit).
   List<OutputPacket>? _lastServerFlight;
+
+  /// In-progress handshake message reassembly. Keyed by `messageSeq`. Each
+  /// entry buffers the full message body until every fragment has arrived
+  /// (RFC 9147 §5.5).
+  final Map<int, _Reassembly> _fragmentBuffer = <int, _Reassembly>{};
 
   DtlsV13ServerStateMachine({required this.localCert});
 
@@ -212,19 +227,32 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     if (hs == null) {
       return core.Err(const core.ParseError('DTLS 1.3: bad handshake header'));
     }
-    if (hs.fragmentOffset != 0 || hs.fragmentLength != hs.length) {
-      // Phase 1 doesn't reassemble fragmented handshake messages.
-      return core.Err(
-        const core.ParseError('DTLS 1.3: fragmented handshake unsupported'),
-      );
-    }
-    // The DTLS-form bytes that go into the (1.3-style) transcript hash.
-    final fullDtls = fragment.sublist(0, 12 + hs.body.length);
 
-    switch (hs.msgType) {
+    // Reassemble fragmented handshake messages (RFC 9147 §5.5). When a
+    // record carries the entire message in one fragment we use its bytes
+    // directly; otherwise we accumulate fragments by messageSeq until the
+    // whole body is in hand, then synthesize a single-fragment view.
+    final int msgType;
+    final Uint8List body;
+    final Uint8List fullDtls;
+    if (hs.fragmentOffset == 0 && hs.fragmentLength == hs.length) {
+      msgType = hs.msgType;
+      body = hs.body;
+      fullDtls = fragment.sublist(0, 12 + hs.body.length);
+    } else {
+      final completed = _accumulateFragment(hs);
+      if (completed == null) {
+        return const core.Ok(ProcessResult.empty);
+      }
+      msgType = hs.msgType;
+      body = completed;
+      fullDtls = _buildSingleFragmentView(hs.msgType, hs.messageSeq, completed);
+    }
+
+    switch (msgType) {
       case TlsV13HandshakeType.clientHello:
         if (_state == DtlsV13ServerState.initial) {
-          return _handleInitialClientHello(hs.body, fullDtls);
+          return _handleInitialClientHello(body, fullDtls);
         }
         if (_state == DtlsV13ServerState.waitClientFinished &&
             _lastServerFlight != null) {
@@ -239,11 +267,64 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         if (_state != DtlsV13ServerState.waitClientFinished) {
           return const core.Ok(ProcessResult.empty);
         }
-        return _handleClientFinished(hs.body, fullDtls);
+        return _handleClientFinished(body, fullDtls);
 
       default:
         return const core.Ok(ProcessResult.empty);
     }
+  }
+
+  /// Stash a fragment's body in [_fragmentBuffer]. Returns the fully
+  /// reassembled body once every byte has been observed, otherwise null.
+  /// Out-of-order arrival, duplicate fragments, and overlapping fragments
+  /// are tolerated; the latest copy of a given byte wins.
+  Uint8List? _accumulateFragment(DtlsHandshakeHeader hs) {
+    final buf = _fragmentBuffer.putIfAbsent(
+      hs.messageSeq,
+      () => _Reassembly(hs.length),
+    );
+    if (buf.totalLength != hs.length) {
+      // Inconsistent total length across fragments — can't reassemble.
+      return null;
+    }
+    final end = hs.fragmentOffset + hs.body.length;
+    if (end > buf.totalLength) return null;
+    for (var i = 0; i < hs.body.length; i++) {
+      if (!buf.received[hs.fragmentOffset + i]) {
+        buf.received[hs.fragmentOffset + i] = true;
+        buf.bodyOut[hs.fragmentOffset + i] = hs.body[i];
+        buf.bytesGot++;
+      } else {
+        // Already received this byte; keep the existing copy.
+      }
+    }
+    if (buf.bytesGot < buf.totalLength) return null;
+    _fragmentBuffer.remove(hs.messageSeq);
+    return Uint8List.fromList(buf.bodyOut);
+  }
+
+  /// Build the DTLS-form bytes a fully-reassembled handshake message would
+  /// have if it had been sent as a single fragment — `type(1) + length(3)
+  /// + msg_seq(2) + frag_offset=0(3) + frag_length=length(3) + body`. This
+  /// is what the transcript hash and downstream handlers expect.
+  Uint8List _buildSingleFragmentView(
+    int msgType,
+    int messageSeq,
+    Uint8List body,
+  ) {
+    final out = Uint8List(12 + body.length);
+    out[0] = msgType;
+    out[1] = (body.length >> 16) & 0xFF;
+    out[2] = (body.length >>  8) & 0xFF;
+    out[3] =  body.length        & 0xFF;
+    out[4] = (messageSeq >> 8) & 0xFF;
+    out[5] =  messageSeq        & 0xFF;
+    out[6] = 0; out[7] = 0; out[8] = 0;
+    out[9]  = (body.length >> 16) & 0xFF;
+    out[10] = (body.length >>  8) & 0xFF;
+    out[11] =  body.length        & 0xFF;
+    out.setRange(12, out.length, body);
+    return out;
   }
 
   // ─── ClientHello → server flight ──────────────────────────────────────
@@ -300,10 +381,23 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       }
     }
     if (selectedShare == null) {
-      // Phase 1 cannot send a HelloRetryRequest; bail out.
+      // Phase 1 cannot send a HelloRetryRequest; bail out. WebRTC clients
+      // (Firefox 150+, Chrome) commonly key_share only x25519 even when
+      // they list secp256r1 in supported_groups, so this path will fail
+      // until either x25519 ECDH or HelloRetryRequest is implemented.
       return core.Err(
         const core.ParseError('DTLS 1.3: no secp256r1 key_share offered'),
       );
+    }
+
+    // RFC 5764 use_srtp negotiation. Optional — only present when the peer
+    // wants SRTP-DTLS (e.g. a WebRTC stack); ignore if absent.
+    final useSrtp = ch.extensionByType(TlsV13ExtensionType.useSrtp);
+    if (useSrtp != null) {
+      final offered = parseUseSrtpExtData(useSrtp.data);
+      if (offered != null) {
+        _selectedSrtpProfile = _pickSrtpProfile(offered);
+      }
     }
 
     // Latch negotiation results.
@@ -316,6 +410,20 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     _transcript.addDtlsMessage(fullDtls);
 
     return _sendServerFlight();
+  }
+
+  /// SRTP profiles webdartc supports, in server-preference order. Matches
+  /// the DTLS 1.2 path so the SRTP context can be built identically.
+  static const List<int> _supportedSrtpProfiles = <int>[
+    0x0007, // SRTP_AEAD_AES_128_GCM
+    0x0001, // SRTP_AES128_CM_HMAC_SHA1_80
+  ];
+
+  static int? _pickSrtpProfile(List<int> offered) {
+    for (final id in _supportedSrtpProfiles) {
+      if (offered.contains(id)) return id;
+    }
+    return null;
   }
 
   core.Result<ProcessResult, core.ProtocolError> _sendServerFlight() {
@@ -377,9 +485,16 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     );
 
     // ── EncryptedExtensions, Certificate, CertificateVerify (epoch 2) ──
+    final eeExts = <TlsExtension>[
+      if (_selectedSrtpProfile != null)
+        TlsExtension(
+          TlsV13ExtensionType.useSrtp,
+          buildUseSrtpExtData(_selectedSrtpProfile!),
+        ),
+    ];
     _emitEncryptedHandshake(
       type: TlsV13HandshakeType.encryptedExtensions,
-      body: buildEncryptedExtensionsBody(const []),
+      body: buildEncryptedExtensionsBody(eeExts),
       outputs: outputs,
     );
     _emitEncryptedHandshake(
@@ -564,5 +679,17 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       remotePort: _remotePort!,
     ));
   }
+}
+
+/// Reassembly state for a single in-flight handshake message.
+final class _Reassembly {
+  final int totalLength;
+  final List<int> bodyOut;
+  final List<bool> received;
+  int bytesGot = 0;
+
+  _Reassembly(this.totalLength)
+      : bodyOut = List<int>.filled(totalLength, 0),
+        received = List<bool>.filled(totalLength, false);
 }
 

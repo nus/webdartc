@@ -10,6 +10,8 @@ import 'cipher_suite.dart';
 import 'handshake.dart';
 import 'key_material.dart';
 import 'record.dart';
+import 'v13/handshake.dart' as v13;
+import 'v13/state_machine.dart' as v13;
 
 export 'cipher_suite.dart' show CipherSuite;
 
@@ -84,6 +86,13 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   /// Called when application data is received.
   void Function(Uint8List data)? onApplicationData;
 
+  /// When the very first ClientHello on the server side advertises DTLS 1.3
+  /// (`supported_versions` extension contains `0xFEFC`), all further record
+  /// processing is delegated to a freshly-spun [v13.DtlsV13ServerStateMachine].
+  /// While this is non-null, the legacy DTLS 1.2 paths in this class are
+  /// bypassed entirely. `null` for client mode and for DTLS 1.2 clients.
+  v13.DtlsV13ServerStateMachine? _v13Inner;
+
   DtlsStateMachine({required this.role, required this.localCert});
 
   DtlsHandshakeState get state => _state;
@@ -105,6 +114,10 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   Result<ProcessResult, ProtocolError> sendApplicationData(
     Uint8List plaintext,
   ) {
+    final v13Inner = _v13Inner;
+    if (v13Inner != null) {
+      return v13Inner.sendApplicationData(plaintext);
+    }
     if (_state != DtlsHandshakeState.connected) {
       return Err(const StateError('DTLS: not connected'));
     }
@@ -130,6 +143,27 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   }) {
     _remoteIp = remoteIp;
     _remotePort = remotePort;
+
+    // If we've already committed to the DTLS 1.3 path, all subsequent
+    // datagrams flow through the v1.3 state machine verbatim.
+    final v13Inner = _v13Inner;
+    if (v13Inner != null) {
+      return v13Inner.processInput(packet,
+          remoteIp: remoteIp, remotePort: remotePort);
+    }
+
+    // Detect DTLS 1.3 on the very first server-side ClientHello and hand
+    // the rest of the session over to the v1.3 state machine.
+    if (role == DtlsRole.server &&
+        _state == DtlsHandshakeState.initial &&
+        _isDtls13ClientHello(packet)) {
+      final inner = v13.DtlsV13ServerStateMachine(localCert: localCert);
+      inner.onConnected = (km) => onConnected?.call(km);
+      inner.onApplicationData = (data) => onApplicationData?.call(data);
+      _v13Inner = inner;
+      return inner.processInput(packet,
+          remoteIp: remoteIp, remotePort: remotePort);
+    }
 
     // Parse record layer
     var offset = 0;
@@ -165,10 +199,45 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
   @override
   Result<ProcessResult, ProtocolError> handleTimeout(TimerToken token) {
+    final v13Inner = _v13Inner;
+    if (v13Inner != null) return v13Inner.handleTimeout(token);
     if (token is DtlsRetransmitToken) {
       return _retransmit(token.epoch);
     }
     return const Ok(ProcessResult.empty);
+  }
+
+  /// Peek into the very first server-side packet to decide whether the
+  /// rest of the session should be handled by the DTLS 1.3 server state
+  /// machine instead of the legacy 1.2 paths in this class.
+  ///
+  /// Returns true iff the packet is a server-bound ClientHello that either
+  /// (a) is fragmented — almost certainly DTLS 1.3 in practice, since v1.2
+  /// ClientHellos are small enough to fit a single record — or (b) has a
+  /// `supported_versions` extension listing `0xFEFC` (DTLS 1.3). The
+  /// fragmented heuristic is needed for WebRTC clients (Firefox, Chrome)
+  /// whose DTLS 1.3 ClientHellos exceed the path MTU and split across
+  /// multiple datagrams; we route them to the v1.3 path immediately so
+  /// that state machine can reassemble before parsing.
+  static bool _isDtls13ClientHello(Uint8List packet) {
+    final rec = DtlsRecord.parse(packet, 0);
+    if (rec == null) return false;
+    if (rec.epoch != 0) return false;
+    if (rec.contentType != DtlsContentType.handshake) return false;
+    final hs = DtlsHandshakeHeader.parse(rec.fragment);
+    if (hs == null) return false;
+    if (hs.msgType != v13.TlsV13HandshakeType.clientHello) return false;
+    if (hs.fragmentOffset != 0 || hs.fragmentLength != hs.length) {
+      // Fragmented ClientHello: assume DTLS 1.3.
+      return true;
+    }
+    final ch = v13.parseClientHello(hs.body);
+    if (ch == null) return false;
+    final sv = ch.extensionByType(v13.TlsV13ExtensionType.supportedVersions);
+    if (sv == null) return false;
+    final versions = v13.parseClientHelloSupportedVersionsExtData(sv.data);
+    if (versions == null) return false;
+    return versions.contains(v13.dtls13Version);
   }
 
   // ── Record processing ─────────────────────────────────────────────────────
@@ -775,9 +844,14 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   List<int>? _selectedSrtpProfile;
 
   /// The negotiated SRTP profile ID (0x0001 = AES_CM_128_HMAC_SHA1_80).
-  int? get selectedSrtpProfileId => _selectedSrtpProfile != null
-      ? (_selectedSrtpProfile![0] << 8) | _selectedSrtpProfile![1]
-      : null;
+  /// Forwards to the inner v1.3 state machine when DTLS 1.3 was selected.
+  int? get selectedSrtpProfileId {
+    final v13Inner = _v13Inner;
+    if (v13Inner != null) return v13Inner.selectedSrtpProfileId;
+    return _selectedSrtpProfile != null
+        ? (_selectedSrtpProfile![0] << 8) | _selectedSrtpProfile![1]
+        : null;
+  }
 
   void _logClientHelloCipherSuites(Uint8List body, int afterCookie) {
     if (afterCookie + 2 > body.length) return;
