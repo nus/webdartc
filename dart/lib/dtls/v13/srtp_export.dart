@@ -29,6 +29,11 @@ abstract final class DtlsV13SrtpExport {
   static const String dtlsSrtpLabel = 'EXTRACTOR-dtls_srtp';
 
   /// Default output length (RFC 5764 §4.2 — SRTP_AES_CM_128_HMAC_SHA1_80).
+  ///
+  /// Callers negotiating an AEAD-GCM profile (RFC 7714 §12) must pass an
+  /// explicit `length`:
+  ///   * SRTP_AEAD_AES_128_GCM (0x0007) → 56
+  ///   * SRTP_AEAD_AES_256_GCM (0x0008) → 88
   static const int srtpAes128CmHmacSha180Length = 60;
 
   /// Run the TLS 1.3 exporter using [exporterMasterSecret] as the

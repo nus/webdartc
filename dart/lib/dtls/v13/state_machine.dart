@@ -85,10 +85,15 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   // ─── Callbacks ────────────────────────────────────────────────────────
 
   /// Fired exactly once when the handshake transitions to CONNECTED.
-  /// The argument is the 60-byte SRTP keying material exported from
-  /// `exporter_master_secret` per RFC 5764 §4.2 (laid out as
-  /// `client_master_key(16) || server_master_key(16) ||
-  /// client_master_salt(14) || server_master_salt(14)`).
+  /// The argument is the SRTP keying material exported from
+  /// `exporter_master_secret` per RFC 5764 §4.2. Its length and layout
+  /// depend on the negotiated SRTP profile (see [selectedSrtpProfileId]):
+  ///   * SRTP_AES128_CM_HMAC_SHA1_80 / _32 → 60 bytes
+  ///     (16+16 master keys, 14+14 master salts).
+  ///   * SRTP_AEAD_AES_128_GCM             → 56 bytes
+  ///     (16+16 master keys, 12+12 master salts) per RFC 7714 §12.
+  ///   * SRTP_AEAD_AES_256_GCM             → 88 bytes
+  ///     (32+32 master keys, 12+12 master salts) per RFC 7714 §12.
   void Function(Uint8List srtpKeyingMaterial)? onConnected;
 
   /// Fired for every successfully decrypted application_data record.
@@ -651,12 +656,16 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   }
 
   /// SRTP profiles webdartc supports, in server-preference order. Matches
-  /// the DTLS 1.2 path: AES-CM is preferred because the in-tree
-  /// SrtpContext key-material layout assumes the 14-byte salts of the
-  /// AES-CM profile. AEAD-AES-128-GCM is accepted as a fallback.
+  /// the DTLS 1.2 path's `_parseSrtpExtension` ordering: AEAD-GCM is
+  /// preferred because it provides authenticated encryption in a single
+  /// pass and is what current browsers prefer; AES-CM-HMAC-SHA1 is kept
+  /// as an interop fallback (RFC 5764 §4.1.2 leaves profile choice to the
+  /// server).
   static const List<int> _supportedSrtpProfiles = <int>[
-    0x0001, // SRTP_AES128_CM_HMAC_SHA1_80
     0x0007, // SRTP_AEAD_AES_128_GCM
+    0x0008, // SRTP_AEAD_AES_256_GCM
+    0x0001, // SRTP_AES128_CM_HMAC_SHA1_80
+    0x0002, // SRTP_AES128_CM_HMAC_SHA1_32
   ];
 
   static int? _pickSrtpProfile(List<int> offered) {
@@ -664,6 +673,25 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       if (offered.contains(id)) return id;
     }
     return null;
+  }
+
+  /// Bytes of TLS-exported keying material the negotiated SRTP profile
+  /// expects. Layout is per RFC 5764 §4.2 / RFC 7714 §12.
+  static int _srtpExportLengthForProfile(int profileId) {
+    switch (profileId) {
+      case 0x0001: // SRTP_AES128_CM_HMAC_SHA1_80
+      case 0x0002: // SRTP_AES128_CM_HMAC_SHA1_32
+        return 60; // 16 + 16 + 14 + 14
+      case 0x0007: // SRTP_AEAD_AES_128_GCM
+        return 56; // 16 + 16 + 12 + 12
+      case 0x0008: // SRTP_AEAD_AES_256_GCM
+        return 88; // 32 + 32 + 12 + 12
+      default:
+        // Unknown profile — fall back to the legacy 60-byte default; a
+        // mis-sized export will surface as a key-derivation mismatch
+        // rather than a silent truncation.
+        return 60;
+    }
   }
 
   core.Result<ProcessResult, core.ProtocolError> _sendServerFlight() {
@@ -848,8 +876,16 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     _state = DtlsV13ServerState.connected;
     final cb = onConnected;
     if (cb != null) {
+      // Size the TLS-exporter output to the negotiated SRTP profile
+      // (RFC 7714 §12). When use_srtp wasn't negotiated we default to the
+      // legacy 60-byte AES-CM length so existing tests / non-SRTP callers
+      // keep working.
+      final exportLen = _selectedSrtpProfile != null
+          ? _srtpExportLengthForProfile(_selectedSrtpProfile!)
+          : DtlsV13SrtpExport.srtpAes128CmHmacSha180Length;
       cb(DtlsV13SrtpExport.export(
         exporterMasterSecret: _exporterMasterSecret!,
+        length: exportLen,
       ));
     }
     return const core.Ok(ProcessResult.empty);

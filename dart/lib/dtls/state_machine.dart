@@ -730,16 +730,39 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     _transcript.add(fullFragment);
     _state = DtlsHandshakeState.connected;
 
-    // Export SRTP key material
+    // Export SRTP key material — length depends on the profile picked
+    // from the server's use_srtp echo (RFC 7714 §12).
     final srtpKeyMaterial = DtlsKeyMaterial.exportSrtpKeyMaterial(
       masterSecret: _masterSecret!,
       clientRandom: _clientRandom,
       serverRandom: _serverRandom!,
+      length: _srtpExportLengthForSelectedProfile(),
     );
     // IMPORTANT: key material must never be logged
     onConnected?.call(srtpKeyMaterial);
 
     return const Ok(ProcessResult.empty);
+  }
+
+  /// Bytes of TLS-exported keying material the negotiated SRTP profile
+  /// expects. RFC 5764 §4.2 / RFC 7714 §12. Defaults to the legacy
+  /// 60-byte AES-CM length when no use_srtp profile is in scope, which
+  /// keeps non-SRTP code paths and unit tests working unchanged.
+  int _srtpExportLengthForSelectedProfile() {
+    final p = _selectedSrtpProfile;
+    if (p == null || p.length < 2) return 60;
+    final id = (p[0] << 8) | p[1];
+    switch (id) {
+      case 0x0001: // SRTP_AES128_CM_HMAC_SHA1_80
+      case 0x0002: // SRTP_AES128_CM_HMAC_SHA1_32
+        return 60;
+      case 0x0007: // SRTP_AEAD_AES_128_GCM
+        return 56;
+      case 0x0008: // SRTP_AEAD_AES_256_GCM
+        return 88;
+      default:
+        return 60;
+    }
   }
 
   // ── Server-side handlers ─────────────────────────────────────────────────
@@ -1160,11 +1183,13 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     _lastFlight = flight;
     _state = DtlsHandshakeState.connected;
 
-    // Export SRTP key material
+    // Export SRTP key material — length depends on the profile picked
+    // from the client's use_srtp offer (RFC 7714 §12).
     final srtpKeyMaterial = DtlsKeyMaterial.exportSrtpKeyMaterial(
       masterSecret: _masterSecret!,
       clientRandom: _clientRandom,
       serverRandom: _serverRandom!,
+      length: _srtpExportLengthForSelectedProfile(),
     );
     onConnected?.call(srtpKeyMaterial);
 
