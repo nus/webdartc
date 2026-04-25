@@ -510,6 +510,88 @@ List<KeyShareEntry>? parseClientHelloKeyShareExtData(Uint8List data) {
   return out;
 }
 
+// ─── HelloRetryRequest helpers ────────────────────────────────────────────
+
+/// Sentinel value placed in `ServerHello.random` to indicate that the
+/// message is actually a HelloRetryRequest (RFC 8446 §4.1.4):
+/// `SHA-256("HelloRetryRequest")`. Receivers compare against this byte
+/// string to discriminate HRR from a real ServerHello.
+final Uint8List helloRetryRequestRandom = Uint8List.fromList(<int>[
+  0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
+  0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
+  0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E,
+  0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
+]);
+
+/// Build a HelloRetryRequest body. Wire-format-wise HRR is identical to a
+/// ServerHello — only the `random` (a fixed sentinel) and the contents of
+/// the `key_share` extension distinguish it. Use [helloRetryRequestRandom]
+/// for the random and [buildHrrKeyShareExtData] for the key_share extension.
+Uint8List buildHelloRetryRequestBody({
+  required Uint8List legacySessionIdEcho,
+  required int cipherSuite,
+  required List<TlsExtension> extensions,
+}) {
+  return buildServerHelloBody(
+    random: helloRetryRequestRandom,
+    legacySessionIdEcho: legacySessionIdEcho,
+    cipherSuite: cipherSuite,
+    extensions: extensions,
+  );
+}
+
+/// `key_share` extension data for the HelloRetryRequest form (RFC 8446
+/// §4.2.8): a single 2-byte `selected_group` (NamedGroup), no public key.
+Uint8List buildHrrKeyShareExtData(int selectedGroup) {
+  return Uint8List.fromList([
+    (selectedGroup >> 8) & 0xFF,
+    selectedGroup & 0xFF,
+  ]);
+}
+
+/// Parse the HRR-form `key_share` extension data: returns the 2-byte
+/// `selected_group`, or null when the bytes don't match the structure.
+int? parseHrrKeyShareExtData(Uint8List data) {
+  if (data.length != 2) return null;
+  return (data[0] << 8) | data[1];
+}
+
+/// `cookie` extension data (RFC 8446 §4.2.2): `opaque cookie<1..2^16-1>`,
+/// i.e. a 2-byte length followed by the cookie bytes. Returns the cookie
+/// payload, or null on structural error.
+Uint8List? parseCookieExtData(Uint8List data) {
+  if (data.length < 2) return null;
+  final len = (data[0] << 8) | data[1];
+  if (len == 0 || 2 + len != data.length) return null;
+  return data.sublist(2, 2 + len);
+}
+
+/// Build the `cookie` extension data carrying [cookie].
+Uint8List buildCookieExtData(Uint8List cookie) {
+  if (cookie.isEmpty || cookie.length > 0xFFFF) {
+    throw ArgumentError('cookie length out of range');
+  }
+  final out = Uint8List(2 + cookie.length);
+  out[0] = (cookie.length >> 8) & 0xFF;
+  out[1] = cookie.length & 0xFF;
+  out.setRange(2, out.length, cookie);
+  return out;
+}
+
+/// `supported_groups` extension data (RFC 8446 §4.2.7): a 2-byte total
+/// length followed by 2-byte NamedGroup values. Returns the list of
+/// group IDs the client claims to handle, or null on structural error.
+List<int>? parseSupportedGroupsExtData(Uint8List data) {
+  if (data.length < 2) return null;
+  final total = (data[0] << 8) | data[1];
+  if (total == 0 || total % 2 != 0 || 2 + total != data.length) return null;
+  final out = <int>[];
+  for (var i = 0; i < total; i += 2) {
+    out.add((data[2 + i] << 8) | data[3 + i]);
+  }
+  return out;
+}
+
 /// Parse the `use_srtp` extension data offered in a ClientHello (RFC 5764 §4.1.1):
 ///
 ///   struct {

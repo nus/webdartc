@@ -15,10 +15,14 @@ import 'record_crypto.dart';
 import 'srtp_export.dart';
 import 'transcript.dart';
 
-/// DTLS 1.3 server state machine state (Phase 1 minimum).
+/// DTLS 1.3 server state machine state.
 enum DtlsV13ServerState {
   /// Listening for an initial ClientHello on epoch 0.
   initial,
+
+  /// HelloRetryRequest has been emitted; awaiting the client's
+  /// resubmitted (and now key-share-acceptable) ClientHello.
+  waitSecondClientHello,
 
   /// Server flight (ServerHello + EncryptedExtensions + Certificate +
   /// CertificateVerify + Finished) has been emitted; awaiting the client's
@@ -148,6 +152,11 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   /// (RFC 9147 §5.5).
   final Map<int, _Reassembly> _fragmentBuffer = <int, _Reassembly>{};
 
+  /// Cookie sent in the HelloRetryRequest. The client must echo it
+  /// verbatim in its second ClientHello (RFC 8446 §4.2.2). Null when no
+  /// HRR has been emitted.
+  Uint8List? _hrrCookie;
+
   DtlsV13ServerStateMachine({required this.localCert});
 
   // ─── ProtocolStateMachine ─────────────────────────────────────────────
@@ -268,6 +277,9 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       case TlsV13HandshakeType.clientHello:
         if (_state == DtlsV13ServerState.initial) {
           return _handleInitialClientHello(body, fullDtls);
+        }
+        if (_state == DtlsV13ServerState.waitSecondClientHello) {
+          return _handleSecondClientHello(body, fullDtls);
         }
         if (_state == DtlsV13ServerState.waitClientFinished &&
             _lastServerFlight != null) {
@@ -405,14 +417,82 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       }
     }
     if (selectedShare == null || selectedGroup == null) {
-      // Phase 1 cannot send a HelloRetryRequest; bail out.
-      return core.Err(
-        const core.ParseError('DTLS 1.3: no x25519 / secp256r1 key_share offered'),
+      // No usable key_share. If the client lists a group we support in
+      // its `supported_groups`, send a HelloRetryRequest demanding it
+      // (RFC 8446 §4.1.4). Otherwise the negotiation is hopeless.
+      final hrrGroup = _pickHrrGroup(ch);
+      if (hrrGroup == null) {
+        return core.Err(
+          const core.ParseError(
+            'DTLS 1.3: client offers no x25519 / secp256r1 group',
+          ),
+        );
+      }
+      return _sendHelloRetryRequest(
+        ch: ch,
+        fullDtls: fullDtls,
+        suite: suite,
+        selectedGroup: hrrGroup,
       );
     }
 
-    // RFC 5764 use_srtp negotiation. Optional — only present when the peer
-    // wants SRTP-DTLS (e.g. a WebRTC stack); ignore if absent.
+    _negotiateUseSrtp(ch);
+    return _completeClientHello(
+      random: ch.random,
+      legacySessionId: ch.legacySessionId,
+      suite: suite,
+      selectedGroup: selectedGroup,
+      peerKeyShare: selectedShare.keyExchange,
+      fullDtls: fullDtls,
+    );
+  }
+
+  /// Latch negotiation results from a ClientHello and emit the server's
+  /// flight. Shared between the no-HRR path (called from
+  /// [_handleInitialClientHello]) and the HRR path (called from
+  /// [_handleSecondClientHello]) — the former adds the CH directly to the
+  /// transcript, the latter has already added HRR + the synthetic
+  /// message_hash placeholder when reaching this point.
+  core.Result<ProcessResult, core.ProtocolError> _completeClientHello({
+    required Uint8List random,
+    required Uint8List legacySessionId,
+    required TlsV13CipherSuite suite,
+    required int selectedGroup,
+    required Uint8List peerKeyShare,
+    required Uint8List fullDtls,
+  }) {
+    _suite = suite;
+    _clientRandom = random;
+    _legacySessionIdEcho = legacySessionId;
+    _peerKeyShare = peerKeyShare;
+    _selectedGroup = selectedGroup;
+    if (selectedGroup == TlsV13NamedGroup.x25519) {
+      _x25519KeyPair = X25519KeyPair.generate();
+    } else {
+      _ecdhKeyPair = EcdhKeyPair.generate();
+    }
+    _transcript.addDtlsMessage(fullDtls);
+    return _sendServerFlight();
+  }
+
+  /// Look at the client's `supported_groups` extension and pick the first
+  /// group webdartc can speak. Returns null if there is no overlap or the
+  /// extension is missing.
+  int? _pickHrrGroup(ClientHelloMessage ch) {
+    final sg = ch.extensionByType(TlsV13ExtensionType.supportedGroups);
+    if (sg == null) return null;
+    final groups = parseSupportedGroupsExtData(sg.data);
+    if (groups == null) return null;
+    for (final g in groups) {
+      if (g == TlsV13NamedGroup.x25519 ||
+          g == TlsV13NamedGroup.secp256r1) {
+        return g;
+      }
+    }
+    return null;
+  }
+
+  void _negotiateUseSrtp(ClientHelloMessage ch) {
     final useSrtp = ch.extensionByType(TlsV13ExtensionType.useSrtp);
     if (useSrtp != null) {
       final offered = parseUseSrtpExtData(useSrtp.data);
@@ -420,22 +500,154 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         _selectedSrtpProfile = _pickSrtpProfile(offered);
       }
     }
+  }
 
-    // Latch negotiation results.
+  /// Emit a HelloRetryRequest for [selectedGroup], replace the transcript
+  /// with `synthetic message_hash || HelloRetryRequest`
+  /// (RFC 8446 §4.4.1), and transition to [waitSecondClientHello].
+  ///
+  /// The client is expected to resubmit a ClientHello carrying both the
+  /// requested key_share and a verbatim copy of [_hrrCookie]; both are
+  /// validated in [_handleSecondClientHello].
+  core.Result<ProcessResult, core.ProtocolError> _sendHelloRetryRequest({
+    required ClientHelloMessage ch,
+    required Uint8List fullDtls,
+    required TlsV13CipherSuite suite,
+    required int selectedGroup,
+  }) {
     _suite = suite;
-    _clientRandom = ch.random;
-    _legacySessionIdEcho = ch.legacySessionId;
-    _peerKeyShare = selectedShare.keyExchange;
     _selectedGroup = selectedGroup;
-    if (selectedGroup == TlsV13NamedGroup.x25519) {
-      _x25519KeyPair = X25519KeyPair.generate();
-    } else {
-      _ecdhKeyPair = EcdhKeyPair.generate();
+    _legacySessionIdEcho = ch.legacySessionId;
+    _hrrCookie = Csprng.randomBytes(32);
+
+    // Bind the original ClientHello into the transcript first, then
+    // rewrite it as the RFC 8446 §4.4.1 synthetic message_hash so that
+    // both sides can hash a deterministic prefix once HRR has been sent.
+    _transcript.addDtlsMessage(fullDtls);
+    _transcript.replaceWithSyntheticHash();
+
+    final hrrExts = <TlsExtension>[
+      TlsExtension(
+        TlsV13ExtensionType.supportedVersions,
+        buildServerHelloSupportedVersionsExtData(dtls13Version),
+      ),
+      TlsExtension(
+        TlsV13ExtensionType.keyShare,
+        buildHrrKeyShareExtData(selectedGroup),
+      ),
+      TlsExtension(
+        TlsV13ExtensionType.cookie,
+        buildCookieExtData(_hrrCookie!),
+      ),
+    ];
+    final hrrBody = buildHelloRetryRequestBody(
+      legacySessionIdEcho: ch.legacySessionId,
+      cipherSuite: suite.id,
+      extensions: hrrExts,
+    );
+    final hrrFull = wrapHandshake(
+      msgType: TlsV13HandshakeType.serverHello,
+      msgSeq: _outboundMsgSeq++,
+      body: hrrBody,
+    );
+    _transcript.addDtlsMessage(hrrFull);
+
+    _state = DtlsV13ServerState.waitSecondClientHello;
+    return core.Ok(ProcessResult(
+      outputPackets: [_emitPlaintextHandshake(hrrFull)],
+    ));
+  }
+
+  /// Process the resubmitted ClientHello after [_sendHelloRetryRequest].
+  /// The client must echo our cookie verbatim (RFC 8446 §4.2.2) and now
+  /// supply a `key_share` for the group we demanded; otherwise the
+  /// connection is rejected. On success the transcript already contains
+  /// `synthetic_message_hash || HelloRetryRequest`, and we append CH2
+  /// before delegating to the regular server-flight path.
+  core.Result<ProcessResult, core.ProtocolError> _handleSecondClientHello(
+    Uint8List body,
+    Uint8List fullDtls,
+  ) {
+    final ch = parseClientHello(body);
+    if (ch == null) {
+      return core.Err(const core.ParseError('DTLS 1.3: bad ClientHello (CH2)'));
     }
 
-    _transcript.addDtlsMessage(fullDtls);
+    // Validate cookie echo.
+    final ce = ch.extensionByType(TlsV13ExtensionType.cookie);
+    if (ce == null) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: CH2 missing cookie extension'),
+      );
+    }
+    final cookie = parseCookieExtData(ce.data);
+    if (cookie == null || _hrrCookie == null) {
+      return core.Err(const core.ParseError('DTLS 1.3: CH2 cookie unparseable'));
+    }
+    if (cookie.length != _hrrCookie!.length) {
+      return core.Err(const core.ParseError('DTLS 1.3: CH2 cookie mismatch'));
+    }
+    var diff = 0;
+    for (var i = 0; i < cookie.length; i++) {
+      diff |= cookie[i] ^ _hrrCookie![i];
+    }
+    if (diff != 0) {
+      return core.Err(const core.ParseError('DTLS 1.3: CH2 cookie mismatch'));
+    }
 
-    return _sendServerFlight();
+    // Now key_share must contain the group we demanded in HRR.
+    final ks = ch.extensionByType(TlsV13ExtensionType.keyShare);
+    if (ks == null) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: CH2 missing key_share'),
+      );
+    }
+    final shares = parseClientHelloKeyShareExtData(ks.data);
+    if (shares == null) {
+      return core.Err(const core.ParseError('DTLS 1.3: CH2 bad key_share'));
+    }
+    final wanted = _selectedGroup!;
+    KeyShareEntry? selected;
+    for (final s in shares) {
+      if (s.group == wanted) {
+        selected = s;
+        break;
+      }
+    }
+    if (selected == null) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: CH2 missing requested key_share group'),
+      );
+    }
+    final ok = (wanted == TlsV13NamedGroup.x25519 &&
+            selected.keyExchange.length == 32) ||
+        (wanted == TlsV13NamedGroup.secp256r1 &&
+            selected.keyExchange.length == 65 &&
+            selected.keyExchange[0] == 0x04);
+    if (!ok) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: CH2 key_share has wrong format'),
+      );
+    }
+
+    // Re-validate the suite — the client must select the same suite (or at
+    // least one we still support) on retry.
+    final suite = TlsV13CipherSuite.selectFromOffer(ch.cipherSuites);
+    if (suite == null) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: CH2 has no overlapping cipher suite'),
+      );
+    }
+
+    _negotiateUseSrtp(ch);
+    return _completeClientHello(
+      random: ch.random,
+      legacySessionId: ch.legacySessionId,
+      suite: suite,
+      selectedGroup: wanted,
+      peerKeyShare: selected.keyExchange,
+      fullDtls: fullDtls,
+    );
   }
 
   /// SRTP profiles webdartc supports, in server-preference order. Matches
