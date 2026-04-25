@@ -51,8 +51,27 @@ final class TlsV13CipherSuite {
     tagLength: 16,
   );
 
+  /// `TLS_CHACHA20_POLY1305_SHA256` (0x1303) — RFC 8446 §B.4 / RFC 8439.
+  ///
+  /// Registered so the suite can be advertised in ClientHello /
+  /// ServerHello; the AEAD primitive is implemented in
+  /// `lib/crypto/chacha20_poly1305.dart`. Wiring into
+  /// `record_crypto.dart` is a follow-up — the current
+  /// `DtlsV13RecordCrypto` calls `AesGcm.{encrypt,decrypt}` directly.
+  static const TlsV13CipherSuite chacha20Poly1305Sha256 = TlsV13CipherSuite(
+    id: 0x1303,
+    name: 'TLS_CHACHA20_POLY1305_SHA256',
+    keyLength: 32,
+    ivLength: 12,
+    hashLength: 32,
+    tagLength: 16,
+  );
+
   /// All registered cipher suites in implementation-preference order.
-  static const List<TlsV13CipherSuite> supported = [aes128GcmSha256];
+  static const List<TlsV13CipherSuite> supported = [
+    aes128GcmSha256,
+    chacha20Poly1305Sha256,
+  ];
 
   /// Look up a registered suite by wire ID, or null.
   static TlsV13CipherSuite? byId(int id) {

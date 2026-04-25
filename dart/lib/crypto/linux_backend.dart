@@ -10,6 +10,7 @@ import 'openssl.dart';
 import 'sha256.dart';
 import 'x509_der.dart';
 import 'aes_gcm.dart' show AesGcmResult;
+import 'chacha20_poly1305.dart' show AeadResult;
 
 // ── AES-CM (AES-ECB single block) ──────────────────────────────────────────
 
@@ -157,6 +158,119 @@ final class LinuxAesGcmBackend implements AesGcmBackend {
       libcAlloc.free(tmpLenPtr);
 
       if (ret <= 0) return null; // authentication failed
+
+      return fromNative(outPtr, ciphertext.length);
+    } finally {
+      ssl.evpCipherCtxFree(ctx);
+      libcAlloc.free(keyPtr);
+      libcAlloc.free(ivPtr);
+      libcAlloc.free(aadPtr);
+      libcAlloc.free(inPtr);
+      libcAlloc.free(outPtr);
+      libcAlloc.free(tagPtr);
+      libcAlloc.free(outLenPtr);
+    }
+  }
+}
+
+// ── ChaCha20-Poly1305 ──────────────────────────────────────────────────────
+
+final class LinuxChaCha20Poly1305Backend implements ChaCha20Poly1305Backend {
+  static const int _tagLength = 16;
+
+  @override
+  AeadResult encrypt(Uint8List key, Uint8List nonce, Uint8List plaintext, Uint8List aad) {
+    final ssl = ossl;
+    final cipher = ssl.evpChaCha20Poly1305();
+    final ctx = ssl.evpCipherCtxNew();
+    if (ctx == nullptr) throw StateError('EVP_CIPHER_CTX_new failed');
+
+    final keyPtr = libcAlloc.allocate<Uint8>(key.length);
+    final ivPtr = libcAlloc.allocate<Uint8>(nonce.length);
+    final aadPtr = libcAlloc.allocate<Uint8>(aad.isEmpty ? 1 : aad.length);
+    final inPtr = libcAlloc.allocate<Uint8>(plaintext.isEmpty ? 1 : plaintext.length);
+    final outPtr = libcAlloc.allocate<Uint8>(plaintext.isEmpty ? 1 : plaintext.length);
+    final tagPtr = libcAlloc.allocate<Uint8>(_tagLength);
+    final outLenPtr = libcAlloc.allocate<Int32>(1);
+
+    try {
+      for (var i = 0; i < key.length; i++) { keyPtr[i] = key[i]; }
+      for (var i = 0; i < nonce.length; i++) { ivPtr[i] = nonce[i]; }
+      for (var i = 0; i < aad.length; i++) { aadPtr[i] = aad[i]; }
+      for (var i = 0; i < plaintext.length; i++) { inPtr[i] = plaintext[i]; }
+
+      // EVP_CTRL_AEAD_* shares the same numeric values as EVP_CTRL_GCM_*
+      // in OpenSSL (set_ivlen=0x9, get_tag=0x10, set_tag=0x11) — see
+      // OpenSSL include/openssl/evp.h.
+      ssl.evpEncryptInitEx(ctx, cipher, nullptr, nullptr, nullptr);
+      ssl.evpCipherCtxCtrl(ctx, ssl.evpCtrlGcmSetIvlen, nonce.length, nullptr);
+      ssl.evpEncryptInitEx(ctx, nullptr, nullptr, keyPtr, ivPtr);
+      if (aad.isNotEmpty) {
+        ssl.evpEncryptUpdate(ctx, nullptr, outLenPtr, aadPtr, aad.length);
+      }
+      outLenPtr.value = 0;
+      ssl.evpEncryptUpdate(ctx, outPtr, outLenPtr, inPtr, plaintext.length);
+      final tmpPtr = libcAlloc.allocate<Uint8>(16);
+      final tmpLenPtr = libcAlloc.allocate<Int32>(1);
+      ssl.evpEncryptFinalEx(ctx, tmpPtr, tmpLenPtr);
+      libcAlloc.free(tmpPtr);
+      libcAlloc.free(tmpLenPtr);
+      ssl.evpCipherCtxCtrl(ctx, ssl.evpCtrlGcmGetTag, _tagLength, tagPtr.cast());
+
+      return AeadResult(
+        ciphertext: fromNative(outPtr, plaintext.length),
+        tag: fromNative(tagPtr, _tagLength),
+      );
+    } finally {
+      ssl.evpCipherCtxFree(ctx);
+      libcAlloc.free(keyPtr);
+      libcAlloc.free(ivPtr);
+      libcAlloc.free(aadPtr);
+      libcAlloc.free(inPtr);
+      libcAlloc.free(outPtr);
+      libcAlloc.free(tagPtr);
+      libcAlloc.free(outLenPtr);
+    }
+  }
+
+  @override
+  Uint8List? decrypt(Uint8List key, Uint8List nonce, Uint8List ciphertext, Uint8List expectedTag, Uint8List aad) {
+    final ssl = ossl;
+    final cipher = ssl.evpChaCha20Poly1305();
+    final ctx = ssl.evpCipherCtxNew();
+    if (ctx == nullptr) throw StateError('EVP_CIPHER_CTX_new failed');
+
+    final keyPtr = libcAlloc.allocate<Uint8>(key.length);
+    final ivPtr = libcAlloc.allocate<Uint8>(nonce.length);
+    final aadPtr = libcAlloc.allocate<Uint8>(aad.isEmpty ? 1 : aad.length);
+    final inPtr = libcAlloc.allocate<Uint8>(ciphertext.isEmpty ? 1 : ciphertext.length);
+    final outPtr = libcAlloc.allocate<Uint8>(ciphertext.isEmpty ? 1 : ciphertext.length);
+    final tagPtr = libcAlloc.allocate<Uint8>(_tagLength);
+    final outLenPtr = libcAlloc.allocate<Int32>(1);
+
+    try {
+      for (var i = 0; i < key.length; i++) { keyPtr[i] = key[i]; }
+      for (var i = 0; i < nonce.length; i++) { ivPtr[i] = nonce[i]; }
+      for (var i = 0; i < aad.length; i++) { aadPtr[i] = aad[i]; }
+      for (var i = 0; i < ciphertext.length; i++) { inPtr[i] = ciphertext[i]; }
+      for (var i = 0; i < _tagLength; i++) { tagPtr[i] = expectedTag[i]; }
+
+      ssl.evpDecryptInitEx(ctx, cipher, nullptr, nullptr, nullptr);
+      ssl.evpCipherCtxCtrl(ctx, ssl.evpCtrlGcmSetIvlen, nonce.length, nullptr);
+      ssl.evpDecryptInitEx(ctx, nullptr, nullptr, keyPtr, ivPtr);
+      if (aad.isNotEmpty) {
+        ssl.evpDecryptUpdate(ctx, nullptr, outLenPtr, aadPtr, aad.length);
+      }
+      outLenPtr.value = 0;
+      ssl.evpDecryptUpdate(ctx, outPtr, outLenPtr, inPtr, ciphertext.length);
+      ssl.evpCipherCtxCtrl(ctx, ssl.evpCtrlGcmSetTag, _tagLength, tagPtr.cast());
+      final tmpPtr = libcAlloc.allocate<Uint8>(16);
+      final tmpLenPtr = libcAlloc.allocate<Int32>(1);
+      final ret = ssl.evpDecryptFinalEx(ctx, tmpPtr, tmpLenPtr);
+      libcAlloc.free(tmpPtr);
+      libcAlloc.free(tmpLenPtr);
+
+      if (ret <= 0) return null;
 
       return fromNative(outPtr, ciphertext.length);
     } finally {

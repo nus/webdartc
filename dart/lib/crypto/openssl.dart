@@ -144,6 +144,7 @@ class OpenSsl {
   late final evpAes256Ecb = lib.lookupFunction<_EvpCipherN, Pointer<Void> Function()>('EVP_aes_256_ecb');
   late final evpAes128Gcm = lib.lookupFunction<_EvpCipherN, Pointer<Void> Function()>('EVP_aes_128_gcm');
   late final evpAes256Gcm = lib.lookupFunction<_EvpCipherN, Pointer<Void> Function()>('EVP_aes_256_gcm');
+  late final evpChaCha20Poly1305 = lib.lookupFunction<_EvpCipherN, Pointer<Void> Function()>('EVP_chacha20_poly1305');
 
   // EC_KEY
   late final ecKeyNewByCurveName = lib.lookupFunction<_EcKeyNewByCurveNameN, _EcKeyNewByCurveNameD>('EC_KEY_new_by_curve_name');

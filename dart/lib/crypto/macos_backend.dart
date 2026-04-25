@@ -5,6 +5,8 @@ import 'dart:ffi';
 import 'dart:typed_data';
 
 import 'aes_gcm.dart' show AesGcmResult;
+import 'chacha20_poly1305.dart' show AeadResult;
+import 'chacha20_poly1305_pure.dart' as cc20p1305;
 import 'common_crypto.dart';
 import 'crypto_backend.dart';
 import 'security_framework.dart';
@@ -142,6 +144,24 @@ final class MacosAesGcmBackend implements AesGcmBackend {
       libcAlloc.free(tagPtr);
       libcAlloc.free(tagLenPtr);
     }
+  }
+}
+
+// ── ChaCha20-Poly1305 ──────────────────────────────────────────────────────
+
+/// Pure-Dart fallback — see `chacha20_poly1305_pure.dart`. CommonCrypto
+/// has no ChaCha20-Poly1305 entry point and CryptoKit is Swift-only, so
+/// we run the RFC 8439 reference algorithm in Dart on macOS.
+final class MacosChaCha20Poly1305Backend implements ChaCha20Poly1305Backend {
+  @override
+  AeadResult encrypt(Uint8List key, Uint8List nonce, Uint8List plaintext, Uint8List aad) {
+    final r = cc20p1305.aeadEncrypt(key, nonce, plaintext, aad);
+    return AeadResult(ciphertext: r.ciphertext, tag: r.tag);
+  }
+
+  @override
+  Uint8List? decrypt(Uint8List key, Uint8List nonce, Uint8List ciphertext, Uint8List expectedTag, Uint8List aad) {
+    return cc20p1305.aeadDecrypt(key, nonce, ciphertext, expectedTag, aad);
   }
 }
 
