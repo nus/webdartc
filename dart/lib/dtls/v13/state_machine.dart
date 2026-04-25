@@ -488,12 +488,16 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
 
   // ─── Public application-data API ──────────────────────────────────────
 
-  /// Encrypt [data] as an application_data record. Must only be called
-  /// after the handshake reaches [DtlsV13ServerState.connected]; throws
-  /// otherwise.
-  OutputPacket sendApplicationData(Uint8List data) {
+  /// Encrypt [data] as an application_data record. Returns an Err if the
+  /// handshake hasn't reached CONNECTED yet — callers can still use a
+  /// uniform success / failure flow.
+  core.Result<ProcessResult, core.ProtocolError> sendApplicationData(
+    Uint8List data,
+  ) {
     if (_state != DtlsV13ServerState.connected) {
-      throw StateError('DTLS 1.3: sendApplicationData before CONNECTED');
+      return core.Err(
+        const core.StateError('DTLS 1.3: sendApplicationData before CONNECTED'),
+      );
     }
     final rec = DtlsV13RecordCrypto.encrypt(
       contentType: DtlsContentType.applicationData,
@@ -502,10 +506,16 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       seqNum: _sendSeqEpoch3++,
       keys: _serverApKeys!,
     );
-    return OutputPacket(
-      data: rec,
-      remoteIp: _remoteIp!,
-      remotePort: _remotePort!,
+    return core.Ok(
+      ProcessResult(
+        outputPackets: [
+          OutputPacket(
+            data: rec,
+            remoteIp: _remoteIp!,
+            remotePort: _remotePort!,
+          ),
+        ],
+      ),
     );
   }
 

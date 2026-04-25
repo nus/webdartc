@@ -77,6 +77,23 @@ final class DtlsServerDispatcher implements ProtocolStateMachine {
     return inner.handleTimeout(token);
   }
 
+  /// Encrypt [data] as a DTLS application_data record using whichever
+  /// inner state machine has been selected. Returns an [Err] if the
+  /// dispatcher hasn't yet seen a ClientHello, or if the inner SM's
+  /// own send API rejects the call (e.g., before CONNECTED).
+  Result<ProcessResult, ProtocolError> sendApplicationData(Uint8List data) {
+    final inner = _inner;
+    if (inner is v13.DtlsV13ServerStateMachine) {
+      return inner.sendApplicationData(data);
+    }
+    if (inner is v12.DtlsStateMachine) {
+      return inner.sendApplicationData(data);
+    }
+    return Err(
+      const StateError('DTLS dispatch: send before any ClientHello'),
+    );
+  }
+
   /// Inspect [packet] and decide whether the client is offering DTLS 1.3.
   ///
   /// Returns `true` for DTLS 1.3, `false` for DTLS 1.2, or `null` when
