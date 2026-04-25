@@ -6,6 +6,7 @@ import '../../crypto/csprng.dart';
 import '../../crypto/ecdh.dart';
 import '../../crypto/ecdsa.dart';
 import '../../crypto/hmac_sha256.dart';
+import '../../crypto/x25519.dart';
 import '../record.dart';
 import 'cipher_suite.dart';
 import 'handshake.dart';
@@ -100,7 +101,21 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   Uint8List? _clientRandom;
   final Uint8List _serverRandom = Csprng.randomBytes(32);
   Uint8List _legacySessionIdEcho = Uint8List(0);
+
+  /// Negotiated key-exchange group for this session — either
+  /// `secp256r1` (0x0017) or `x25519` (0x001D). Set during ClientHello
+  /// processing and used to pick the right public-key encoding for the
+  /// ServerHello key_share and the right scalar-multiplication routine
+  /// for the ECDHE shared secret.
+  int? _selectedGroup;
+
+  /// secp256r1 ephemeral private key, populated when [_selectedGroup] is
+  /// `secp256r1`. Null otherwise.
   EcdhKeyPair? _ecdhKeyPair;
+
+  /// x25519 ephemeral private key, populated when [_selectedGroup] is
+  /// `x25519`. Null otherwise.
+  X25519KeyPair? _x25519KeyPair;
   Uint8List? _peerKeyShare;
 
   final DtlsV13Transcript _transcript = DtlsV13Transcript();
@@ -371,22 +386,28 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     if (shares == null) {
       return core.Err(const core.ParseError('DTLS 1.3: bad key_share data'));
     }
+    // We accept either x25519 (preferred, since most WebRTC clients only
+    // key_share that group) or secp256r1, in client-offered order.
     KeyShareEntry? selectedShare;
+    int? selectedGroup;
     for (final s in shares) {
+      if (s.group == TlsV13NamedGroup.x25519 && s.keyExchange.length == 32) {
+        selectedShare = s;
+        selectedGroup = TlsV13NamedGroup.x25519;
+        break;
+      }
       if (s.group == TlsV13NamedGroup.secp256r1 &&
           s.keyExchange.length == 65 &&
           s.keyExchange[0] == 0x04) {
         selectedShare = s;
+        selectedGroup = TlsV13NamedGroup.secp256r1;
         break;
       }
     }
-    if (selectedShare == null) {
-      // Phase 1 cannot send a HelloRetryRequest; bail out. WebRTC clients
-      // (Firefox 150+, Chrome) commonly key_share only x25519 even when
-      // they list secp256r1 in supported_groups, so this path will fail
-      // until either x25519 ECDH or HelloRetryRequest is implemented.
+    if (selectedShare == null || selectedGroup == null) {
+      // Phase 1 cannot send a HelloRetryRequest; bail out.
       return core.Err(
-        const core.ParseError('DTLS 1.3: no secp256r1 key_share offered'),
+        const core.ParseError('DTLS 1.3: no x25519 / secp256r1 key_share offered'),
       );
     }
 
@@ -405,7 +426,12 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     _clientRandom = ch.random;
     _legacySessionIdEcho = ch.legacySessionId;
     _peerKeyShare = selectedShare.keyExchange;
-    _ecdhKeyPair = EcdhKeyPair.generate();
+    _selectedGroup = selectedGroup;
+    if (selectedGroup == TlsV13NamedGroup.x25519) {
+      _x25519KeyPair = X25519KeyPair.generate();
+    } else {
+      _ecdhKeyPair = EcdhKeyPair.generate();
+    }
 
     _transcript.addDtlsMessage(fullDtls);
 
@@ -413,10 +439,12 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   }
 
   /// SRTP profiles webdartc supports, in server-preference order. Matches
-  /// the DTLS 1.2 path so the SRTP context can be built identically.
+  /// the DTLS 1.2 path: AES-CM is preferred because the in-tree
+  /// SrtpContext key-material layout assumes the 14-byte salts of the
+  /// AES-CM profile. AEAD-AES-128-GCM is accepted as a fallback.
   static const List<int> _supportedSrtpProfiles = <int>[
-    0x0007, // SRTP_AEAD_AES_128_GCM
     0x0001, // SRTP_AES128_CM_HMAC_SHA1_80
+    0x0007, // SRTP_AEAD_AES_128_GCM
   ];
 
   static int? _pickSrtpProfile(List<int> offered) {
@@ -431,6 +459,10 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     final outputs = <OutputPacket>[];
 
     // ── ServerHello (plaintext, epoch 0) ────────────────────────────────
+    final group = _selectedGroup!;
+    final serverPublic = group == TlsV13NamedGroup.x25519
+        ? _x25519KeyPair!.publicKeyBytes
+        : _ecdhKeyPair!.publicKeyBytes;
     final shExts = <TlsExtension>[
       TlsExtension(
         TlsV13ExtensionType.supportedVersions,
@@ -439,8 +471,8 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       TlsExtension(
         TlsV13ExtensionType.keyShare,
         buildServerHelloKeyShareExtData(
-          namedGroup: TlsV13NamedGroup.secp256r1,
-          keyExchange: _ecdhKeyPair!.publicKeyBytes,
+          namedGroup: group,
+          keyExchange: serverPublic,
         ),
       ),
     ];
@@ -460,8 +492,18 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
 
     // ── Derive handshake_secret + handshake traffic keys ───────────────
     _earlySecret = TlsV13KeySchedule.computeEarlySecret();
-    final ecdheShared =
-        _ecdhKeyPair!.computeSharedSecret(_peerKeyShare!);
+    final Uint8List? ecdheShared;
+    if (group == TlsV13NamedGroup.x25519) {
+      ecdheShared = _x25519KeyPair!.computeSharedSecret(_peerKeyShare!);
+    } else {
+      ecdheShared = _ecdhKeyPair!.computeSharedSecret(_peerKeyShare!);
+    }
+    if (ecdheShared == null) {
+      // RFC 8446 §7.4.2: low-order point — abort the handshake.
+      return core.Err(
+        const core.CryptoError('DTLS 1.3: ECDHE produced low-order point'),
+      );
+    }
     _handshakeSecret = TlsV13KeySchedule.computeHandshakeSecret(
       earlySecret: _earlySecret!,
       ecdheSharedSecret: ecdheShared,
