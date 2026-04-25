@@ -53,6 +53,61 @@ abstract final class Hkdf {
     return expand(prk, info, length);
   }
 
+  /// HKDF-Expand-Label per RFC 8446 §7.1 (TLS 1.3).
+  ///
+  ///   HKDF-Expand-Label(Secret, Label, Context, Length) =
+  ///       HKDF-Expand(Secret, HkdfLabel, Length)
+  ///
+  ///   struct {
+  ///     uint16 length = Length;
+  ///     opaque label<7..255> = "tls13 " + Label;
+  ///     opaque context<0..255> = Context;
+  ///   } HkdfLabel;
+  static Uint8List expandLabel({
+    required Uint8List secret,
+    required String label,
+    required Uint8List context,
+    required int length,
+  }) {
+    final fullLabel = Uint8List.fromList('tls13 $label'.codeUnits);
+    if (fullLabel.length > 255) {
+      throw ArgumentError('HKDF-Expand-Label: label too long');
+    }
+    if (context.length > 255) {
+      throw ArgumentError('HKDF-Expand-Label: context too long');
+    }
+    final info = Uint8List(2 + 1 + fullLabel.length + 1 + context.length);
+    var off = 0;
+    info[off++] = (length >> 8) & 0xFF;
+    info[off++] = length & 0xFF;
+    info[off++] = fullLabel.length;
+    info.setRange(off, off + fullLabel.length, fullLabel);
+    off += fullLabel.length;
+    info[off++] = context.length;
+    info.setRange(off, off + context.length, context);
+    return expand(secret, info, length);
+  }
+
+  /// Derive-Secret per RFC 8446 §7.1.
+  ///
+  ///   Derive-Secret(Secret, Label, Messages) =
+  ///     HKDF-Expand-Label(Secret, Label, Hash(Messages), Hash.length)
+  ///
+  /// [transcriptHash] is the already-computed Hash(Messages); pass empty hash
+  /// (SHA-256 of empty input) when the spec calls for it.
+  static Uint8List deriveSecret({
+    required Uint8List secret,
+    required String label,
+    required Uint8List transcriptHash,
+  }) {
+    return expandLabel(
+      secret: secret,
+      label: label,
+      context: transcriptHash,
+      length: 32, // SHA-256 output length
+    );
+  }
+
   /// DTLS/TLS PRF-SHA256 as used in RFC 5705 / DTLS 1.2 with SHA-256.
   ///
   /// P_SHA256(secret, seed) = HMAC_SHA256(secret, A(1)+seed) ||
