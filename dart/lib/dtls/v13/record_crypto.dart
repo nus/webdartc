@@ -58,7 +58,7 @@ abstract final class DtlsV13RecordCrypto {
     record[4] =  ctLen       & 0xFF;
 
     final aad = Uint8List.fromList(record.sublist(0, 5));
-    final nonce = DtlsV13Record.buildNonce(keys.writeIv, epoch, seqNum);
+    final nonce = DtlsV13Record.buildNonce(keys.writeIv, seqNum);
     final aead = AesGcm.encrypt(keys.writeKey, nonce, inner, aad: aad);
     record.setRange(5, 5 + inner.length, aead.ciphertext);
     record.setRange(5 + inner.length, record.length, aead.tag);
@@ -126,7 +126,7 @@ abstract final class DtlsV13RecordCrypto {
       work.sublist(cipherEnd, cipherStart + ctLen),
     );
 
-    final nonce = DtlsV13Record.buildNonce(keys.writeIv, epoch, fullSeq);
+    final nonce = DtlsV13Record.buildNonce(keys.writeIv, fullSeq);
     final inner = AesGcm.decrypt(keys.writeKey, nonce, ct, tag, aad: aad);
     if (inner == null) return null;
 

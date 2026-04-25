@@ -74,18 +74,21 @@ void main() {
   });
 
   group('DtlsV13Record.buildNonce', () {
-    test('XORs left-padded (epoch||seq) with static_iv', () {
+    test('XORs left-padded 64-bit seq with static_iv (no epoch)', () {
       final iv = bytes([
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
       ]);
-      final n = DtlsV13Record.buildNonce(iv, 0x0203, 0x0102030405);
+      final n = DtlsV13Record.buildNonce(iv, 0x0102030405);
+      // RFC 9147 §4.2.1: epoch is not packed into the nonce. The 48-bit
+      // sequence number is right-aligned in the last 8 bytes, with the
+      // top 16 bits zero (since DTLS seq is 48 bits).
       expect(
         n,
         equals(bytes([
-          0x00, 0x00, 0x00, 0x00, // padding
-          0x02, 0x03,             // epoch
+          0x00, 0x00, 0x00, 0x00, // padding (4 bytes)
+          0x00, 0x00,             // top 16 bits of 64-bit seq (always 0 for 48-bit DTLS seq)
           0x00, 0x01, 0x02, 0x03, 0x04, 0x05, // 48-bit seq
         ])),
       );
@@ -97,18 +100,16 @@ void main() {
         0xEE, 0xFF, 0x11, 0x22,
         0x33, 0x44, 0x55, 0x66,
       ]);
-      final n = DtlsV13Record.buildNonce(iv, 0x0001, 0x000000000001);
-      // First 4 bytes unchanged.
-      expect(n.sublist(0, 4), equals(iv.sublist(0, 4)));
-      // epoch in [4..5], seq in [6..11].
-      expect(n[4], equals(iv[4] ^ 0x00));
-      expect(n[5], equals(iv[5] ^ 0x01));
+      final n = DtlsV13Record.buildNonce(iv, 0x000000000001);
+      // First 6 bytes unchanged (padding + zero top of seq).
+      expect(n.sublist(0, 6), equals(iv.sublist(0, 6)));
+      // Last byte XORed with 0x01.
       expect(n[11], equals(iv[11] ^ 0x01));
     });
 
     test('rejects non-12-byte static_iv', () {
       expect(
-        () => DtlsV13Record.buildNonce(bytes([0]), 0, 0),
+        () => DtlsV13Record.buildNonce(bytes([0]), 0),
         throwsArgumentError,
       );
     });

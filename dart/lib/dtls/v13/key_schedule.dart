@@ -50,6 +50,7 @@ abstract final class TlsV13KeySchedule {
       secret: earlySecret,
       label: 'derived',
       transcriptHash: emptyHash,
+      prefix: Hkdf.dtls13Prefix,
     );
     return Hkdf.extract(derived, ecdheSharedSecret);
   }
@@ -64,6 +65,7 @@ abstract final class TlsV13KeySchedule {
       secret: handshakeSecret,
       label: 'derived',
       transcriptHash: emptyHash,
+      prefix: Hkdf.dtls13Prefix,
     );
     return Hkdf.extract(derived, Uint8List(hashLength));
   }
@@ -79,6 +81,7 @@ abstract final class TlsV13KeySchedule {
         secret: handshakeSecret,
         label: 'c hs traffic',
         transcriptHash: chShTranscriptHash,
+        prefix: Hkdf.dtls13Prefix,
       );
 
   /// `server_handshake_traffic_secret`: `Derive-Secret(handshake, "s hs traffic", CH..SH)`.
@@ -90,6 +93,7 @@ abstract final class TlsV13KeySchedule {
         secret: handshakeSecret,
         label: 's hs traffic',
         transcriptHash: chShTranscriptHash,
+        prefix: Hkdf.dtls13Prefix,
       );
 
   /// `client_application_traffic_secret_0`:
@@ -102,6 +106,7 @@ abstract final class TlsV13KeySchedule {
         secret: masterSecret,
         label: 'c ap traffic',
         transcriptHash: chServerFinishedTranscriptHash,
+        prefix: Hkdf.dtls13Prefix,
       );
 
   /// `server_application_traffic_secret_0`:
@@ -114,6 +119,7 @@ abstract final class TlsV13KeySchedule {
         secret: masterSecret,
         label: 's ap traffic',
         transcriptHash: chServerFinishedTranscriptHash,
+        prefix: Hkdf.dtls13Prefix,
       );
 
   /// `exporter_master_secret = Derive-Secret(master, "exp master", CH..server-Finished)`.
@@ -127,6 +133,7 @@ abstract final class TlsV13KeySchedule {
         secret: masterSecret,
         label: 'exp master',
         transcriptHash: chServerFinishedTranscriptHash,
+        prefix: Hkdf.dtls13Prefix,
       );
 
   // ── Per-direction key/iv/finished_key/sn_key from a traffic secret ──────
@@ -148,24 +155,28 @@ abstract final class TlsV13KeySchedule {
         label: 'key',
         context: ctx,
         length: keyLength,
+        prefix: Hkdf.dtls13Prefix,
       ),
       writeIv: Hkdf.expandLabel(
         secret: trafficSecret,
         label: 'iv',
         context: ctx,
         length: 12,
+        prefix: Hkdf.dtls13Prefix,
       ),
       finishedKey: Hkdf.expandLabel(
         secret: trafficSecret,
         label: 'finished',
         context: ctx,
         length: hashLength,
+        prefix: Hkdf.dtls13Prefix,
       ),
       snKey: Hkdf.expandLabel(
         secret: trafficSecret,
         label: 'sn',
         context: ctx,
         length: keyLength,
+        prefix: Hkdf.dtls13Prefix,
       ),
     );
   }

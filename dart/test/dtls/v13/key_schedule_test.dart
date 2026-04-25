@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
+import 'package:webdartc/crypto/hkdf.dart';
+import 'package:webdartc/crypto/sha256.dart';
 import 'package:webdartc/dtls/v13/key_schedule.dart';
 
 void main() {
@@ -16,9 +18,12 @@ void main() {
   String hexOf(Uint8List bytes) =>
       bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
-  // RFC 8448 §3 "Simple 1-RTT Handshake" trace. The transcript hashes were
-  // computed independently from the on-the-wire ClientHello / ServerHello /
-  // server-Finished bytes published in the RFC.
+  // Inputs derived from the RFC 8448 §3 trace. We can't reuse the published
+  // *output* values because RFC 8448 uses the TLS 1.3 HKDF prefix ("tls13 ")
+  // while DTLS 1.3 uses "dtls13" (RFC 9147 §5.9), so the schedule outputs
+  // diverge starting from the very first Derive-Secret. Inputs (ECDHE
+  // shared secret, transcript hashes) are independent of that prefix and
+  // remain useful as plausible non-trivial values.
 
   final ecdheShared = hex(
     '8bd4054fb55b9d63fdfbacf9f04b9f0d'
@@ -35,9 +40,28 @@ void main() {
     '000eaada3daae4777a7686c9ff83df13',
   );
 
-  group('TlsV13KeySchedule (RFC 8448 §3)', () {
-    test('early_secret with no PSK', () {
+  final emptyHash = Sha256.hash(Uint8List(0));
+
+  Uint8List dtlsExpand({
+    required Uint8List secret,
+    required String label,
+    required Uint8List context,
+    int length = 32,
+  }) =>
+      Hkdf.expandLabel(
+        secret: secret,
+        label: label,
+        context: context,
+        length: length,
+        prefix: Hkdf.dtls13Prefix,
+      );
+
+  group('TlsV13KeySchedule — early/handshake/master secrets', () {
+    test('early_secret with no PSK matches RFC 8448 (Extract is prefix-free)',
+        () {
       final early = TlsV13KeySchedule.computeEarlySecret();
+      // HKDF-Extract has no protocol prefix, so this value is identical for
+      // TLS 1.3 and DTLS 1.3.
       expect(
         hexOf(early),
         equals(
@@ -53,13 +77,15 @@ void main() {
         earlySecret: early,
         ecdheSharedSecret: ecdheShared,
       );
-      expect(
-        hexOf(hs),
-        equals(
-          '1dc826e93606aa6fdc0aadc12f741b01'
-          '046aa6b99f691ed221a9f0ca043fbeac',
-        ),
+      // Reproduce the schedule manually with the DTLS 1.3 prefix and
+      // confirm bit-for-bit agreement.
+      final derived = dtlsExpand(
+        secret: early,
+        label: 'derived',
+        context: emptyHash,
       );
+      final expected = Hkdf.extract(derived, ecdheShared);
+      expect(hexOf(hs), equals(hexOf(expected)));
     });
 
     test('master_secret = Extract(Derive(handshake,"derived",""), 0)', () {
@@ -69,16 +95,19 @@ void main() {
         ecdheSharedSecret: ecdheShared,
       );
       final ms = TlsV13KeySchedule.computeMasterSecret(handshakeSecret: hs);
-      expect(
-        hexOf(ms),
-        equals(
-          '18df06843d13a08bf2a449844c5f8a47'
-          '8001bc4d4c627984d5a41da8d0402919',
-        ),
+      final derived = dtlsExpand(
+        secret: hs,
+        label: 'derived',
+        context: emptyHash,
       );
+      final expected = Hkdf.extract(derived, Uint8List(32));
+      expect(hexOf(ms), equals(hexOf(expected)));
     });
+  });
 
-    test('client/server handshake traffic secrets match the trace', () {
+  group('TlsV13KeySchedule — traffic secrets', () {
+    test('client/server handshake traffic secrets match a hand derivation',
+        () {
       final early = TlsV13KeySchedule.computeEarlySecret();
       final hs = TlsV13KeySchedule.computeHandshakeSecret(
         earlySecret: early,
@@ -88,27 +117,30 @@ void main() {
         handshakeSecret: hs,
         chShTranscriptHash: chShHash,
       );
-      expect(
-        hexOf(cHs),
-        equals(
-          'b3eddb126e067f35a780b3abf45e2d8f'
-          '3b1a950738f52e9600746a0e27a55a21',
-        ),
-      );
       final sHs = TlsV13KeySchedule.computeServerHandshakeTrafficSecret(
         handshakeSecret: hs,
         chShTranscriptHash: chShHash,
       );
       expect(
+        hexOf(cHs),
+        equals(hexOf(dtlsExpand(
+          secret: hs,
+          label: 'c hs traffic',
+          context: chShHash,
+        ))),
+      );
+      expect(
         hexOf(sHs),
-        equals(
-          'b67b7d690cc16c4e75e54213cb2d37b4'
-          'e9c912bcded9105d42befd59d391ad38',
-        ),
+        equals(hexOf(dtlsExpand(
+          secret: hs,
+          label: 's hs traffic',
+          context: chShHash,
+        ))),
       );
     });
 
-    test('client/server application traffic secrets match the trace', () {
+    test('client/server application traffic secrets match a hand derivation',
+        () {
       final early = TlsV13KeySchedule.computeEarlySecret();
       final hs = TlsV13KeySchedule.computeHandshakeSecret(
         earlySecret: early,
@@ -120,27 +152,29 @@ void main() {
         masterSecret: ms,
         chServerFinishedTranscriptHash: chSfHash,
       );
-      expect(
-        hexOf(cAp),
-        equals(
-          '9e40646ce79a7f9dc05af8889bce6552'
-          '875afa0b06df0087f792ebb7c17504a5',
-        ),
-      );
       final sAp = TlsV13KeySchedule.computeServerApplicationTrafficSecret(
         masterSecret: ms,
         chServerFinishedTranscriptHash: chSfHash,
       );
       expect(
+        hexOf(cAp),
+        equals(hexOf(dtlsExpand(
+          secret: ms,
+          label: 'c ap traffic',
+          context: chSfHash,
+        ))),
+      );
+      expect(
         hexOf(sAp),
-        equals(
-          'a11af9f05531f856ad47116b45a95032'
-          '8204b4f44bfb6b3a4b4f1f3fcb631643',
-        ),
+        equals(hexOf(dtlsExpand(
+          secret: ms,
+          label: 's ap traffic',
+          context: chSfHash,
+        ))),
       );
     });
 
-    test('exporter_master_secret matches the trace', () {
+    test('exporter_master_secret matches a hand derivation', () {
       final early = TlsV13KeySchedule.computeEarlySecret();
       final hs = TlsV13KeySchedule.computeHandshakeSecret(
         earlySecret: early,
@@ -153,42 +187,81 @@ void main() {
       );
       expect(
         hexOf(exp),
-        equals(
-          'fe22f881176eda18eb8f44529e6792c5'
-          '0c9a3f89452f68d8ae311b4309d3cf50',
-        ),
+        equals(hexOf(dtlsExpand(
+          secret: ms,
+          label: 'exp master',
+          context: chSfHash,
+        ))),
       );
     });
+  });
 
-    test('deriveTrafficKeys yields RFC 8448 client handshake key/iv', () {
-      // c_hs_traffic from RFC 8448 §3.
-      final cHs = hex(
-        'b3eddb126e067f35a780b3abf45e2d8f'
-        '3b1a950738f52e9600746a0e27a55a21',
+  group('TlsV13KeySchedule.deriveTrafficKeys (RFC 9147 §5.9)', () {
+    test('uses the "dtls13" HKDF prefix for key/iv/finished/sn', () {
+      final secret = Uint8List.fromList(
+        List<int>.generate(32, (i) => 0xA0 ^ i),
       );
       final keys = TlsV13KeySchedule.deriveTrafficKeys(
-        trafficSecret: cHs,
-        keyLength: 16, // AES-128
-      );
-      expect(hexOf(keys.writeKey), equals('dbfaa693d1762c5b666af5d950258d01'));
-      expect(hexOf(keys.writeIv), equals('5bd3c71b836e0b76bb73265f'));
-      // finished_key is HashLen = 32 bytes for SHA-256.
-      expect(keys.finishedKey.length, equals(32));
-      // sn_key is keyLength bytes for AES-based sequence number protection.
-      expect(keys.snKey.length, equals(16));
-    });
-
-    test('deriveTrafficKeys yields RFC 8448 server handshake key/iv', () {
-      final sHs = hex(
-        'b67b7d690cc16c4e75e54213cb2d37b4'
-        'e9c912bcded9105d42befd59d391ad38',
-      );
-      final keys = TlsV13KeySchedule.deriveTrafficKeys(
-        trafficSecret: sHs,
+        trafficSecret: secret,
         keyLength: 16,
       );
-      expect(hexOf(keys.writeKey), equals('3fce516009c21727d0f2e4e86ee403bc'));
-      expect(hexOf(keys.writeIv), equals('5d313eb2671276ee13000b30'));
+      // Compute expected values manually with the DTLS prefix and compare.
+      expect(
+        keys.writeKey,
+        equals(dtlsExpand(
+          secret: secret,
+          label: 'key',
+          context: Uint8List(0),
+          length: 16,
+        )),
+      );
+      expect(
+        keys.writeIv,
+        equals(dtlsExpand(
+          secret: secret,
+          label: 'iv',
+          context: Uint8List(0),
+          length: 12,
+        )),
+      );
+      expect(
+        keys.finishedKey,
+        equals(dtlsExpand(
+          secret: secret,
+          label: 'finished',
+          context: Uint8List(0),
+          length: 32,
+        )),
+      );
+      expect(
+        keys.snKey,
+        equals(dtlsExpand(
+          secret: secret,
+          label: 'sn',
+          context: Uint8List(0),
+          length: 16,
+        )),
+      );
+    });
+
+    test('outputs differ from a TLS-1.3-prefixed derivation', () {
+      // Sanity: prove that the prefix change actually produces different
+      // bytes — guards against accidentally falling back to the TLS prefix.
+      final secret = Uint8List.fromList(
+        List<int>.generate(32, (i) => 0xA0 ^ i),
+      );
+      final keys = TlsV13KeySchedule.deriveTrafficKeys(
+        trafficSecret: secret,
+        keyLength: 16,
+      );
+      final tlsKey = Hkdf.expandLabel(
+        secret: secret,
+        label: 'key',
+        context: Uint8List(0),
+        length: 16,
+        // default prefix = "tls13 "
+      );
+      expect(keys.writeKey, isNot(equals(tlsKey)));
     });
   });
 }

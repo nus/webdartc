@@ -53,23 +53,38 @@ abstract final class Hkdf {
     return expand(prk, info, length);
   }
 
-  /// HKDF-Expand-Label per RFC 8446 §7.1 (TLS 1.3).
+  /// Default `HKDF-Expand-Label` prefix per RFC 8446 §7.1 (TLS 1.3) — six
+  /// bytes including a trailing space.
+  static const String tls13Prefix = 'tls13 ';
+
+  /// `HKDF-Expand-Label` prefix for DTLS 1.3 per RFC 9147 §5.9 — six bytes
+  /// **without** a trailing space. Required when deriving DTLS 1.3 traffic
+  /// secrets / record-protection keys; otherwise the resulting bytes will
+  /// silently differ from a peer that follows the spec.
+  static const String dtls13Prefix = 'dtls13';
+
+  /// HKDF-Expand-Label per RFC 8446 §7.1 (TLS 1.3) and RFC 9147 §5.9 (DTLS 1.3).
   ///
   ///   HKDF-Expand-Label(Secret, Label, Context, Length) =
   ///       HKDF-Expand(Secret, HkdfLabel, Length)
   ///
   ///   struct {
   ///     uint16 length = Length;
-  ///     opaque label<7..255> = "tls13 " + Label;
+  ///     opaque label<7..255> = prefix + Label;
   ///     opaque context<0..255> = Context;
   ///   } HkdfLabel;
+  ///
+  /// [prefix] selects the protocol family. TLS 1.3 uses `"tls13 "` (default,
+  /// six bytes including the trailing space); DTLS 1.3 uses `"dtls13"` (six
+  /// bytes without the trailing space) — see [tls13Prefix] / [dtls13Prefix].
   static Uint8List expandLabel({
     required Uint8List secret,
     required String label,
     required Uint8List context,
     required int length,
+    String prefix = tls13Prefix,
   }) {
-    final fullLabel = Uint8List.fromList('tls13 $label'.codeUnits);
+    final fullLabel = Uint8List.fromList('$prefix$label'.codeUnits);
     if (fullLabel.length > 255) {
       throw ArgumentError('HKDF-Expand-Label: label too long');
     }
@@ -95,16 +110,21 @@ abstract final class Hkdf {
   ///
   /// [transcriptHash] is the already-computed Hash(Messages); pass empty hash
   /// (SHA-256 of empty input) when the spec calls for it.
+  ///
+  /// [prefix] follows the same convention as [expandLabel] — pass
+  /// [dtls13Prefix] to derive DTLS 1.3 secrets.
   static Uint8List deriveSecret({
     required Uint8List secret,
     required String label,
     required Uint8List transcriptHash,
+    String prefix = tls13Prefix,
   }) {
     return expandLabel(
       secret: secret,
       label: label,
       context: transcriptHash,
       length: 32, // SHA-256 output length
+      prefix: prefix,
     );
   }
 

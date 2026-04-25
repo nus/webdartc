@@ -25,16 +25,23 @@ abstract final class DtlsV13Record {
   DtlsV13Record._();
 
   /// Build the per-record AEAD nonce (RFC 8446 §5.3 / RFC 9147 §4.2.1):
-  /// the 64-bit `(epoch << 48) | seq_num` is left-padded with zeros to the
+  /// the 64-bit record sequence number is left-padded with zeros to the
   /// length of [staticIv], then XORed with [staticIv].
-  static Uint8List buildNonce(Uint8List staticIv, int epoch, int seqNum) {
+  ///
+  /// The DTLS *epoch* is **not** packed into the nonce. Per RFC 9147
+  /// §4.2.1 "the epoch determines the keys" — each epoch has its own
+  /// traffic secret and therefore its own [staticIv], so the epoch
+  /// influences the nonce indirectly through the IV that is XORed in.
+  /// (NSS / OpenSSL implement it the same way.)
+  static Uint8List buildNonce(Uint8List staticIv, int seqNum) {
     if (staticIv.length != 12) {
       throw ArgumentError('static_iv must be 12 bytes');
     }
     final nonce = Uint8List.fromList(staticIv);
-    // record_seq_num (8 bytes, big-endian) goes in nonce[4..11].
-    nonce[4]  ^= (epoch >> 8) & 0xFF;
-    nonce[5]  ^=  epoch       & 0xFF;
+    // record_seq_num (8 bytes, big-endian) goes in nonce[4..11]. DTLS
+    // sequence numbers are 48-bit, so the top 16 bits are always zero.
+    nonce[4]  ^= (seqNum >> 56) & 0xFF;
+    nonce[5]  ^= (seqNum >> 48) & 0xFF;
     nonce[6]  ^= (seqNum >> 40) & 0xFF;
     nonce[7]  ^= (seqNum >> 32) & 0xFF;
     nonce[8]  ^= (seqNum >> 24) & 0xFF;

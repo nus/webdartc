@@ -48,6 +48,7 @@ abstract final class DtlsV13SrtpExport {
       secret: exporterMasterSecret,
       label: label,
       transcriptHash: Sha256.hash(Uint8List(0)),
+      prefix: Hkdf.dtls13Prefix,
     );
 
     // Step 2: out = HKDF-Expand-Label(per_label_secret,
@@ -59,6 +60,7 @@ abstract final class DtlsV13SrtpExport {
       label: 'exporter',
       context: Sha256.hash(ctx),
       length: length,
+      prefix: Hkdf.dtls13Prefix,
     );
   }
 }

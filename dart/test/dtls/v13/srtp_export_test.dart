@@ -65,10 +65,12 @@ void main() {
       expect(a, isNot(equals(b)));
     });
 
-    test('matches hand-computed two-step HKDF (RFC 8446 §7.5)', () {
+    test('matches hand-computed two-step HKDF with the DTLS 1.3 prefix '
+        '(RFC 8446 §7.5 + RFC 9147 §5.9)', () {
       // Reproduce the exporter spec by hand using the lower-level Hkdf
       // primitives — this guards against accidental drift in
-      // DtlsV13SrtpExport.export.
+      // DtlsV13SrtpExport.export. Per RFC 9147 §5.9 the DTLS 1.3 HKDF
+      // prefix is "dtls13" (no trailing space), not "tls13 ".
       const label = 'EXTRACTOR-dtls_srtp';
       const length = 60;
       final emptyHash = Sha256.hash(Uint8List(0));
@@ -77,12 +79,14 @@ void main() {
         label: label,
         context: emptyHash,
         length: 32,
+        prefix: Hkdf.dtls13Prefix,
       );
       final expected = Hkdf.expandLabel(
         secret: perLabel,
         label: 'exporter',
         context: emptyHash, // empty context_value
         length: length,
+        prefix: Hkdf.dtls13Prefix,
       );
       final actual = DtlsV13SrtpExport.export(
         exporterMasterSecret: exporterMasterSecret,
@@ -104,12 +108,14 @@ void main() {
         label: DtlsV13SrtpExport.dtlsSrtpLabel,
         context: emptyHash,
         length: 32,
+        prefix: Hkdf.dtls13Prefix,
       );
       final expected = Hkdf.expandLabel(
         secret: perLabel,
         label: 'exporter',
         context: Sha256.hash(bytes([1, 2, 3, 4])),
         length: 32,
+        prefix: Hkdf.dtls13Prefix,
       );
       expect(out, equals(expected));
     });
