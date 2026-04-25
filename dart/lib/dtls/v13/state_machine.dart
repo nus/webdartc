@@ -11,6 +11,7 @@ import 'cipher_suite.dart';
 import 'handshake.dart';
 import 'key_schedule.dart';
 import 'record_crypto.dart';
+import 'srtp_export.dart';
 import 'transcript.dart';
 
 /// DTLS 1.3 server state machine state (Phase 1 minimum).
@@ -73,8 +74,12 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
 
   // ─── Callbacks ────────────────────────────────────────────────────────
 
-  /// Fired exactly once when the handshake transitions to [CONNECTED].
-  void Function()? onConnected;
+  /// Fired exactly once when the handshake transitions to CONNECTED.
+  /// The argument is the 60-byte SRTP keying material exported from
+  /// `exporter_master_secret` per RFC 5764 §4.2 (laid out as
+  /// `client_master_key(16) || server_master_key(16) ||
+  /// client_master_salt(14) || server_master_salt(14)`).
+  void Function(Uint8List srtpKeyingMaterial)? onConnected;
 
   /// Fired for every successfully decrypted application_data record.
   void Function(Uint8List data)? onApplicationData;
@@ -472,7 +477,12 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
 
     _transcript.addDtlsMessage(fullDtls);
     _state = DtlsV13ServerState.connected;
-    onConnected?.call();
+    final cb = onConnected;
+    if (cb != null) {
+      cb(DtlsV13SrtpExport.export(
+        exporterMasterSecret: _exporterMasterSecret!,
+      ));
+    }
     return const core.Ok(ProcessResult.empty);
   }
 

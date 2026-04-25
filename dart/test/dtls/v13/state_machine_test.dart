@@ -83,8 +83,8 @@ void main() {
     test('synthetic client completes the handshake to CONNECTED', () {
       final cert = EcdsaCertificate.selfSigned();
       final server = DtlsV13ServerStateMachine(localCert: cert);
-      var connectedFired = false;
-      server.onConnected = () => connectedFired = true;
+      Uint8List? srtpKeyMaterial;
+      server.onConnected = (km) => srtpKeyMaterial = km;
 
       // ── Build the synthetic ClientHello ───────────────────────────────
       final clientKp = EcdhKeyPair.generate();
@@ -254,7 +254,8 @@ void main() {
           reason: r2.isErr ? 'unexpected error: ${r2.error}' : '');
 
       expect(server.state, equals(DtlsV13ServerState.connected));
-      expect(connectedFired, isTrue);
+      expect(srtpKeyMaterial, isNotNull);
+      expect(srtpKeyMaterial!.length, equals(60));
       expect(server.exporterMasterSecret, isNotNull);
       expect(server.cipherSuite!.id, equals(0x1301));
     });
