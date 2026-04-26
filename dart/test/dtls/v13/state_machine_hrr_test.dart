@@ -151,7 +151,9 @@ void main() {
     }
     expect(chosenGroup, equals(TlsV13NamedGroup.secp256r1));
     expect(cookieFromHrr, isNotNull);
-    expect(cookieFromHrr!.length, equals(32));
+    // Stateless cookie format (RFC 9147 §5.1): 1B version + 32B
+    // transcript hash + 32B HMAC tag = 65 bytes.
+    expect(cookieFromHrr!.length, equals(65));
 
     // ── CH2: now carry a secp256r1 key_share + the cookie echo ─────────
     final clientKp = EcdhKeyPair.generate();

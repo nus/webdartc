@@ -11,6 +11,7 @@ import '../../crypto/x25519.dart';
 import '../../crypto/x509_der.dart';
 import '../record.dart';
 import 'cipher_suite.dart';
+import 'cookie.dart';
 import 'handshake.dart';
 import 'key_schedule.dart';
 import 'record_crypto.dart';
@@ -207,15 +208,19 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   /// (RFC 9147 §5.5).
   final Map<int, _Reassembly> _fragmentBuffer = <int, _Reassembly>{};
 
-  /// Cookie sent in the HelloRetryRequest. The client must echo it
-  /// verbatim in its second ClientHello (RFC 8446 §4.2.2). Null when no
-  /// HRR has been emitted.
-  Uint8List? _hrrCookie;
+  /// Persistent server secret used to MAC stateless HRR cookies (RFC 9147
+  /// §5.1). Generated once per `DtlsV13ServerStateMachine` instance — the
+  /// DtlsServerDispatcher in front of us is process-scoped, so a single
+  /// key covers every connection it handles. Tests inject deterministic
+  /// keys via the [DtlsV13ServerStateMachine.cookieMacKey] constructor
+  /// parameter.
+  final Uint8List _cookieMacKey;
 
   DtlsV13ServerStateMachine({
     required this.localCert,
     this.requireClientAuth = false,
-  });
+    Uint8List? cookieMacKey,
+  }) : _cookieMacKey = cookieMacKey ?? Csprng.randomBytes(32);
 
   /// 65-byte uncompressed P-256 pubkey extracted from the client's
   /// Certificate message. Set during [_handleClientCertificate]; null
@@ -676,13 +681,23 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     _suite = suite;
     _selectedGroup = selectedGroup;
     _legacySessionIdEcho = ch.legacySessionId;
-    _hrrCookie = Csprng.randomBytes(32);
 
     // Bind the original ClientHello into the transcript first, then
     // rewrite it as the RFC 8446 §4.4.1 synthetic message_hash so that
     // both sides can hash a deterministic prefix once HRR has been sent.
     _transcript.addDtlsMessage(fullDtls);
+    // Snapshot the CH1 transcript hash *before* the synthetic-hash
+    // rewrite — this is what the cookie carries so a CH2 can be
+    // validated without retaining CH1 itself (RFC 9147 §5.1).
+    final ch1Hash = _transcript.hash;
     _transcript.replaceWithSyntheticHash();
+
+    final cookie = DtlsV13Cookie.mint(
+      macKey: _cookieMacKey,
+      transcriptHashCh1: ch1Hash,
+      clientIp: _remoteIp!,
+      clientPort: _remotePort!,
+    );
 
     final hrrExts = <TlsExtension>[
       TlsExtension(
@@ -695,7 +710,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       ),
       TlsExtension(
         TlsV13ExtensionType.cookie,
-        buildCookieExtData(_hrrCookie!),
+        buildCookieExtData(cookie),
       ),
     ];
     final hrrBody = buildHelloRetryRequestBody(
@@ -731,7 +746,10 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       return core.Err(const core.ParseError('DTLS 1.3: bad ClientHello (CH2)'));
     }
 
-    // Validate cookie echo.
+    // Validate cookie echo. RFC 9147 §5.1: the cookie itself is
+    // self-validating (HMAC over CH1 transcript hash + endpoint id) so
+    // we don't need to retain any per-client CH1 state — the only
+    // long-lived secret is _cookieMacKey.
     final ce = ch.extensionByType(TlsV13ExtensionType.cookie);
     if (ce == null) {
       return core.Err(
@@ -739,17 +757,16 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       );
     }
     final cookie = parseCookieExtData(ce.data);
-    if (cookie == null || _hrrCookie == null) {
+    if (cookie == null) {
       return core.Err(const core.ParseError('DTLS 1.3: CH2 cookie unparseable'));
     }
-    if (cookie.length != _hrrCookie!.length) {
-      return core.Err(const core.ParseError('DTLS 1.3: CH2 cookie mismatch'));
-    }
-    var diff = 0;
-    for (var i = 0; i < cookie.length; i++) {
-      diff |= cookie[i] ^ _hrrCookie![i];
-    }
-    if (diff != 0) {
+    final opened = DtlsV13Cookie.open(
+      macKey: _cookieMacKey,
+      cookie: cookie,
+      clientIp: _remoteIp!,
+      clientPort: _remotePort!,
+    );
+    if (opened == null || !opened.isValid) {
       return core.Err(const core.ParseError('DTLS 1.3: CH2 cookie mismatch'));
     }
 
