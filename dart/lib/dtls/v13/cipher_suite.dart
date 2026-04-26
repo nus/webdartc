@@ -53,11 +53,10 @@ final class TlsV13CipherSuite {
 
   /// `TLS_CHACHA20_POLY1305_SHA256` (0x1303) — RFC 8446 §B.4 / RFC 8439.
   ///
-  /// Registered so the suite can be advertised in ClientHello /
-  /// ServerHello; the AEAD primitive is implemented in
-  /// `lib/crypto/chacha20_poly1305.dart`. Wiring into
-  /// `record_crypto.dart` is a follow-up — the current
-  /// `DtlsV13RecordCrypto` calls `AesGcm.{encrypt,decrypt}` directly.
+  /// AEAD primitive lives in `lib/crypto/chacha20_poly1305.dart`. The DTLS
+  /// 1.3 record layer (`record_crypto.dart`) dispatches on the negotiated
+  /// suite and switches the SN-mask algorithm accordingly (RFC 9147 §4.2.3
+  /// uses raw ChaCha20 in place of AES-ECB for this suite).
   static const TlsV13CipherSuite chacha20Poly1305Sha256 = TlsV13CipherSuite(
     id: 0x1303,
     name: 'TLS_CHACHA20_POLY1305_SHA256',

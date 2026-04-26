@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../../crypto/chacha20_poly1305_pure.dart' show chacha20Block;
 import '../../crypto/crypto_backend.dart';
 
 /// DTLS 1.3 record protection (RFC 9147 §4).
@@ -132,30 +133,50 @@ abstract final class DtlsV13Record {
 
   /// Apply RFC 9147 §4.2.3 sequence-number masking in place.
   ///
-  /// The mask is the first [seqLen] bytes of `AES-ECB(snKey, ciphertext[0..15])`.
   /// XOR is symmetric, so the same call both encrypts (sender, after AEAD)
   /// and decrypts (receiver, before AEAD).
   ///
   /// [record] is the full record (header + ciphertext); [seqOffset] points to
   /// the truncated seq bytes to be masked, [ciphertextOffset] points to the
   /// first ciphertext byte (must have at least 16 bytes available).
+  ///
+  /// [useChaCha20] selects the mask algorithm:
+  ///   * `false` (default, AES-based suites) — `mask = AES-ECB(snKey, ciphertext[0..15])`
+  ///   * `true`  (TLS_CHACHA20_POLY1305_SHA256) — `mask = ChaCha20(snKey,
+  ///     counter=ciphertext[0..3], nonce=ciphertext[4..15])` over a 16-zero
+  ///     plaintext (i.e. the first 16 bytes of the ChaCha20 block).
   static void maskSequenceNumber({
     required Uint8List record,
     required int seqOffset,
     required int seqLen,
     required int ciphertextOffset,
     required Uint8List snKey,
+    bool useChaCha20 = false,
   }) {
-    if (snKey.length != 16 && snKey.length != 32) {
-      throw ArgumentError('sn_key must be 16 or 32 bytes');
-    }
     if (record.length < ciphertextOffset + 16) {
       throw ArgumentError('ciphertext must be at least 16 bytes for masking');
     }
     final sample = Uint8List.fromList(
       record.sublist(ciphertextOffset, ciphertextOffset + 16),
     );
-    final mask = aesCmBackend.aesEcbEncryptBlock(snKey, sample);
+    final Uint8List mask;
+    if (useChaCha20) {
+      if (snKey.length != 32) {
+        throw ArgumentError('ChaCha20 sn_key must be 32 bytes');
+      }
+      // counter = first 4 bytes (LE u32), nonce = next 12 bytes.
+      final counter = sample[0] |
+          (sample[1] << 8) |
+          (sample[2] << 16) |
+          (sample[3] << 24);
+      final nonce = Uint8List.sublistView(sample, 4, 16);
+      mask = chacha20Block(snKey, counter, nonce);
+    } else {
+      if (snKey.length != 16 && snKey.length != 32) {
+        throw ArgumentError('AES sn_key must be 16 or 32 bytes');
+      }
+      mask = aesCmBackend.aesEcbEncryptBlock(snKey, sample);
+    }
     for (var i = 0; i < seqLen; i++) {
       record[seqOffset + i] ^= mask[i];
     }

@@ -264,6 +264,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       record: packet,
       keys: keys,
       epoch: epoch,
+      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
     );
     if (out == null) {
       // RFC 9147 §4.5.3: silently drop unauthenticatable records.
@@ -1150,6 +1151,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       epoch: 3,
       seqNum: _sendSeqEpoch3++,
       keys: _serverApKeys!,
+      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
     );
     return core.Ok(
       ProcessResult(
@@ -1202,6 +1204,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       epoch: 2,
       seqNum: _sendSeqEpoch2++,
       keys: _serverHsKeys!,
+      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
     );
     outputs.add(OutputPacket(
       data: rec,

@@ -161,7 +161,16 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
   /// messages, keyed by `messageSeq` (RFC 9147 §5.5).
   final Map<int, _Reassembly> _fragmentBuffer = <int, _Reassembly>{};
 
-  DtlsV13ClientStateMachine({required this.localCert});
+  /// Cipher suites to advertise in ClientHello, in client-preference order.
+  /// Defaults to AES-128-GCM first, ChaCha20-Poly1305 second — matching the
+  /// implementation's primary suite while still letting the server pick
+  /// ChaCha20 when it prefers (RFC 8446 §4.1.2).
+  final List<int> offeredCipherSuites;
+
+  DtlsV13ClientStateMachine({
+    required this.localCert,
+    this.offeredCipherSuites = const <int>[0x1301, 0x1303],
+  });
 
   // ─── Public start API ─────────────────────────────────────────────────
 
@@ -253,6 +262,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
       record: packet,
       keys: keys,
       epoch: epoch,
+      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
     );
     if (out == null) {
       return const core.Ok(ProcessResult.empty);
@@ -467,7 +477,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
       random: _clientRandom,
       legacySessionId: _legacySessionId,
       cookie: Uint8List(0),
-      cipherSuites: const <int>[0x1301],
+      cipherSuites: offeredCipherSuites,
       extensions: exts,
     );
     return wrapHandshake(
@@ -630,7 +640,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     }
 
     final suite = TlsV13CipherSuite.byId(sh.cipherSuite);
-    if (suite == null || suite.id != TlsV13CipherSuite.aes128GcmSha256.id) {
+    if (suite == null) {
       return core.Err(
         const core.ParseError('DTLS 1.3: server picked unsupported cipher suite'),
       );
@@ -744,7 +754,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
       );
     }
     final suite = TlsV13CipherSuite.byId(hrr.cipherSuite);
-    if (suite == null || suite.id != TlsV13CipherSuite.aes128GcmSha256.id) {
+    if (suite == null) {
       return core.Err(
         const core.ParseError('DTLS 1.3: HRR picked unsupported cipher suite'),
       );
@@ -1082,6 +1092,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
       epoch: 3,
       seqNum: _sendSeqEpoch3++,
       keys: _clientApKeys!,
+      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
     );
     return core.Ok(ProcessResult(
       outputPackets: [
@@ -1121,6 +1132,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
       epoch: 2,
       seqNum: _sendSeqEpoch2++,
       keys: _clientHsKeys!,
+      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
     );
     return OutputPacket(
       data: rec,

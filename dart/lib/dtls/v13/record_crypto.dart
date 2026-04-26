@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 
 import '../../crypto/aes_gcm.dart';
+import '../../crypto/chacha20_poly1305.dart';
+import 'cipher_suite.dart';
 import 'key_schedule.dart';
 import 'record.dart';
 
@@ -12,17 +14,18 @@ import 'record.dart';
 ///   * [TrafficKeys] (write_key, write_iv, sn_key) — see `key_schedule.dart`.
 ///   * The unified-header build/parse and sequence-number masking from
 ///     `record.dart`.
-///   * AES-128-GCM AEAD from `lib/crypto/aes_gcm.dart`.
+///   * The negotiated AEAD primitive — AES-128-GCM (`TLS_AES_128_GCM_SHA256`,
+///     0x1301) or ChaCha20-Poly1305 (`TLS_CHACHA20_POLY1305_SHA256`, 0x1303).
 ///
 /// Records always use the C=0, S=1, L=1 unified-header variant produced by
 /// [DtlsV13Record.build] (no Connection ID, 16-bit truncated sequence,
-/// 16-bit length field). For the cipher suite covered here
-/// (`TLS_AES_128_GCM_SHA256`) the AEAD output is `content || content_type`
-/// of plaintext plus a 16-byte tag.
+/// 16-bit length field). The AEAD output for both supported suites is
+/// `content || content_type` of plaintext plus a 16-byte tag.
 abstract final class DtlsV13RecordCrypto {
   DtlsV13RecordCrypto._();
 
-  /// AES-GCM authentication tag length.
+  /// AEAD authentication tag length — 16 bytes for both AES-GCM and
+  /// ChaCha20-Poly1305 (RFC 8446 §B.4).
   static const int _tagLength = 16;
 
   /// Encrypt [content] into a DTLS 1.3 ciphertext record.
@@ -38,6 +41,7 @@ abstract final class DtlsV13RecordCrypto {
     required int epoch,
     required int seqNum,
     required TrafficKeys keys,
+    TlsV13CipherSuite cipherSuite = TlsV13CipherSuite.aes128GcmSha256,
   }) {
     final ctLen = content.length + 1 + _tagLength;
     if (ctLen > 0xFFFF) {
@@ -59,18 +63,28 @@ abstract final class DtlsV13RecordCrypto {
 
     final aad = Uint8List.fromList(record.sublist(0, 5));
     final nonce = DtlsV13Record.buildNonce(keys.writeIv, seqNum);
-    final aead = AesGcm.encrypt(keys.writeKey, nonce, inner, aad: aad);
-    record.setRange(5, 5 + inner.length, aead.ciphertext);
-    record.setRange(5 + inner.length, record.length, aead.tag);
+    final useChaCha20 = cipherSuite.id == TlsV13CipherSuite.chacha20Poly1305Sha256.id;
+    final Uint8List ciphertext;
+    final Uint8List tag;
+    if (useChaCha20) {
+      final aead = ChaCha20Poly1305.encrypt(keys.writeKey, nonce, inner, aad: aad);
+      ciphertext = aead.ciphertext;
+      tag = aead.tag;
+    } else {
+      final aead = AesGcm.encrypt(keys.writeKey, nonce, inner, aad: aad);
+      ciphertext = aead.ciphertext;
+      tag = aead.tag;
+    }
+    record.setRange(5, 5 + inner.length, ciphertext);
+    record.setRange(5 + inner.length, record.length, tag);
 
-    // Encrypt the sequence number with the AES-ECB mask of the first 16
-    // bytes of the AEAD ciphertext (RFC 9147 §4.2.3).
     DtlsV13Record.maskSequenceNumber(
       record: record,
       seqOffset: DtlsV13Record.seqOffsetForBuild,
       seqLen: 2,
       ciphertextOffset: DtlsV13Record.ciphertextOffsetForBuild,
       snKey: keys.snKey,
+      useChaCha20: useChaCha20,
     );
 
     return record;
@@ -93,6 +107,7 @@ abstract final class DtlsV13RecordCrypto {
     required TrafficKeys keys,
     required int epoch,
     int seqHi32 = 0,
+    TlsV13CipherSuite cipherSuite = TlsV13CipherSuite.aes128GcmSha256,
   }) {
     final hdr = DtlsV13Record.parse(record);
     if (hdr == null) return null;
@@ -102,6 +117,8 @@ abstract final class DtlsV13RecordCrypto {
     final ctLen = hdr.ciphertextLength;
     if (ctLen < _tagLength + 1) return null; // need at least content_type + tag
 
+    final useChaCha20 = cipherSuite.id == TlsV13CipherSuite.chacha20Poly1305Sha256.id;
+
     // Copy so we don't mutate the caller's bytes when unmasking the seq.
     final work = Uint8List.fromList(record);
     DtlsV13Record.maskSequenceNumber(
@@ -110,6 +127,7 @@ abstract final class DtlsV13RecordCrypto {
       seqLen: hdr.seqLen,
       ciphertextOffset: hdr.ciphertextOffset,
       snKey: keys.snKey,
+      useChaCha20: useChaCha20,
     );
 
     final seqLo16 = (work[hdr.seqOffset] << 8) | work[hdr.seqOffset + 1];
@@ -127,7 +145,9 @@ abstract final class DtlsV13RecordCrypto {
     );
 
     final nonce = DtlsV13Record.buildNonce(keys.writeIv, fullSeq);
-    final inner = AesGcm.decrypt(keys.writeKey, nonce, ct, tag, aad: aad);
+    final inner = useChaCha20
+        ? ChaCha20Poly1305.decrypt(keys.writeKey, nonce, ct, tag, aad: aad)
+        : AesGcm.decrypt(keys.writeKey, nonce, ct, tag, aad: aad);
     if (inner == null) return null;
 
     // DTLSInnerPlaintext = content || ContentType || zeros[*]
