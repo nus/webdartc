@@ -540,6 +540,95 @@ int? parseKeyUpdateBody(Uint8List body) {
   return v;
 }
 
+// ─── ACK (RFC 9147 §7.1) ──────────────────────────────────────────────────
+
+/// A single (epoch, sequence_number) pair acknowledging one record. Both
+/// fields are wire-encoded as uint64 (RFC 9147 §7.1) but Dart doesn't
+/// have an unsigned 64-bit int — for our use cases the values are well
+/// within 2^53, so plain `int` is fine.
+final class DtlsAckRecordNumber {
+  final int epoch;
+  final int sequenceNumber;
+  const DtlsAckRecordNumber(this.epoch, this.sequenceNumber);
+
+  @override
+  bool operator ==(Object other) =>
+      other is DtlsAckRecordNumber &&
+      other.epoch == epoch &&
+      other.sequenceNumber == sequenceNumber;
+
+  @override
+  int get hashCode => Object.hash(epoch, sequenceNumber);
+
+  @override
+  String toString() => 'DtlsAckRecordNumber(epoch=$epoch, seq=$sequenceNumber)';
+}
+
+/// Build the body of an `ACK` record (RFC 9147 §7.1):
+///
+/// ```
+/// struct {
+///   RecordNumber record_numbers<0..2^16-1>;
+/// } ACK;
+/// struct { uint64 epoch; uint64 sequence_number; } RecordNumber;
+/// ```
+///
+/// Each `RecordNumber` is 16 bytes (two big-endian uint64). The list is
+/// prefixed by a 2-byte big-endian length-in-bytes (max 65535 ⇒ at most
+/// 4095 entries per ACK).
+Uint8List buildAckRecord(List<DtlsAckRecordNumber> records) {
+  final entryBytes = records.length * 16;
+  if (entryBytes > 0xFFFF) {
+    throw ArgumentError('too many ACK record numbers (${records.length})');
+  }
+  final out = Uint8List(2 + entryBytes);
+  out[0] = (entryBytes >> 8) & 0xFF;
+  out[1] = entryBytes & 0xFF;
+  var off = 2;
+  for (final r in records) {
+    _writeUint64BE(out, off, r.epoch);
+    _writeUint64BE(out, off + 8, r.sequenceNumber);
+    off += 16;
+  }
+  return out;
+}
+
+/// Parse the body of an `ACK` record. Returns null on malformed input
+/// (length mismatch, body shorter than the prefix). Returns an empty
+/// list when the ACK acknowledges nothing (`record_numbers<0..>` may be
+/// empty per RFC 9147 §7.1, though the receiver "MUST send an ACK that
+/// acknowledges at least one record" — that's the sender's contract).
+List<DtlsAckRecordNumber>? parseAckRecord(Uint8List body) {
+  if (body.length < 2) return null;
+  final entryBytes = (body[0] << 8) | body[1];
+  if (entryBytes % 16 != 0) return null;
+  if (body.length < 2 + entryBytes) return null;
+  final out = <DtlsAckRecordNumber>[];
+  var off = 2;
+  for (var i = 0; i < entryBytes ~/ 16; i++) {
+    final epoch = _readUint64BE(body, off);
+    final seq = _readUint64BE(body, off + 8);
+    out.add(DtlsAckRecordNumber(epoch, seq));
+    off += 16;
+  }
+  return out;
+}
+
+void _writeUint64BE(Uint8List dst, int off, int v) {
+  for (var i = 7; i >= 0; i--) {
+    dst[off + i] = v & 0xFF;
+    v >>>= 8;
+  }
+}
+
+int _readUint64BE(Uint8List src, int off) {
+  var v = 0;
+  for (var i = 0; i < 8; i++) {
+    v = (v << 8) | src[off + i];
+  }
+  return v;
+}
+
 // ─── Extension data builders / parsers ────────────────────────────────────
 
 /// `supported_versions` extension data for ServerHello (RFC 8446 §4.2.1):

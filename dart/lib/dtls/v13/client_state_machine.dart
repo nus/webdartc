@@ -157,6 +157,11 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
   int _sendSeqEpoch3 = 0;
   int _outboundMsgSeq = 0;
 
+  /// Record number of the most recently decrypted inbound record,
+  /// captured before handshake dispatch so handlers can build an ACK
+  /// (RFC 9147 §7.1) referencing it.
+  DtlsAckRecordNumber? _lastRxRecordNumber;
+
   /// Application-data tx epoch for post-handshake KeyUpdate tracking
   /// (RFC 9147 §6.1). Starts at 3, increments by one per outbound
   /// KeyUpdate.
@@ -281,9 +286,15 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     if (out == null) {
       return const core.Ok(ProcessResult.empty);
     }
+    _lastRxRecordNumber = DtlsAckRecordNumber(epoch, out.seqNum);
     switch (out.contentType) {
       case DtlsContentType.handshake:
         return _processHandshakeFragments(out.content);
+      case DtlsContentType.ack:
+        // RFC 9147 §7: parse and discard. No per-record retransmit
+        // queue to clear yet; received ACKs are informational.
+        parseAckRecord(out.content);
+        return const core.Ok(ProcessResult.empty);
       case DtlsContentType.applicationData:
         if (_state == DtlsV13ClientState.connected) {
           onApplicationData?.call(out.content);
@@ -1180,7 +1191,8 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
   }
 
   /// Handle peer KeyUpdate: rotate rx keys to next gen, bump rx epoch,
-  /// optionally schedule reciprocal KeyUpdate.
+  /// emit an ACK of the KeyUpdate record (RFC 9147 §7), and optionally
+  /// schedule reciprocal KeyUpdate.
   core.Result<ProcessResult, core.ProtocolError> _handleKeyUpdate(
     Uint8List body,
   ) {
@@ -1190,6 +1202,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
         const core.ParseError('DTLS 1.3: malformed KeyUpdate body'),
       );
     }
+    final ackRn = _lastRxRecordNumber!;
     final nextSecret = TlsV13KeySchedule.deriveNextTrafficSecret(
       _serverApKeys!.trafficSecret,
     );
@@ -1201,7 +1214,27 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     if (req == KeyUpdateRequest.requested) {
       _peerRequestedKeyUpdate = true;
     }
-    return const core.Ok(ProcessResult.empty);
+    final ackPkt = _emitAck([ackRn]);
+    return core.Ok(ProcessResult(outputPackets: [ackPkt]));
+  }
+
+  /// Encrypt + emit an ACK record (RFC 9147 §7) at the current tx app
+  /// epoch under the client's app keys.
+  OutputPacket _emitAck(List<DtlsAckRecordNumber> records) {
+    final body = buildAckRecord(records);
+    final rec = DtlsV13RecordCrypto.encrypt(
+      contentType: DtlsContentType.ack,
+      content: body,
+      epoch: _txAppEpoch,
+      seqNum: _sendSeqEpoch3++,
+      keys: _clientApKeys!,
+      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
+    );
+    return OutputPacket(
+      data: rec,
+      remoteIp: _remoteIp!,
+      remotePort: _remotePort!,
+    );
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────

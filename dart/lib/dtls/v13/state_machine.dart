@@ -177,6 +177,12 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   int _sendSeqEpoch3 = 0;
   int _outboundMsgSeq = 0;
 
+  /// Record number of the last successfully decrypted inbound record,
+  /// captured right before handshake dispatch so that handlers (Finished,
+  /// KeyUpdate) can build an ACK referencing it without re-plumbing the
+  /// decrypt result through every dispatch path (RFC 9147 §7.1).
+  DtlsAckRecordNumber? _lastRxRecordNumber;
+
   /// Current application-data tx epoch (RFC 9147 §6.1). Starts at 3 once
   /// the handshake completes and increments by one each time we emit a
   /// KeyUpdate. The truncated value carried in record headers is
@@ -285,6 +291,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       // RFC 9147 §4.5.3: silently drop unauthenticatable records.
       return const core.Ok(ProcessResult.empty);
     }
+    _lastRxRecordNumber = DtlsAckRecordNumber(epoch, out.seqNum);
     switch (out.contentType) {
       case DtlsContentType.handshake:
         return _processHandshakeFragments(out.content);
@@ -292,6 +299,13 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         if (_state == DtlsV13ServerState.connected) {
           onApplicationData?.call(out.content);
         }
+        return const core.Ok(ProcessResult.empty);
+      case DtlsContentType.ack:
+        // RFC 9147 §7: parse and discard. We do not yet maintain a
+        // per-record retransmit queue to clear, so received ACKs are
+        // informational only. Malformed bodies are silently dropped per
+        // §4.5.3 (unauthenticatable / unexpected records).
+        parseAckRecord(out.content);
         return const core.Ok(ProcessResult.empty);
       case DtlsContentType.alert:
         _state = DtlsV13ServerState.failed;
@@ -416,8 +430,10 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
 
   /// Handle a peer KeyUpdate (RFC 8446 §4.6.3 / RFC 9147 §6.1):
   /// rotate the rx application keys to the next generation, bump
-  /// `_rxAppEpoch`, and (if the peer set `update_requested`) record that
-  /// we owe a reciprocal KeyUpdate before our next application_data.
+  /// `_rxAppEpoch`, ACK the KeyUpdate record (RFC 9147 §7 — KeyUpdate
+  /// is non-eliciting, so the only signal back is an ACK), and (if the
+  /// peer set `update_requested`) record that we owe a reciprocal
+  /// KeyUpdate before our next application_data.
   core.Result<ProcessResult, core.ProtocolError> _handleKeyUpdate(
     Uint8List body,
   ) {
@@ -427,6 +443,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         const core.ParseError('DTLS 1.3: malformed KeyUpdate body'),
       );
     }
+    final ackRn = _lastRxRecordNumber!;
     final nextSecret = TlsV13KeySchedule.deriveNextTrafficSecret(
       _clientApKeys!.trafficSecret,
     );
@@ -438,7 +455,8 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     if (req == KeyUpdateRequest.requested) {
       _peerRequestedKeyUpdate = true;
     }
-    return const core.Ok(ProcessResult.empty);
+    final ackPkt = _emitAck([ackRn]);
+    return core.Ok(ProcessResult(outputPackets: [ackPkt]));
   }
 
   /// Stash a fragment's body in [_fragmentBuffer]. Returns the fully
@@ -1177,7 +1195,31 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         length: exportLen,
       ));
     }
-    return const core.Ok(ProcessResult.empty);
+    // Client Finished is the terminal flight from the client's
+    // perspective — RFC 9147 §7.1 requires the receiver of a final
+    // flight to send an ACK so the peer can clear its retransmit timer.
+    final ackPkt = _emitAck([_lastRxRecordNumber!]);
+    return core.Ok(ProcessResult(outputPackets: [ackPkt]));
+  }
+
+  /// Encrypt and emit an ACK record (RFC 9147 §7) at the current tx app
+  /// epoch using the server's app keys. Caller supplies the (epoch, seq)
+  /// pairs to acknowledge.
+  OutputPacket _emitAck(List<DtlsAckRecordNumber> records) {
+    final body = buildAckRecord(records);
+    final rec = DtlsV13RecordCrypto.encrypt(
+      contentType: DtlsContentType.ack,
+      content: body,
+      epoch: _txAppEpoch,
+      seqNum: _sendSeqEpoch3++,
+      keys: _serverApKeys!,
+      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
+    );
+    return OutputPacket(
+      data: rec,
+      remoteIp: _remoteIp!,
+      remotePort: _remotePort!,
+    );
   }
 
   // ─── Public application-data API ──────────────────────────────────────

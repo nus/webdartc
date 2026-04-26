@@ -1,12 +1,14 @@
 import 'dart:typed_data';
 
-/// DTLS 1.2 content types (RFC 6347 §4.1).
+/// DTLS content types (RFC 6347 §4.1 + RFC 9147 §4.1).
 abstract final class DtlsContentType {
   DtlsContentType._();
   static const int changeCipherSpec = 20;
   static const int alert            = 21;
   static const int handshake        = 22;
   static const int applicationData  = 23;
+  /// DTLS 1.3 only (RFC 9147 §7.1).
+  static const int ack              = 26;
 }
 
 /// DTLS 1.2 version bytes.

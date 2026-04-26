@@ -108,13 +108,22 @@ void main() {
       final ku = client.requestKeyUpdate();
       expect(ku.isOk, isTrue);
       expect(ku.value.outputPackets, hasLength(1));
-      // Deliver the KeyUpdate record to the server.
+      // Deliver the KeyUpdate record to the server. Per RFC 9147 §7,
+      // KeyUpdate is non-eliciting, so the server emits an ACK to let
+      // the client clear any retransmit state.
       for (final p in ku.value.outputPackets) {
         final r = server.processInput(p.data,
             remoteIp: p.remoteIp, remotePort: p.remotePort);
         expect(r.isOk, isTrue);
-        // notRequested: server does not need to send anything.
-        expect(r.value.outputPackets, isEmpty);
+        expect(r.value.outputPackets, hasLength(1),
+            reason: 'server should ACK the inbound KeyUpdate');
+        // Deliver the ACK back to the client; no further records expected.
+        for (final ackPkt in r.value.outputPackets) {
+          final ackR = client.processInput(ackPkt.data,
+              remoteIp: ackPkt.remoteIp, remotePort: ackPkt.remotePort);
+          expect(ackR.isOk, isTrue);
+          expect(ackR.value.outputPackets, isEmpty);
+        }
       }
 
       // Client now sends app data under the next-gen tx keys.
@@ -148,14 +157,23 @@ void main() {
       final ku = server.requestKeyUpdate(requestPeerUpdate: true);
       expect(ku.isOk, isTrue);
 
-      // Deliver server's KeyUpdate to the client.
+      // Deliver server's KeyUpdate to the client. The client emits an
+      // ACK of the KeyUpdate record (RFC 9147 §7); the reciprocal
+      // KeyUpdate is queued until the next sendApplicationData per
+      // RFC 8446 §4.6.3.
       for (final p in ku.value.outputPackets) {
         final r = client.processInput(p.data,
             remoteIp: p.remoteIp, remotePort: p.remotePort);
         expect(r.isOk, isTrue);
-        // The client must NOT eagerly emit anything until sendApp is called;
-        // RFC 8446 §4.6.3 lets the reciprocation be the next outbound record.
-        expect(r.value.outputPackets, isEmpty);
+        expect(r.value.outputPackets, hasLength(1),
+            reason: 'client should ACK the inbound KeyUpdate');
+        // Deliver the ACK to the server; no further records expected.
+        for (final ackPkt in r.value.outputPackets) {
+          final ackR = server.processInput(ackPkt.data,
+              remoteIp: ackPkt.remoteIp, remotePort: ackPkt.remotePort);
+          expect(ackR.isOk, isTrue);
+          expect(ackR.value.outputPackets, isEmpty);
+        }
       }
 
       // Client sends app data; the client SM piggy-backs the reciprocal
@@ -185,6 +203,12 @@ void main() {
           final r = server.processInput(p.data,
               remoteIp: p.remoteIp, remotePort: p.remotePort);
           expect(r.isOk, isTrue);
+          // Drain the server's ACK back to the client.
+          for (final ackPkt in r.value.outputPackets) {
+            final ackR = client.processInput(ackPkt.data,
+                remoteIp: ackPkt.remoteIp, remotePort: ackPkt.remotePort);
+            expect(ackR.isOk, isTrue);
+          }
         }
       }
 
