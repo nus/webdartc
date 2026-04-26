@@ -387,6 +387,67 @@ Uint8List buildCertificateBody({
   return out;
 }
 
+// ─── CertificateRequest ───────────────────────────────────────────────────
+
+/// Parsed `CertificateRequest` body (RFC 8446 §4.3.2).
+final class ParsedCertificateRequest {
+  final Uint8List certificateRequestContext;
+  final List<TlsExtension> extensions;
+
+  const ParsedCertificateRequest({
+    required this.certificateRequestContext,
+    required this.extensions,
+  });
+
+  /// Returns the first extension matching [type], or null.
+  TlsExtension? extensionByType(int type) {
+    for (final e in extensions) {
+      if (e.type == type) return e;
+    }
+    return null;
+  }
+}
+
+/// Build the TLS 1.3 `CertificateRequest` body (RFC 8446 §4.3.2):
+///
+///   opaque certificate_request_context<0..255>;
+///   Extension extensions<2..2^16-1>;
+///
+/// The `signature_algorithms` extension is REQUIRED in [extensions]; the
+/// caller is responsible for including it.
+Uint8List buildCertificateRequestBody({
+  required Uint8List certificateRequestContext,
+  required List<TlsExtension> extensions,
+}) {
+  if (certificateRequestContext.length > 0xFF) {
+    throw ArgumentError('certificate_request_context too long');
+  }
+  final extBlock = buildTlsExtensionsBlock(extensions);
+  final out = Uint8List(1 + certificateRequestContext.length + extBlock.length);
+  var off = 0;
+  out[off++] = certificateRequestContext.length;
+  out.setRange(off, off + certificateRequestContext.length,
+      certificateRequestContext);
+  off += certificateRequestContext.length;
+  out.setRange(off, off + extBlock.length, extBlock);
+  return out;
+}
+
+/// Parse a TLS 1.3 `CertificateRequest` body. Returns null on any
+/// structural error.
+ParsedCertificateRequest? parseCertificateRequestBody(Uint8List body) {
+  if (body.isEmpty) return null;
+  final ctxLen = body[0];
+  if (1 + ctxLen > body.length) return null;
+  final ctx = body.sublist(1, 1 + ctxLen);
+  final exts = parseTlsExtensionsBlock(body, 1 + ctxLen);
+  if (exts == null) return null;
+  return ParsedCertificateRequest(
+    certificateRequestContext: ctx,
+    extensions: exts,
+  );
+}
+
 // ─── CertificateVerify ────────────────────────────────────────────────────
 
 /// `CertificateVerify` body (RFC 8446 §4.4.3):
@@ -626,6 +687,23 @@ Uint8List buildUseSrtpExtData(int selectedProfile) {
     (selectedProfile >> 8) & 0xFF, selectedProfile & 0xFF,
     0x00, // empty MKI
   ]);
+}
+
+/// Build the `signature_algorithms` extension data (RFC 8446 §4.2.3):
+/// a 2-byte total length followed by 2-byte SignatureScheme values.
+Uint8List buildSignatureAlgorithmsExtData(List<int> schemes) {
+  final total = 2 * schemes.length;
+  if (total == 0 || total > 0xFFFF) {
+    throw ArgumentError('signature_algorithms list out of range');
+  }
+  final out = Uint8List(2 + total);
+  out[0] = (total >> 8) & 0xFF;
+  out[1] =  total        & 0xFF;
+  for (var i = 0; i < schemes.length; i++) {
+    out[2 + 2 * i] = (schemes[i] >> 8) & 0xFF;
+    out[3 + 2 * i] =  schemes[i]        & 0xFF;
+  }
+  return out;
 }
 
 /// `signature_algorithms` extension data: list of 2-byte SignatureScheme

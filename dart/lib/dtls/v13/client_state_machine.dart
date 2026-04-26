@@ -6,6 +6,7 @@ import '../../crypto/csprng.dart';
 import '../../crypto/ecdh.dart';
 import '../../crypto/ecdsa.dart';
 import '../../crypto/hmac_sha256.dart';
+import '../../crypto/sha256.dart';
 import '../../crypto/x25519.dart';
 import '../../crypto/x509_der.dart';
 import '../record.dart';
@@ -58,12 +59,19 @@ enum DtlsV13ClientState {
 ///   * fragmentation-reassembly is supported for the encrypted flight
 ///   * server CertificateVerify is verified with [EcdsaVerify].
 final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
-  /// Client-side X.509 certificate + signing key. Kept on the API surface
-  /// so the client mirrors the server's constructor shape (and so a future
-  /// mTLS path can reuse it). The current scope never sends a client
-  /// Certificate / CertificateVerify because we don't accept
-  /// CertificateRequest from the server.
+  /// Client-side X.509 certificate + signing key. The DER bytes are sent
+  /// in a Certificate message, and the private key signs the
+  /// CertificateVerify content, when the server requests client
+  /// authentication via CertificateRequest (RFC 8446 §4.3.2).
   final EcdsaCertificate localCert;
+
+  /// Expected SHA-256 fingerprint of the *server's* certificate, formatted
+  /// as colon-separated uppercase hex (matching the SDP `a=fingerprint`
+  /// convention used by [EcdsaCertificate.sha256Fingerprint]). When
+  /// non-null, the client compares this to the server's actual cert
+  /// fingerprint after parsing the server Certificate; mismatch fails the
+  /// handshake with a `CryptoError`.
+  String? expectedRemoteFingerprint;
 
   // ─── Public state observables ────────────────────────────────────────
 
@@ -122,6 +130,18 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
   /// 65-byte uncompressed P-256 pubkey extracted from the server's
   /// Certificate message. Used to verify CertificateVerify.
   Uint8List? _peerCertPubKey;
+
+  /// True once the server has emitted a CertificateRequest in its
+  /// encrypted flight. When true, the client must produce its own
+  /// Certificate + CertificateVerify before its Finished
+  /// (RFC 8446 §4.3.2 + §4.4.2-3).
+  bool _serverRequestedClientAuth = false;
+
+  /// `certificate_request_context` echoed back in the client Certificate
+  /// (RFC 8446 §4.3.2). For mid-handshake mTLS this is empty, but we
+  /// preserve whatever the server sends so post-handshake auth could
+  /// reuse this slot in future.
+  Uint8List _certificateRequestContext = Uint8List(0);
 
   Uint8List? _earlySecret;
   Uint8List? _handshakeSecret;
@@ -326,6 +346,12 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
           return const core.Ok(ProcessResult.empty);
         }
         return _handleEncryptedExtensions(body, fullDtls);
+
+      case TlsV13HandshakeType.certificateRequest:
+        if (_state != DtlsV13ClientState.waitCertificate) {
+          return const core.Ok(ProcessResult.empty);
+        }
+        return _handleCertificateRequest(body, fullDtls);
 
       case TlsV13HandshakeType.certificate:
         if (_state != DtlsV13ClientState.waitCertificate) {
@@ -797,6 +823,24 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     return const core.Ok(ProcessResult.empty);
   }
 
+  core.Result<ProcessResult, core.ProtocolError> _handleCertificateRequest(
+    Uint8List body,
+    Uint8List fullDtls,
+  ) {
+    final cr = parseCertificateRequestBody(body);
+    if (cr == null) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: bad CertificateRequest'),
+      );
+    }
+    _serverRequestedClientAuth = true;
+    _certificateRequestContext = cr.certificateRequestContext;
+    _transcript.addDtlsMessage(fullDtls);
+    // Stay in waitCertificate — the server still owes us its own
+    // Certificate + CertificateVerify + Finished.
+    return const core.Ok(ProcessResult.empty);
+  }
+
   core.Result<ProcessResult, core.ProtocolError> _handleCertificate(
     Uint8List body,
     Uint8List fullDtls,
@@ -829,6 +873,20 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
       return core.Err(const core.ParseError('DTLS 1.3: truncated cert_data'));
     }
     final certDer = Uint8List.sublistView(body, off, off + certLen);
+
+    final expected = expectedRemoteFingerprint;
+    if (expected != null) {
+      final fp = Sha256.hash(certDer)
+          .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
+          .join(':');
+      if (fp != expected) {
+        return core.Err(
+          const core.CryptoError(
+              'DTLS 1.3: server cert fingerprint mismatch'),
+        );
+      }
+    }
+
     final pub = extractEcdsaP256PublicKey(certDer);
     if (pub == null) {
       return core.Err(
@@ -948,6 +1006,42 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
       chServerFinishedTranscriptHash: chSfHash,
     );
 
+    final outputs = <OutputPacket>[];
+
+    // mTLS: when the server asked for client auth, the client's response
+    // flight is `Certificate || CertificateVerify || Finished`. Each of
+    // the three messages is folded into the transcript before the next is
+    // built, so the CV signs `…serverFinished || clientCert` and the
+    // client Finished MAC covers `…clientCert || clientCertificateVerify`.
+    if (_serverRequestedClientAuth) {
+      final certFragment = wrapHandshake(
+        msgType: TlsV13HandshakeType.certificate,
+        msgSeq: _outboundMsgSeq++,
+        body: buildCertificateBody(
+          certificateRequestContext: _certificateRequestContext,
+          certDerChain: <Uint8List>[localCert.derBytes],
+        ),
+      );
+      _transcript.addDtlsMessage(certFragment);
+      outputs.add(_emitEncryptedHandshakeRecord(certFragment));
+
+      final cvSigned = certificateVerifySignedContent(
+        transcriptHash: _transcript.hash,
+        isServer: false,
+      );
+      final cvSignature = localCert.sign(cvSigned);
+      final cvFragment = wrapHandshake(
+        msgType: TlsV13HandshakeType.certificateVerify,
+        msgSeq: _outboundMsgSeq++,
+        body: buildCertificateVerifyBody(
+          signatureScheme: TlsV13SignatureScheme.ecdsaSecp256r1Sha256,
+          signature: cvSignature,
+        ),
+      );
+      _transcript.addDtlsMessage(cvFragment);
+      outputs.add(_emitEncryptedHandshakeRecord(cvFragment));
+    }
+
     // Build & send client Finished (epoch 2, encrypted with client_hs).
     final clientVerifyData =
         HmacSha256.compute(_clientHsKeys!.finishedKey, _transcript.hash);
@@ -956,20 +1050,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
       msgSeq: _outboundMsgSeq++,
       body: buildFinishedBody(clientVerifyData),
     );
-    final finRecord = DtlsV13RecordCrypto.encrypt(
-      contentType: DtlsContentType.handshake,
-      content: finFragment,
-      epoch: 2,
-      seqNum: _sendSeqEpoch2++,
-      keys: _clientHsKeys!,
-    );
-    final outputs = <OutputPacket>[
-      OutputPacket(
-        data: finRecord,
-        remoteIp: _remoteIp!,
-        remotePort: _remotePort!,
-      ),
-    ];
+    outputs.add(_emitEncryptedHandshakeRecord(finFragment));
 
     _state = DtlsV13ClientState.connected;
     final cb = onConnected;
@@ -1029,6 +1110,23 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
       default:
         return 60;
     }
+  }
+
+  /// Encrypt [handshakeFragment] under the client's epoch-2 handshake
+  /// keys and wrap it in an OutputPacket bound for the current peer.
+  OutputPacket _emitEncryptedHandshakeRecord(Uint8List handshakeFragment) {
+    final rec = DtlsV13RecordCrypto.encrypt(
+      contentType: DtlsContentType.handshake,
+      content: handshakeFragment,
+      epoch: 2,
+      seqNum: _sendSeqEpoch2++,
+      keys: _clientHsKeys!,
+    );
+    return OutputPacket(
+      data: rec,
+      remoteIp: _remoteIp!,
+      remotePort: _remotePort!,
+    );
   }
 
   OutputPacket _emitPlaintextHandshake(Uint8List handshakeFragment) {

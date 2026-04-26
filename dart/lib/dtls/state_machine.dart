@@ -98,6 +98,13 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   /// bypassed entirely. `null` for client mode and for DTLS 1.2 clients.
   v13.DtlsV13ServerStateMachine? _v13Inner;
 
+  /// Server-only knob: when true and the negotiated DTLS version is 1.3,
+  /// the inner [v13.DtlsV13ServerStateMachine] is constructed with
+  /// `requireClientAuth: true` (RFC 8446 §4.3.2 / RFC 8842 §5). The flag
+  /// has no effect on DTLS 1.2 (which always asks for a client cert) or
+  /// on the client role.
+  bool requireClientAuth = false;
+
   DtlsStateMachine({required this.role, required this.localCert});
 
   DtlsHandshakeState get state => _state;
@@ -162,7 +169,11 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     if (role == DtlsRole.server &&
         _state == DtlsHandshakeState.initial &&
         _isDtls13ClientHello(packet)) {
-      final inner = v13.DtlsV13ServerStateMachine(localCert: localCert);
+      final inner = v13.DtlsV13ServerStateMachine(
+        localCert: localCert,
+        requireClientAuth: requireClientAuth,
+      );
+      inner.expectedRemoteFingerprint = expectedRemoteFingerprint;
       inner.onConnected = (km) => onConnected?.call(km);
       inner.onApplicationData = (data) => onApplicationData?.call(data);
       _v13Inner = inner;

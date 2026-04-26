@@ -6,7 +6,9 @@ import '../../crypto/csprng.dart';
 import '../../crypto/ecdh.dart';
 import '../../crypto/ecdsa.dart';
 import '../../crypto/hmac_sha256.dart';
+import '../../crypto/sha256.dart';
 import '../../crypto/x25519.dart';
+import '../../crypto/x509_der.dart';
 import '../record.dart';
 import 'cipher_suite.dart';
 import 'handshake.dart';
@@ -24,9 +26,19 @@ enum DtlsV13ServerState {
   /// resubmitted (and now key-share-acceptable) ClientHello.
   waitSecondClientHello,
 
-  /// Server flight (ServerHello + EncryptedExtensions + Certificate +
-  /// CertificateVerify + Finished) has been emitted; awaiting the client's
-  /// encrypted Finished on epoch 2.
+  /// Server flight has been emitted with a CertificateRequest;
+  /// awaiting the client's encrypted Certificate on epoch 2. Only
+  /// reached when [DtlsV13ServerStateMachine.requireClientAuth] is true.
+  waitClientCertificate,
+
+  /// Client Certificate has been received; awaiting the client's
+  /// CertificateVerify on epoch 2. Only reached when client auth is
+  /// required.
+  waitClientCertificateVerify,
+
+  /// Server flight (ServerHello + EncryptedExtensions + [CertificateRequest] +
+  /// Certificate + CertificateVerify + Finished) has been emitted; awaiting
+  /// the client's encrypted Finished on epoch 2.
   waitClientFinished,
 
   /// Handshake complete. Application data flows on epoch 3.
@@ -59,6 +71,23 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   /// bytes are sent in the Certificate message; its private key signs the
   /// CertificateVerify content.
   final EcdsaCertificate localCert;
+
+  /// Whether the server demands a client Certificate / CertificateVerify
+  /// before completing the handshake (RFC 8446 §4.3.2 mid-handshake mTLS).
+  /// When true, the server's flight includes a CertificateRequest and the
+  /// client must supply its own Certificate + CertificateVerify before its
+  /// Finished. When false (the default) the flow is unchanged from the
+  /// non-mTLS case — the server doesn't ask, the client doesn't sign.
+  final bool requireClientAuth;
+
+  /// Expected SHA-256 fingerprint of the *peer's* certificate, formatted
+  /// as colon-separated uppercase hex (matching the SDP `a=fingerprint`
+  /// convention used by [EcdsaCertificate.sha256Fingerprint]). When
+  /// non-null, the server compares this to the client's actual cert
+  /// fingerprint after parsing the client Certificate; mismatch fails the
+  /// handshake with a `CryptoError`. When null, no check is performed.
+  /// Only meaningful with [requireClientAuth] true.
+  String? expectedRemoteFingerprint;
 
   // ─── Public state observables ────────────────────────────────────────
 
@@ -162,7 +191,15 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   /// HRR has been emitted.
   Uint8List? _hrrCookie;
 
-  DtlsV13ServerStateMachine({required this.localCert});
+  DtlsV13ServerStateMachine({
+    required this.localCert,
+    this.requireClientAuth = false,
+  });
+
+  /// 65-byte uncompressed P-256 pubkey extracted from the client's
+  /// Certificate message. Set during [_handleClientCertificate]; null
+  /// before that, and always null when [requireClientAuth] is false.
+  Uint8List? _peerCertPubKey;
 
   // ─── ProtocolStateMachine ─────────────────────────────────────────────
 
@@ -210,18 +247,19 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     if (rec.contentType != DtlsContentType.handshake) {
       return const core.Ok(ProcessResult.empty);
     }
-    return _processHandshakeFragment(rec.fragment);
+    return _processHandshakeFragments(rec.fragment);
   }
 
   core.Result<ProcessResult, core.ProtocolError> _processCiphertextRecord(
     Uint8List packet,
   ) {
-    final keys = _state == DtlsV13ServerState.waitClientFinished
-        ? _clientHsKeys
-        : _clientApKeys;
+    final isHandshakeEpoch = _state == DtlsV13ServerState.waitClientFinished ||
+        _state == DtlsV13ServerState.waitClientCertificate ||
+        _state == DtlsV13ServerState.waitClientCertificateVerify;
+    final keys = isHandshakeEpoch ? _clientHsKeys : _clientApKeys;
     if (keys == null) return const core.Ok(ProcessResult.empty);
 
-    final epoch = _state == DtlsV13ServerState.waitClientFinished ? 2 : 3;
+    final epoch = isHandshakeEpoch ? 2 : 3;
     final out = DtlsV13RecordCrypto.decrypt(
       record: packet,
       keys: keys,
@@ -233,7 +271,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     }
     switch (out.contentType) {
       case DtlsContentType.handshake:
-        return _processHandshakeFragment(out.content);
+        return _processHandshakeFragments(out.content);
       case DtlsContentType.applicationData:
         if (_state == DtlsV13ServerState.connected) {
           onApplicationData?.call(out.content);
@@ -248,6 +286,40 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   }
 
   // ─── Handshake message dispatch ───────────────────────────────────────
+
+  /// Walk a buffer that may carry one or more concatenated DTLS handshake
+  /// records. WebRTC peers (notably Firefox) bundle the client response
+  /// flight — `Certificate || CertificateVerify || Finished` — into a
+  /// single ciphertext record, so the server has to keep dispatching
+  /// successive fragments until the buffer is exhausted.
+  core.Result<ProcessResult, core.ProtocolError> _processHandshakeFragments(
+    Uint8List buf,
+  ) {
+    final outputs = <OutputPacket>[];
+    var offset = 0;
+    while (offset < buf.length) {
+      if (buf.length - offset < 12) {
+        return core.Err(
+          const core.ParseError('DTLS 1.3: short handshake header'),
+        );
+      }
+      final fragLen = (buf[offset + 9] << 16) |
+          (buf[offset + 10] << 8) |
+          buf[offset + 11];
+      final total = 12 + fragLen;
+      if (offset + total > buf.length) {
+        return core.Err(
+          const core.ParseError('DTLS 1.3: truncated handshake fragment'),
+        );
+      }
+      final slice = Uint8List.sublistView(buf, offset, offset + total);
+      final r = _processHandshakeFragment(slice);
+      if (r.isErr) return r;
+      outputs.addAll(r.value.outputPackets);
+      offset += total;
+    }
+    return core.Ok(ProcessResult(outputPackets: outputs));
+  }
 
   core.Result<ProcessResult, core.ProtocolError> _processHandshakeFragment(
     Uint8List fragment,
@@ -286,7 +358,9 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         if (_state == DtlsV13ServerState.waitSecondClientHello) {
           return _handleSecondClientHello(body, fullDtls);
         }
-        if (_state == DtlsV13ServerState.waitClientFinished &&
+        if ((_state == DtlsV13ServerState.waitClientFinished ||
+                _state == DtlsV13ServerState.waitClientCertificate ||
+                _state == DtlsV13ServerState.waitClientCertificateVerify) &&
             _lastServerFlight != null) {
           // Client retransmitted: re-send our flight verbatim.
           return core.Ok(
@@ -294,6 +368,18 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
           );
         }
         return const core.Ok(ProcessResult.empty);
+
+      case TlsV13HandshakeType.certificate:
+        if (_state != DtlsV13ServerState.waitClientCertificate) {
+          return const core.Ok(ProcessResult.empty);
+        }
+        return _handleClientCertificate(body, fullDtls);
+
+      case TlsV13HandshakeType.certificateVerify:
+        if (_state != DtlsV13ServerState.waitClientCertificateVerify) {
+          return const core.Ok(ProcessResult.empty);
+        }
+        return _handleClientCertificateVerify(body, fullDtls);
 
       case TlsV13HandshakeType.finished:
         if (_state != DtlsV13ServerState.waitClientFinished) {
@@ -779,6 +865,23 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       body: buildEncryptedExtensionsBody(eeExts),
       outputs: outputs,
     );
+    if (requireClientAuth) {
+      _emitEncryptedHandshake(
+        type: TlsV13HandshakeType.certificateRequest,
+        body: buildCertificateRequestBody(
+          certificateRequestContext: Uint8List(0),
+          extensions: <TlsExtension>[
+            TlsExtension(
+              TlsV13ExtensionType.signatureAlgorithms,
+              buildSignatureAlgorithmsExtData(<int>[
+                TlsV13SignatureScheme.ecdsaSecp256r1Sha256,
+              ]),
+            ),
+          ],
+        ),
+        outputs: outputs,
+      );
+    }
     _emitEncryptedHandshake(
       type: TlsV13HandshakeType.certificate,
       body: buildCertificateBody(
@@ -837,20 +940,149 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       chServerFinishedTranscriptHash: chSfHash,
     );
 
-    _state = DtlsV13ServerState.waitClientFinished;
+    _state = requireClientAuth
+        ? DtlsV13ServerState.waitClientCertificate
+        : DtlsV13ServerState.waitClientFinished;
     _lastServerFlight = List.of(outputs);
     return core.Ok(ProcessResult(outputPackets: outputs));
   }
 
+  // ─── client Certificate / CertificateVerify (mTLS) ────────────────────
+
+  core.Result<ProcessResult, core.ProtocolError> _handleClientCertificate(
+    Uint8List body,
+    Uint8List fullDtls,
+  ) {
+    // RFC 8446 §4.4.2 Certificate body:
+    //   opaque certificate_request_context<0..255>;
+    //   CertificateEntry certificate_list<0..2^24-1>;
+    if (body.isEmpty) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: empty client Certificate'),
+      );
+    }
+    final ctxLen = body[0];
+    if (1 + ctxLen + 3 > body.length) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: bad client Certificate context'),
+      );
+    }
+    var off = 1 + ctxLen;
+    final listLen = (body[off] << 16) | (body[off + 1] << 8) | body[off + 2];
+    off += 3;
+    if (off + listLen != body.length) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: bad client Certificate list'),
+      );
+    }
+    if (listLen == 0) {
+      // RFC 8446 §4.4.2: client Certificate may be empty when the client
+      // does not have a usable cert, but for our mTLS path we treat that
+      // as a failure — the SDP a=fingerprint contract requires both sides
+      // to present a verifiable cert.
+      return core.Err(
+        const core.CryptoError('DTLS 1.3: client Certificate is empty'),
+      );
+    }
+    if (off + 3 > body.length) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: bad client CertificateEntry'),
+      );
+    }
+    final certLen = (body[off] << 16) | (body[off + 1] << 8) | body[off + 2];
+    off += 3;
+    if (off + certLen > body.length) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: truncated client cert_data'),
+      );
+    }
+    final certDer = Uint8List.fromList(
+      body.sublist(off, off + certLen),
+    );
+
+    // Verify SDP a=fingerprint binding when the caller has set one. The
+    // format mirrors EcdsaCertificate.sha256Fingerprint — colon-separated
+    // uppercase hex.
+    final expected = expectedRemoteFingerprint;
+    if (expected != null) {
+      final fp = Sha256.hash(certDer)
+          .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
+          .join(':');
+      if (fp != expected) {
+        return core.Err(
+          const core.CryptoError(
+              'DTLS 1.3: client cert fingerprint mismatch'),
+        );
+      }
+    }
+
+    final pub = extractEcdsaP256PublicKey(certDer);
+    if (pub == null) {
+      return core.Err(
+        const core.CryptoError(
+            'DTLS 1.3: client cert is not P-256 ecPublicKey'),
+      );
+    }
+    _peerCertPubKey = pub;
+
+    _transcript.addDtlsMessage(fullDtls);
+    _state = DtlsV13ServerState.waitClientCertificateVerify;
+    return const core.Ok(ProcessResult.empty);
+  }
+
+  core.Result<ProcessResult, core.ProtocolError> _handleClientCertificateVerify(
+    Uint8List body,
+    Uint8List fullDtls,
+  ) {
+    if (body.length < 4) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: short client CertificateVerify'),
+      );
+    }
+    final scheme = (body[0] << 8) | body[1];
+    final sigLen = (body[2] << 8) | body[3];
+    if (4 + sigLen != body.length) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: bad client CertificateVerify'),
+      );
+    }
+    if (scheme != TlsV13SignatureScheme.ecdsaSecp256r1Sha256) {
+      return core.Err(
+        const core.CryptoError(
+            'DTLS 1.3: client CertificateVerify scheme not supported'),
+      );
+    }
+    final signature = body.sublist(4, 4 + sigLen);
+
+    final peerPub = _peerCertPubKey;
+    if (peerPub == null) {
+      return core.Err(
+        const core.StateError(
+            'DTLS 1.3: client CertificateVerify before Certificate'),
+      );
+    }
+    final signedContent = certificateVerifySignedContent(
+      transcriptHash: _transcript.hash,
+      isServer: false,
+    );
+    final ok = EcdsaVerify.verifyP256Sha256(
+      publicKey: peerPub,
+      message: signedContent,
+      signature: signature,
+    );
+    if (!ok) {
+      return core.Err(
+        const core.CryptoError(
+            'DTLS 1.3: client CertificateVerify failed'),
+      );
+    }
+
+    _transcript.addDtlsMessage(fullDtls);
+    _state = DtlsV13ServerState.waitClientFinished;
+    return const core.Ok(ProcessResult.empty);
+  }
+
   // ─── client Finished → CONNECTED ──────────────────────────────────────
-  //
-  // Deferred: mTLS / client-authenticated handshake. This server never sends
-  // CertificateRequest, so the client never produces a Certificate /
-  // CertificateVerify pair that we'd need to verify here. Adding mTLS would
-  // require sending CertificateRequest in the encrypted server flight,
-  // accepting client Certificate / CertificateVerify before the client's
-  // Finished, and verifying the CV signature with `EcdsaVerify` against the
-  // pubkey extracted from the client cert. Tracked as a follow-up.
 
   core.Result<ProcessResult, core.ProtocolError> _handleClientFinished(
     Uint8List body,
