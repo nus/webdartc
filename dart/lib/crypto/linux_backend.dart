@@ -525,3 +525,58 @@ final class LinuxEcdsaBackend implements EcdsaBackend, Finalizable {
     ossl.evpPkeyFree(_pkey);
   }
 }
+
+// ── ECDSA verify (stateless) ────────────────────────────────────────────────
+
+final class LinuxEcdsaVerifyBackend implements EcdsaVerifyBackend {
+  @override
+  bool verifyP256Sha256({
+    required Uint8List publicKey,
+    required Uint8List message,
+    required Uint8List signature,
+  }) {
+    if (publicKey.length != 65 || publicKey[0] != 0x04) return false;
+    final ssl = ossl;
+
+    final ecKey = ssl.ecKeyNewByCurveName(ssl.nidP256);
+    if (ecKey == nullptr) return false;
+    try {
+      final group = ssl.ecKeyGet0Group(ecKey);
+      if (group == nullptr) return false;
+      final point = ssl.ecPointNew(group);
+      if (point == nullptr) return false;
+      final pubBuf = libcAlloc.allocate<Uint8>(publicKey.length);
+      try {
+        for (var i = 0; i < publicKey.length; i++) { pubBuf[i] = publicKey[i]; }
+        final res = ssl.ecPointOct2Point(group, point, pubBuf, publicKey.length, nullptr);
+        if (res == nullptr) {
+          ssl.ecPointFree(point);
+          return false;
+        }
+      } finally {
+        libcAlloc.free(pubBuf);
+      }
+      if (ssl.ecKeySetPublicKey(ecKey, point) != 1) {
+        ssl.ecPointFree(point);
+        return false;
+      }
+      ssl.ecPointFree(point);
+
+      final digest = Sha256.hash(message);
+      final digestPtr = libcAlloc.allocate<Uint8>(digest.length);
+      final sigPtr = libcAlloc.allocate<Uint8>(signature.isEmpty ? 1 : signature.length);
+      try {
+        for (var i = 0; i < digest.length; i++) { digestPtr[i] = digest[i]; }
+        for (var i = 0; i < signature.length; i++) { sigPtr[i] = signature[i]; }
+        final ret = ssl.ecdsaVerify(
+            0, digestPtr, digest.length, sigPtr, signature.length, ecKey);
+        return ret == 1;
+      } finally {
+        libcAlloc.free(digestPtr);
+        libcAlloc.free(sigPtr);
+      }
+    } finally {
+      ossl.ecKeyFree(ecKey);
+    }
+  }
+}

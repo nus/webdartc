@@ -82,6 +82,12 @@ typedef _EcdsaSignD = int Function(
     int, Pointer<Uint8>, int, Pointer<Uint8>, Pointer<Uint32>, Pointer<Void>);
 typedef _EcdsaSizeN = Int32 Function(Pointer<Void>);
 typedef _EcdsaSizeD = int Function(Pointer<Void>);
+typedef _EcdsaVerifyN = Int32 Function(
+    Int32, Pointer<Uint8>, Int32, Pointer<Uint8>, Int32, Pointer<Void>);
+typedef _EcdsaVerifyD = int Function(
+    int, Pointer<Uint8>, int, Pointer<Uint8>, int, Pointer<Void>);
+typedef _EcKeySetPublicKeyN = Int32 Function(Pointer<Void>, Pointer<Void>);
+typedef _EcKeySetPublicKeyD = int Function(Pointer<Void>, Pointer<Void>);
 
 // EVP_MD_CTX / EVP_DigestSign (for message signing without pre-hashing)
 typedef _EvpMdCtxNewN = Pointer<Void> Function();
@@ -166,6 +172,8 @@ class OpenSsl {
   // ECDSA
   late final ecdsaSign = lib.lookupFunction<_EcdsaSignN, _EcdsaSignD>('ECDSA_sign');
   late final ecdsaSize = lib.lookupFunction<_EcdsaSizeN, _EcdsaSizeD>('ECDSA_size');
+  late final ecdsaVerify = lib.lookupFunction<_EcdsaVerifyN, _EcdsaVerifyD>('ECDSA_verify');
+  late final ecKeySetPublicKey = lib.lookupFunction<_EcKeySetPublicKeyN, _EcKeySetPublicKeyD>('EC_KEY_set_public_key');
 
   // EVP_MD_CTX (for DigestSign)
   late final evpMdCtxNew = lib.lookupFunction<_EvpMdCtxNewN, Pointer<Void> Function()>('EVP_MD_CTX_new');

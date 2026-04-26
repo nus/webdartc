@@ -36,3 +36,24 @@ final class EcdsaCertificate {
 
   void dispose() => _impl.dispose();
 }
+
+/// Stateless ECDSA P-256 SHA-256 signature verification.
+abstract final class EcdsaVerify {
+  EcdsaVerify._();
+
+  /// Verify an ECDSA-P256-SHA256 signature.
+  ///
+  /// [publicKey]: 65-byte uncompressed point (0x04 || X || Y).
+  /// [message]:   bytes that were signed (SHA-256 is applied internally).
+  /// [signature]: DER-encoded ECDSA signature.
+  static bool verifyP256Sha256({
+    required Uint8List publicKey,
+    required Uint8List message,
+    required Uint8List signature,
+  }) =>
+      ecdsaVerifyBackend.verifyP256Sha256(
+        publicKey: publicKey,
+        message: message,
+        signature: signature,
+      );
+}

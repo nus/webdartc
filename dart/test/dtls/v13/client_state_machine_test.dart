@@ -535,6 +535,142 @@ void main() {
     expect(r.error, isA<CryptoError>());
   });
 
+  test('client returns Err on tampered server CertificateVerify signature',
+      () {
+    final cert = EcdsaCertificate.selfSigned();
+    final client = DtlsV13ClientStateMachine(localCert: cert);
+    final start = client.startHandshake(
+      remoteIp: '127.0.0.1',
+      remotePort: 5000,
+    );
+    expect(start.isOk, isTrue);
+    final ch1Rec = DtlsRecord.parse(start.value.outputPackets[0].data, 0)!;
+    final ch1Hs = DtlsHandshakeHeader.parse(ch1Rec.fragment)!;
+    final ch1 = parseClientHello(ch1Hs.body)!;
+    final clientShares = parseClientHelloKeyShareExtData(
+        ch1.extensionByType(TlsV13ExtensionType.keyShare)!.data)!;
+    final p256 = clientShares.firstWhere(
+      (s) => s.group == TlsV13NamedGroup.secp256r1,
+    );
+
+    final serverKp = EcdhKeyPair.generate();
+    final ecdhe = serverKp.computeSharedSecret(p256.keyExchange);
+
+    final shBody = buildServerHelloBody(
+      random: Csprng.randomBytes(32),
+      legacySessionIdEcho: Uint8List(0),
+      cipherSuite: 0x1301,
+      extensions: [
+        TlsExtension(
+          TlsV13ExtensionType.supportedVersions,
+          buildServerHelloSupportedVersionsExtData(dtls13Version),
+        ),
+        TlsExtension(
+          TlsV13ExtensionType.keyShare,
+          buildServerHelloKeyShareExtData(
+            namedGroup: TlsV13NamedGroup.secp256r1,
+            keyExchange: serverKp.publicKeyBytes,
+          ),
+        ),
+      ],
+    );
+    final shFull = wrapHandshake(
+      msgType: TlsV13HandshakeType.serverHello,
+      msgSeq: 0,
+      body: shBody,
+    );
+    final fakeTr = DtlsV13Transcript()
+      ..addDtlsMessage(ch1Rec.fragment)
+      ..addDtlsMessage(shFull);
+    final hsSecret = TlsV13KeySchedule.computeHandshakeSecret(
+      earlySecret: TlsV13KeySchedule.computeEarlySecret(),
+      ecdheSharedSecret: ecdhe,
+    );
+    final serverHsKeys = TlsV13KeySchedule.deriveTrafficKeys(
+      trafficSecret: TlsV13KeySchedule.computeServerHandshakeTrafficSecret(
+        handshakeSecret: hsSecret,
+        chShTranscriptHash: fakeTr.hash,
+      ),
+      keyLength: 16,
+    );
+
+    final shRecord = DtlsRecord(
+      contentType: DtlsContentType.handshake,
+      version: 0xFEFD,
+      epoch: 0,
+      sequenceNumber: 0,
+      fragment: shFull,
+    ).encode();
+    expect(
+        client.processInput(shRecord, remoteIp: '127.0.0.1', remotePort: 5000)
+            .isOk,
+        isTrue);
+
+    final fakeSrvCert = EcdsaCertificate.selfSigned();
+    var seq = 0;
+    Uint8List sealHs(int type, Uint8List body, int msgSeq) {
+      final hs = wrapHandshake(msgType: type, msgSeq: msgSeq, body: body);
+      fakeTr.addDtlsMessage(hs);
+      return DtlsV13RecordCrypto.encrypt(
+        contentType: DtlsContentType.handshake,
+        content: hs,
+        epoch: 2,
+        seqNum: seq++,
+        keys: serverHsKeys,
+      );
+    }
+
+    final ee = sealHs(
+      TlsV13HandshakeType.encryptedExtensions,
+      buildEncryptedExtensionsBody(const []),
+      1,
+    );
+    final certMsg = sealHs(
+      TlsV13HandshakeType.certificate,
+      buildCertificateBody(
+        certificateRequestContext: Uint8List(0),
+        certDerChain: [fakeSrvCert.derBytes],
+      ),
+      2,
+    );
+    // Build a real CV signature, then flip a single bit.
+    final realCvSig = fakeSrvCert.sign(certificateVerifySignedContent(
+      transcriptHash: fakeTr.hash,
+      isServer: true,
+    ));
+    final tamperedCvSig = Uint8List.fromList(realCvSig);
+    tamperedCvSig[tamperedCvSig.length - 1] ^= 0x01;
+    final cv = sealHs(
+      TlsV13HandshakeType.certificateVerify,
+      buildCertificateVerifyBody(
+        signatureScheme: TlsV13SignatureScheme.ecdsaSecp256r1Sha256,
+        signature: tamperedCvSig,
+      ),
+      3,
+    );
+
+    expect(
+        client.processInput(ee, remoteIp: '127.0.0.1', remotePort: 5000).isOk,
+        isTrue);
+    expect(
+        client
+            .processInput(certMsg, remoteIp: '127.0.0.1', remotePort: 5000)
+            .isOk,
+        isTrue);
+    final r = client.processInput(
+      cv,
+      remoteIp: '127.0.0.1',
+      remotePort: 5000,
+    );
+    expect(r.isErr, isTrue,
+        reason: 'client must reject a forged server CertificateVerify');
+    expect(r.error, isA<CryptoError>());
+    expect(
+      (r.error as CryptoError).message,
+      equals('DTLS 1.3: server CertificateVerify failed'),
+    );
+  });
+
   // x25519 path: have the client only offer x25519 by stubbing a tiny
   // server that selects x25519 when the client offers it. The real server
   // would also pick it (it iterates the client list and prefers x25519

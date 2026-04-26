@@ -843,6 +843,14 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   }
 
   // ─── client Finished → CONNECTED ──────────────────────────────────────
+  //
+  // Deferred: mTLS / client-authenticated handshake. This server never sends
+  // CertificateRequest, so the client never produces a Certificate /
+  // CertificateVerify pair that we'd need to verify here. Adding mTLS would
+  // require sending CertificateRequest in the encrypted server flight,
+  // accepting client Certificate / CertificateVerify before the client's
+  // Finished, and verifying the CV signature with `EcdsaVerify` against the
+  // pubkey extracted from the client cert. Tracked as a follow-up.
 
   core.Result<ProcessResult, core.ProtocolError> _handleClientFinished(
     Uint8List body,

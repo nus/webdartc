@@ -6,6 +6,7 @@ import '../crypto/csprng.dart';
 import '../crypto/ecdh.dart';
 import '../crypto/ecdsa.dart';
 import '../crypto/sha256.dart';
+import '../crypto/x509_der.dart';
 import 'cipher_suite.dart';
 import 'handshake.dart';
 import 'key_material.dart';
@@ -39,6 +40,10 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   Uint8List? _sessionId;
   Uint8List?
   _peerPublicKeyBytes; // peer EC public key (from cert or key exchange)
+  /// Peer cert's public key, parsed from the Certificate message. Used to
+  /// verify ServerKeyExchange (client side) and CertificateVerify (server
+  /// side) signatures.
+  Uint8List? _peerCertPubKey;
   EcdhKeyPair? _ecdhKeyPair;
   Uint8List? _masterSecret;
   DtlsKeyBlock? _keyBlock;
@@ -457,11 +462,16 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         ? (msgType << 16) | ((fullFragment[4] << 8) | fullFragment[5])
         : -1;
 
-    // HelloVerifyRequest and Finished are NOT added to transcript here.
+    // HelloVerifyRequest, Finished, and CertificateVerify are NOT added to
+    // transcript here.
     // HVR: RFC 6347 §4.2.1 — excluded from transcript.
     // Finished: must verify against transcript hash BEFORE adding itself.
+    // CertificateVerify: signature is over the transcript hash *before* CV
+    // is folded in (RFC 5246 §7.4.8); the handler adds it on success.
     if (msgType != DtlsHandshakeType.helloVerifyRequest &&
-        msgType != DtlsHandshakeType.finished) {
+        msgType != DtlsHandshakeType.finished &&
+        !(role == DtlsRole.server &&
+            msgType == DtlsHandshakeType.certificateVerify)) {
       // Only add to transcript once (tracked by _receivedHandshake).
       if (!_receivedHandshake.contains(key)) {
         _receivedHandshake.add(key);
@@ -483,7 +493,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       DtlsHandshakeType.clientKeyExchange when role == DtlsRole.server =>
         _handleClientKeyExchange(body),
       DtlsHandshakeType.certificateVerify when role == DtlsRole.server =>
-        _handleCertificateVerify(body),
+        _handleCertificateVerify(body, fullFragment),
       _ => const Ok<ProcessResult, ProtocolError>(ProcessResult.empty),
     };
 
@@ -584,22 +594,72 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
     // Extract EC public key from SubjectPublicKeyInfo in DER
     _peerPublicKeyBytes = _extractEcPublicKey(certDer);
+    _peerCertPubKey = extractEcdsaP256PublicKey(certDer);
+    if (_peerCertPubKey == null) {
+      return Err(const CryptoError('DTLS: peer cert is not P-256 ecPublicKey'));
+    }
     return const Ok(ProcessResult.empty);
   }
 
   Result<ProcessResult, ProtocolError> _handleServerKeyExchange(
     Uint8List body,
   ) {
-    // Extract ECDH server public key
-    // body: ECParameters(3) || ECPoint length(1) || ECPoint
+    // body: ECParameters(3) || ECPoint length(1) || ECPoint(N) ||
+    //       SignatureAndHashAlgorithm(2) || signature_length(2) ||
+    //       signature(...)
     if (body.length < 5) {
       return Err(const ParseError('DTLS: bad ServerKeyExchange'));
     }
     final pointLen = body[3];
-    if (body.length < 4 + pointLen) {
+    final paramsEnd = 4 + pointLen;
+    if (body.length < paramsEnd + 4) {
       return Err(const ParseError('DTLS: truncated ServerKeyExchange'));
     }
-    _peerPublicKeyBytes = body.sublist(4, 4 + pointLen);
+    _peerPublicKeyBytes = body.sublist(4, paramsEnd);
+
+    final sigAlgHash = body[paramsEnd];
+    final sigAlgSig = body[paramsEnd + 1];
+    final sigLen = (body[paramsEnd + 2] << 8) | body[paramsEnd + 3];
+    if (body.length < paramsEnd + 4 + sigLen) {
+      return Err(const ParseError('DTLS: SKE signature truncated'));
+    }
+    if (sigAlgHash != 0x04 || sigAlgSig != 0x03) {
+      return Err(const CryptoError(
+          'DTLS 1.2: SKE signature scheme is not ECDSA-SHA256'));
+    }
+    final signature = body.sublist(paramsEnd + 4, paramsEnd + 4 + sigLen);
+
+    final peerPub = _peerCertPubKey;
+    if (peerPub == null) {
+      return Err(const StateError(
+          'DTLS 1.2: SKE arrived before Certificate'));
+    }
+
+    // Bytes signed = client_random || server_random || ec_params, where
+    // ec_params = curve_type(1) || named_curve(2) || ECPoint(1+N).
+    final ecParams = body.sublist(0, paramsEnd);
+    final serverRandom = _serverRandom;
+    if (serverRandom == null) {
+      return Err(const StateError(
+          'DTLS 1.2: SKE arrived before ServerHello'));
+    }
+    final signed = Uint8List(
+        _clientRandom.length + serverRandom.length + ecParams.length);
+    signed.setRange(0, _clientRandom.length, _clientRandom);
+    signed.setRange(_clientRandom.length,
+        _clientRandom.length + serverRandom.length, serverRandom);
+    signed.setRange(
+        _clientRandom.length + serverRandom.length, signed.length, ecParams);
+
+    final ok = EcdsaVerify.verifyP256Sha256(
+      publicKey: peerPub,
+      message: signed,
+      signature: signature,
+    );
+    if (!ok) {
+      return Err(const CryptoError(
+          'DTLS 1.2: ServerKeyExchange signature verification failed'));
+    }
     return const Ok(ProcessResult.empty);
   }
 
@@ -1117,8 +1177,49 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> _handleCertificateVerify(
     Uint8List body,
+    Uint8List fullFragment,
   ) {
-    // Minimal: accept without verifying signature
+    // RFC 5246 §7.4.8: SignatureAndHashAlgorithm(2) || signature_length(2)
+    //                  || signature(...)
+    if (body.length < 4) {
+      return Err(const ParseError('DTLS 1.2: short CertificateVerify'));
+    }
+    final hashAlg = body[0];
+    final sigAlg = body[1];
+    final sigLen = (body[2] << 8) | body[3];
+    if (4 + sigLen != body.length) {
+      return Err(const ParseError('DTLS 1.2: bad CertificateVerify'));
+    }
+    if (hashAlg != 0x04 || sigAlg != 0x03) {
+      return Err(const CryptoError(
+          'DTLS 1.2: client CertificateVerify is not ECDSA-SHA256'));
+    }
+    final signature = body.sublist(4, 4 + sigLen);
+
+    final peerPub = _peerCertPubKey;
+    if (peerPub == null) {
+      return Err(const StateError(
+          'DTLS 1.2: CertificateVerify before client Certificate'));
+    }
+
+    // Transcript at this point excludes the CV message itself (the dispatcher
+    // skips folding CV in until verification succeeds). The bytes signed by
+    // the client are the transcript bytes; verifyP256Sha256 hashes internally.
+    final ok = EcdsaVerify.verifyP256Sha256(
+      publicKey: peerPub,
+      message: _transcript.bytes,
+      signature: signature,
+    );
+    if (!ok) {
+      return Err(const CryptoError(
+          'DTLS 1.2: client CertificateVerify failed'));
+    }
+    _transcript.add(fullFragment);
+    final key = fullFragment.length >= 6
+        ? (DtlsHandshakeType.certificateVerify << 16) |
+            ((fullFragment[4] << 8) | fullFragment[5])
+        : -1;
+    _receivedHandshake.add(key);
     return const Ok(ProcessResult.empty);
   }
 

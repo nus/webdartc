@@ -6,6 +6,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
+import 'package:webdartc/core/state_machine.dart';
 import 'package:webdartc/crypto/csprng.dart';
 import 'package:webdartc/crypto/ecdh.dart';
 import 'package:webdartc/crypto/ecdsa.dart';
@@ -228,6 +229,72 @@ void main() {
     expect(dtls.selectedSrtpProfileId, equals(0x0001));
     expect(srtpKeyMaterial, isNotNull);
     expect(srtpKeyMaterial!.length, equals(60));
+  });
+
+  test('DTLS 1.2 client rejects tampered ServerKeyExchange signature', () {
+    final clientCert = EcdsaCertificate.selfSigned();
+    final serverCert = EcdsaCertificate.selfSigned();
+    final client = DtlsStateMachine(
+        role: DtlsRole.client, localCert: clientCert);
+    final server = DtlsStateMachine(
+        role: DtlsRole.server, localCert: serverCert);
+    client.expectedRemoteFingerprint = serverCert.sha256Fingerprint;
+    server.expectedRemoteFingerprint = clientCert.sha256Fingerprint;
+
+    // ── ClientHello (no cookie) → server sends HelloVerifyRequest ─────────
+    final r0 = client.startHandshake(remoteIp: '10.0.0.2', remotePort: 5001);
+    expect(r0.isOk, isTrue);
+    final r1 = server.processInput(
+      r0.value.outputPackets[0].data,
+      remoteIp: '10.0.0.1',
+      remotePort: 5000,
+    );
+    expect(r1.isOk, isTrue);
+    expect(r1.value.outputPackets.length, equals(1));
+    // ── Client receives HVR → sends ClientHello with cookie ───────────────
+    final r2 = client.processInput(
+      r1.value.outputPackets[0].data,
+      remoteIp: '10.0.0.2',
+      remotePort: 5001,
+    );
+    expect(r2.isOk, isTrue);
+    final r3 = server.processInput(
+      r2.value.outputPackets[0].data,
+      remoteIp: '10.0.0.1',
+      remotePort: 5000,
+    );
+    expect(r3.isOk, isTrue);
+    final flight = r3.value.outputPackets;
+    expect(flight.length, equals(4),
+        reason: 'expected SH + Cert + SKE + SHD');
+
+    // ── Tamper the SKE signature: flip the LAST byte of the record body ───
+    // Record layout: 13-byte record header + handshake fragment. The last
+    // byte of the SKE record body is the last byte of the ECDSA signature.
+    final skeRecordBytes = Uint8List.fromList(flight[2].data);
+    skeRecordBytes[skeRecordBytes.length - 1] ^= 0x01;
+
+    // ── Feed records to client in order; expect SKE to fail verification ──
+    expect(
+        client.processInput(flight[0].data,
+            remoteIp: '10.0.0.2', remotePort: 5001).isOk,
+        isTrue);
+    expect(
+        client.processInput(flight[1].data,
+            remoteIp: '10.0.0.2', remotePort: 5001).isOk,
+        isTrue);
+    final rSke = client.processInput(
+      skeRecordBytes,
+      remoteIp: '10.0.0.2',
+      remotePort: 5001,
+    );
+    expect(rSke.isErr, isTrue,
+        reason: 'client must reject a forged ServerKeyExchange signature');
+    expect(rSke.error, isA<CryptoError>());
+    expect(
+      (rSke.error as CryptoError).message,
+      equals('DTLS 1.2: ServerKeyExchange signature verification failed'),
+    );
   });
 
   test('DtlsStateMachine(server) keeps DTLS 1.2 path when v1.3 not offered',

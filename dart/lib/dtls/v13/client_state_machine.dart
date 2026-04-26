@@ -7,6 +7,7 @@ import '../../crypto/ecdh.dart';
 import '../../crypto/ecdsa.dart';
 import '../../crypto/hmac_sha256.dart';
 import '../../crypto/x25519.dart';
+import '../../crypto/x509_der.dart';
 import '../record.dart';
 import 'cipher_suite.dart';
 import 'handshake.dart';
@@ -55,10 +56,7 @@ enum DtlsV13ClientState {
 ///   * ECDHE on `secp256r1` and `x25519`; both are offered in CH1
 ///   * ECDSA P-256 / SHA-256 server signature
 ///   * fragmentation-reassembly is supported for the encrypted flight
-///   * NOTE: CertificateVerify *signature verification* is deferred — the
-///     EcdsaCertificate backend exposes no `verify` API yet, so the client
-///     accepts the server's signature without verifying it. This matches
-///     the v1.2 client today and is documented as a Phase 2 follow-up.
+///   * server CertificateVerify is verified with [EcdsaVerify].
 final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
   /// Client-side X.509 certificate + signing key. Kept on the API surface
   /// so the client mirrors the server's constructor shape (and so a future
@@ -120,6 +118,10 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
   /// SRTP profile the server selected in EncryptedExtensions, or null if
   /// no use_srtp was negotiated.
   int? _selectedSrtpProfile;
+
+  /// 65-byte uncompressed P-256 pubkey extracted from the server's
+  /// Certificate message. Used to verify CertificateVerify.
+  Uint8List? _peerCertPubKey;
 
   Uint8List? _earlySecret;
   Uint8List? _handshakeSecret;
@@ -816,6 +818,26 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     if (off + listLen != body.length || listLen == 0) {
       return core.Err(const core.ParseError('DTLS 1.3: bad Certificate list'));
     }
+    // First CertificateEntry: cert_data_len(3) || cert_data || extensions_len(2) || extensions.
+    if (off + 3 > body.length) {
+      return core.Err(const core.ParseError('DTLS 1.3: bad CertificateEntry'));
+    }
+    final certLen =
+        (body[off] << 16) | (body[off + 1] << 8) | body[off + 2];
+    off += 3;
+    if (off + certLen > body.length) {
+      return core.Err(const core.ParseError('DTLS 1.3: truncated cert_data'));
+    }
+    final certDer = Uint8List.sublistView(body, off, off + certLen);
+    final pub = extractEcdsaP256PublicKey(certDer);
+    if (pub == null) {
+      return core.Err(
+        const core.CryptoError(
+            'DTLS 1.3: server cert is not P-256 ecPublicKey'),
+      );
+    }
+    _peerCertPubKey = pub;
+
     _transcript.addDtlsMessage(fullDtls);
     _state = DtlsV13ClientState.waitCertificateVerify;
     return const core.Ok(ProcessResult.empty);
@@ -828,15 +850,42 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     if (body.length < 4) {
       return core.Err(const core.ParseError('DTLS 1.3: short CertificateVerify'));
     }
+    final scheme = (body[0] << 8) | body[1];
     final sigLen = (body[2] << 8) | body[3];
     if (4 + sigLen != body.length) {
       return core.Err(const core.ParseError('DTLS 1.3: bad CertificateVerify'));
     }
-    // TODO(phase2): verify the ECDSA signature over
-    //   certificateVerifySignedContent(transcriptHash, isServer: true)
-    // once the EcdsaCertificate backend exposes a `verify` API. The DTLS
-    // 1.2 client also doesn't verify the signature today; WebRTC binds the
-    // session's identity through SDP fingerprinting separately.
+    if (scheme != TlsV13SignatureScheme.ecdsaSecp256r1Sha256) {
+      return core.Err(
+        const core.CryptoError(
+            'DTLS 1.3: server CertificateVerify scheme not supported'),
+      );
+    }
+    final signature = Uint8List.sublistView(body, 4, 4 + sigLen);
+
+    final peerPub = _peerCertPubKey;
+    if (peerPub == null) {
+      return core.Err(
+        const core.StateError(
+            'DTLS 1.3: CertificateVerify before Certificate'),
+      );
+    }
+    final signedContent = certificateVerifySignedContent(
+      transcriptHash: _transcript.hash,
+      isServer: true,
+    );
+    final ok = EcdsaVerify.verifyP256Sha256(
+      publicKey: peerPub,
+      message: signedContent,
+      signature: signature,
+    );
+    if (!ok) {
+      return core.Err(
+        const core.CryptoError(
+            'DTLS 1.3: server CertificateVerify failed'),
+      );
+    }
+
     _transcript.addDtlsMessage(fullDtls);
     _state = DtlsV13ClientState.waitServerFinished;
     return const core.Ok(ProcessResult.empty);

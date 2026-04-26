@@ -400,3 +400,66 @@ final class MacosEcdsaBackend implements EcdsaBackend, Finalizable {
     sec.cfRelease(_privateKeyRef.cast());
   }
 }
+
+// ── ECDSA verify (stateless) ────────────────────────────────────────────────
+
+final class MacosEcdsaVerifyBackend implements EcdsaVerifyBackend {
+  @override
+  bool verifyP256Sha256({
+    required Uint8List publicKey,
+    required Uint8List message,
+    required Uint8List signature,
+  }) {
+    if (publicKey.length != 65 || publicKey[0] != 0x04) return false;
+    final s = sec;
+
+    final pubKeyData = s.bytesToCFData(publicKey);
+    final keys = libcAlloc.allocate<Pointer<Void>>(2);
+    final vals = libcAlloc.allocate<Pointer<Void>>(2);
+    try {
+      keys[0] = s.kSecAttrKeyType;
+      keys[1] = s.kSecAttrKeyClass;
+      vals[0] = s.kSecAttrKeyTypeECSECPrimeRandomRef;
+      vals[1] = s.kSecAttrKeyClassPublic;
+      final attrs = s.cfDictionaryCreate(
+        nullptr, keys, vals, 2,
+        s.kCFTypeDictionaryKeyCallBacks, s.kCFTypeDictionaryValueCallBacks,
+      );
+      final errPtr = libcAlloc.allocate<CFErrorRef>(1);
+      errPtr.value = nullptr;
+      try {
+        final pubKey = s.secKeyCreateWithData(pubKeyData, attrs, errPtr);
+        s.cfRelease(pubKeyData.cast());
+        if (pubKey == nullptr) return false;
+        try {
+          final msgRef = s.bytesToCFData(message);
+          final sigRef = s.bytesToCFData(signature);
+          final verifyErrPtr = libcAlloc.allocate<CFErrorRef>(1);
+          verifyErrPtr.value = nullptr;
+          try {
+            final ok = s.secKeyVerifySignature(
+              pubKey,
+              s.kSecKeyAlgorithmECDSASignatureMessageX962SHA256,
+              msgRef,
+              sigRef,
+              verifyErrPtr,
+            );
+            return ok;
+          } finally {
+            s.cfRelease(msgRef.cast());
+            s.cfRelease(sigRef.cast());
+            libcAlloc.free(verifyErrPtr);
+          }
+        } finally {
+          s.cfRelease(pubKey.cast());
+        }
+      } finally {
+        libcAlloc.free(errPtr);
+        s.cfRelease(attrs.cast());
+      }
+    } finally {
+      libcAlloc.free(keys);
+      libcAlloc.free(vals);
+    }
+  }
+}

@@ -42,6 +42,18 @@ abstract interface class EcdsaBackend {
   void dispose();
 }
 
+/// Stateless ECDSA P-256 SHA-256 signature verification.
+abstract interface class EcdsaVerifyBackend {
+  /// [publicKey]: 65-byte uncompressed point (0x04 || X || Y).
+  /// [message]:   bytes that were signed (SHA-256 is applied internally).
+  /// [signature]: DER-encoded ECDSA signature.
+  bool verifyP256Sha256({
+    required Uint8List publicKey,
+    required Uint8List message,
+    required Uint8List signature,
+  });
+}
+
 // ── Factory (lazy, platform-selected) ───────────────────────────────────────
 
 final AesCmBackend aesCmBackend = _createAesCm();
@@ -57,6 +69,14 @@ EcdhBackend createEcdhBackend() {
 EcdsaBackend createEcdsaBackend() {
   if (Platform.isMacOS) return MacosEcdsaBackend();
   if (Platform.isLinux) return LinuxEcdsaBackend();
+  throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
+}
+
+final EcdsaVerifyBackend ecdsaVerifyBackend = _createEcdsaVerify();
+
+EcdsaVerifyBackend _createEcdsaVerify() {
+  if (Platform.isMacOS) return MacosEcdsaVerifyBackend();
+  if (Platform.isLinux) return LinuxEcdsaVerifyBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 

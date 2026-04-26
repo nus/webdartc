@@ -36,7 +36,10 @@ final class HandshakeTranscript {
   }
 
   /// SHA-256 hash of all handshake message bytes (12-byte header + body).
-  Uint8List get hash {
+  Uint8List get hash => Sha256.hash(bytes);
+
+  /// Concatenated handshake bytes accumulated so far.
+  Uint8List get bytes {
     var total = 0;
     for (final m in _msgs) { total += m.length; }
     final combined = Uint8List(total);
@@ -45,7 +48,7 @@ final class HandshakeTranscript {
       combined.setRange(offset, offset + m.length, m);
       offset += m.length;
     }
-    return Sha256.hash(combined);
+    return combined;
   }
 }
 
