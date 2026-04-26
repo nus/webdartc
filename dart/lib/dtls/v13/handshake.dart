@@ -505,6 +505,41 @@ Uint8List certificateVerifySignedContent({
 Uint8List buildFinishedBody(Uint8List verifyData) =>
     Uint8List.fromList(verifyData);
 
+// ─── KeyUpdate (RFC 8446 §4.6.3 / RFC 9147 §6.1) ──────────────────────────
+
+/// `KeyUpdateRequest` enum: 1 byte. `notRequested` (0) means the sender
+/// updated only their own keys; `requested` (1) means the receiver MUST
+/// also send a KeyUpdate of its own before its next application_data
+/// record (RFC 8446 §4.6.3).
+abstract final class KeyUpdateRequest {
+  KeyUpdateRequest._();
+  static const int notRequested = 0;
+  static const int requested    = 1;
+}
+
+/// Build the body of a `key_update` handshake message — a single byte
+/// carrying the [KeyUpdateRequest] value.
+Uint8List buildKeyUpdateBody(int request) {
+  if (request != KeyUpdateRequest.notRequested &&
+      request != KeyUpdateRequest.requested) {
+    throw ArgumentError('KeyUpdateRequest must be 0 or 1');
+  }
+  return Uint8List.fromList([request]);
+}
+
+/// Parse a `key_update` body. Returns the 1-byte `KeyUpdateRequest`
+/// value, or null on length / value violation. RFC 8446 §4.6.3 says the
+/// receiver "MUST terminate the connection with a decode_error alert" on
+/// any other value; the caller is responsible for that alert.
+int? parseKeyUpdateBody(Uint8List body) {
+  if (body.length != 1) return null;
+  final v = body[0];
+  if (v != KeyUpdateRequest.notRequested && v != KeyUpdateRequest.requested) {
+    return null;
+  }
+  return v;
+}
+
 // ─── Extension data builders / parsers ────────────────────────────────────
 
 /// `supported_versions` extension data for ServerHello (RFC 8446 §4.2.1):

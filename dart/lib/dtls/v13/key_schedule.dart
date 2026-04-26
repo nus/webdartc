@@ -138,6 +138,26 @@ abstract final class TlsV13KeySchedule {
 
   // ── Per-direction key/iv/finished_key/sn_key from a traffic secret ──────
 
+  /// Derive the next-generation application traffic secret from the
+  /// current one (RFC 8446 §7.2):
+  ///
+  /// ```
+  /// application_traffic_secret_N+1 =
+  ///     HKDF-Expand-Label(application_traffic_secret_N,
+  ///                       "traffic upd", "", Hash.length)
+  /// ```
+  ///
+  /// The new secret then feeds [deriveTrafficKeys] to produce the post-
+  /// KeyUpdate `write_key`, `write_iv`, `finished_key` and `sn_key`.
+  static Uint8List deriveNextTrafficSecret(Uint8List currentSecret) =>
+      Hkdf.expandLabel(
+        secret: currentSecret,
+        label: 'traffic upd',
+        context: Uint8List(0),
+        length: hashLength,
+        prefix: Hkdf.dtls13Prefix,
+      );
+
   /// Derive the per-record materials from a traffic secret.
   ///
   /// [keyLength] is the AEAD key length (16 for AES-128, 32 for AES-256 /

@@ -177,6 +177,21 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   int _sendSeqEpoch3 = 0;
   int _outboundMsgSeq = 0;
 
+  /// Current application-data tx epoch (RFC 9147 §6.1). Starts at 3 once
+  /// the handshake completes and increments by one each time we emit a
+  /// KeyUpdate. The truncated value carried in record headers is
+  /// `_txAppEpoch & 0x03`.
+  int _txAppEpoch = 3;
+
+  /// Current application-data rx epoch. Starts at 3 and increments by one
+  /// each time we successfully process a peer KeyUpdate.
+  int _rxAppEpoch = 3;
+
+  /// True after we've received a KeyUpdate(update_requested) from the
+  /// peer; we owe them a reciprocal KeyUpdate before our next
+  /// application_data record (RFC 8446 §4.6.3). Cleared on emission.
+  bool _peerRequestedKeyUpdate = false;
+
   /// The most recently emitted server flight, kept so we can re-send it on
   /// receipt of a duplicate ClientHello (RFC 6347-style retransmit).
   List<OutputPacket>? _lastServerFlight;
@@ -259,7 +274,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     final keys = isHandshakeEpoch ? _clientHsKeys : _clientApKeys;
     if (keys == null) return const core.Ok(ProcessResult.empty);
 
-    final epoch = isHandshakeEpoch ? 2 : 3;
+    final epoch = isHandshakeEpoch ? 2 : _rxAppEpoch;
     final out = DtlsV13RecordCrypto.decrypt(
       record: packet,
       keys: keys,
@@ -388,9 +403,42 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         }
         return _handleClientFinished(body, fullDtls);
 
+      case TlsV13HandshakeType.keyUpdate:
+        if (_state != DtlsV13ServerState.connected) {
+          return const core.Ok(ProcessResult.empty);
+        }
+        return _handleKeyUpdate(body);
+
       default:
         return const core.Ok(ProcessResult.empty);
     }
+  }
+
+  /// Handle a peer KeyUpdate (RFC 8446 §4.6.3 / RFC 9147 §6.1):
+  /// rotate the rx application keys to the next generation, bump
+  /// `_rxAppEpoch`, and (if the peer set `update_requested`) record that
+  /// we owe a reciprocal KeyUpdate before our next application_data.
+  core.Result<ProcessResult, core.ProtocolError> _handleKeyUpdate(
+    Uint8List body,
+  ) {
+    final req = parseKeyUpdateBody(body);
+    if (req == null) {
+      return core.Err(
+        const core.ParseError('DTLS 1.3: malformed KeyUpdate body'),
+      );
+    }
+    final nextSecret = TlsV13KeySchedule.deriveNextTrafficSecret(
+      _clientApKeys!.trafficSecret,
+    );
+    _clientApKeys = TlsV13KeySchedule.deriveTrafficKeys(
+      trafficSecret: nextSecret,
+      keyLength: (_suite ?? TlsV13CipherSuite.aes128GcmSha256).keyLength,
+    );
+    _rxAppEpoch += 1;
+    if (req == KeyUpdateRequest.requested) {
+      _peerRequestedKeyUpdate = true;
+    }
+    return const core.Ok(ProcessResult.empty);
   }
 
   /// Stash a fragment's body in [_fragmentBuffer]. Returns the fully
@@ -1145,24 +1193,84 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         const core.StateError('DTLS 1.3: sendApplicationData before CONNECTED'),
       );
     }
+    final outputs = <OutputPacket>[];
+    if (_peerRequestedKeyUpdate) {
+      outputs.add(_emitKeyUpdate(KeyUpdateRequest.notRequested));
+    }
     final rec = DtlsV13RecordCrypto.encrypt(
       contentType: DtlsContentType.applicationData,
       content: data,
-      epoch: 3,
+      epoch: _txAppEpoch,
       seqNum: _sendSeqEpoch3++,
       keys: _serverApKeys!,
       cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
     );
-    return core.Ok(
-      ProcessResult(
-        outputPackets: [
-          OutputPacket(
-            data: rec,
-            remoteIp: _remoteIp!,
-            remotePort: _remotePort!,
-          ),
-        ],
-      ),
+    outputs.add(OutputPacket(
+      data: rec,
+      remoteIp: _remoteIp!,
+      remotePort: _remotePort!,
+    ));
+    return core.Ok(ProcessResult(outputPackets: outputs));
+  }
+
+  /// Trigger a post-handshake `KeyUpdate` (RFC 8446 §4.6.3 / RFC 9147
+  /// §6.1). Emits the message under the current tx app keys, then rotates
+  /// our own application-data sender to the next-generation keys / epoch.
+  ///
+  /// [requestPeerUpdate] sets the `KeyUpdateRequest` field to
+  /// `update_requested(1)`; the peer must reciprocate before its next
+  /// application_data record.
+  core.Result<ProcessResult, core.ProtocolError> requestKeyUpdate({
+    bool requestPeerUpdate = false,
+  }) {
+    if (_state != DtlsV13ServerState.connected) {
+      return core.Err(
+        const core.StateError('DTLS 1.3: requestKeyUpdate before CONNECTED'),
+      );
+    }
+    final pkt = _emitKeyUpdate(
+      requestPeerUpdate
+          ? KeyUpdateRequest.requested
+          : KeyUpdateRequest.notRequested,
+    );
+    return core.Ok(ProcessResult(outputPackets: [pkt]));
+  }
+
+  /// Build, encrypt, and emit a KeyUpdate handshake message under the
+  /// current tx app keys. After the record is on the wire the next-gen
+  /// secret + keys are derived and tx epoch / sequence are bumped per
+  /// RFC 9147 §6.1.
+  OutputPacket _emitKeyUpdate(int request) {
+    final body = buildKeyUpdateBody(request);
+    final fragment = wrapHandshake(
+      msgType: TlsV13HandshakeType.keyUpdate,
+      msgSeq: _outboundMsgSeq++,
+      body: body,
+    );
+    final rec = DtlsV13RecordCrypto.encrypt(
+      contentType: DtlsContentType.handshake,
+      content: fragment,
+      epoch: _txAppEpoch,
+      seqNum: _sendSeqEpoch3++,
+      keys: _serverApKeys!,
+      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
+    );
+    // Rotate our sender to the next generation. The KeyUpdate itself was
+    // sent under the old keys; everything after this point uses the new.
+    final nextSecret = TlsV13KeySchedule.deriveNextTrafficSecret(
+      _serverApKeys!.trafficSecret,
+    );
+    _serverApKeys = TlsV13KeySchedule.deriveTrafficKeys(
+      trafficSecret: nextSecret,
+      keyLength: (_suite ?? TlsV13CipherSuite.aes128GcmSha256).keyLength,
+    );
+    _txAppEpoch += 1;
+    _sendSeqEpoch3 = 0;
+    _peerRequestedKeyUpdate = false;
+    return OutputPacket(
+      data: rec,
+      remoteIp: _remoteIp!,
+      remotePort: _remotePort!,
     );
   }
 
