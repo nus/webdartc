@@ -1110,6 +1110,9 @@ Future<void> _runWebdartcEcho(int signalingPort) async {
 /// Runs the webdartc offerer as a subprocess, streaming stderr to the console.
 /// Returns when the exchange is complete (exit 0) or throws on failure.
 Future<void> _runWebdartcOfferer(int signalingPort, {int timeoutSec = 30}) async {
+  final spawnSw = Stopwatch()..start();
+  // ignore: avoid_print
+  print('[offerer-spawn] +${spawnSw.elapsedMilliseconds}ms calling Process.start');
   final proc = await Process.start(
     Platform.resolvedExecutable,
     [
@@ -1120,11 +1123,19 @@ Future<void> _runWebdartcOfferer(int signalingPort, {int timeoutSec = 30}) async
     ],
     environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
   );
+  // ignore: avoid_print
+  print('[offerer-spawn] +${spawnSw.elapsedMilliseconds}ms Process.start returned pid=${proc.pid}');
 
   // Stream stderr live so debug output is visible even on timeout.
   final stderrLines = <String>[];
+  var firstStderrSeen = false;
   proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(
         (line) {
+          if (!firstStderrSeen) {
+            firstStderrSeen = true;
+            // ignore: avoid_print
+            print('[offerer-spawn] +${spawnSw.elapsedMilliseconds}ms first stderr line');
+          }
           stderrLines.add(line);
           // ignore: avoid_print
           print('[offerer] $line');

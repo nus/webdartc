@@ -161,7 +161,23 @@ final class _WsClient {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+/// Stopwatch started as soon as `main` is reached, used by [_diag] to
+/// report elapsed time at each setup milestone. Helps isolate where
+/// `dart run` startup latency is spent on slow CI runners.
+late final Stopwatch _bootClock;
+
+/// Emit a stage-timing line tagged `[offerer-diag]` so CI logs can
+/// reconstruct the cold-start timeline of this subprocess.
+void _diag(String stage) {
+  stderr.writeln(
+    '[offerer-diag] +${_bootClock.elapsedMilliseconds}ms $stage',
+  );
+}
+
 void main(List<String> args) async {
+  _bootClock = Stopwatch()..start();
+  _diag('main reached');
+
   int port = 8080;
   int timeoutSec = 30;
   for (final arg in args) {
@@ -171,20 +187,25 @@ void main(List<String> args) async {
       timeoutSec = int.parse(arg.substring('--timeout='.length));
     }
   }
+  _diag('args parsed (port=$port, timeoutSec=$timeoutSec)');
 
   final exitCode = await _run(port, timeoutSec: timeoutSec);
+  _diag('exiting with code $exitCode');
   exit(exitCode);
 }
 
 Future<int> _run(int sigPort, {int timeoutSec = 30}) async {
   final ws = await _WsClient.connect(sigPort);
+  _diag('signaling WebSocket connected');
   ws.sendJson({'type': 'register', 'role': 'offerer'});
 
   final pc = PeerConnection(configuration: const PeerConnectionConfiguration());
+  _diag('PeerConnection constructed');
   pc.onIceConnectionStateChange.listen((state) {
     stderr.writeln('[offerer] ICE state: $state');
   });
   final dc = pc.createDataChannel('test');
+  _diag('createDataChannel done');
 
   var textEchoed   = false;
   var binaryEchoed = false;
@@ -253,9 +274,12 @@ Future<int> _run(int sigPort, {int timeoutSec = 30}) async {
 
   // Create offer and send.
   final offer = await pc.createOffer();
+  _diag('createOffer done');
   await pc.setLocalDescription(offer);
+  _diag('setLocalDescription done');
   stderr.writeln('[offerer] offer SDP:\n${offer.sdp}');
   ws.sendJson({'type': 'offer', 'sdp': offer.sdp});
+  _diag('offer sent over signaling');
 
   // Process signaling messages. onDone fires when the signaling
   // server's WebSocket is closed by its end (e.g. test tearDown
