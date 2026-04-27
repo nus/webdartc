@@ -6,9 +6,13 @@
 ///
 /// Requires Chrome for Testing (auto-downloaded on first run).
 /// Run with:
-///   dart test test/e2e/ --timeout=120s
+///   dart test test/e2e/ --timeout=240s
+///
+/// File-level @Timeout overrides the CLI timeout. The packet-loss
+/// scenarios pile per-test waits (up to 180s each) on top of `dart run`
+/// JIT-compile time on slow CI runners; 240s gives a safety margin.
 @Tags(['e2e'])
-@Timeout(Duration(seconds: 120))
+@Timeout(Duration(seconds: 240))
 library;
 
 import 'dart:async';
@@ -703,15 +707,23 @@ void main() {
       );
 
       // Start offerer but don't wait for full exchange — only check ICE.
-      _runWebdartcOfferer(sigServer.port, timeoutSec: 90);
+      // unawaited(): the test verifies ICE only. Without unawaited, dart
+      // test still tracks the future and reports "failed after test
+      // completion" once the offerer's --timeout fires; it also stalls
+      // the next test until that timeout expires. Combined with the
+      // signaling-WebSocket-close exit in webdartc_offerer_helper.dart,
+      // the offerer terminates within ms of tearDown so the next test
+      // starts on a clean runner.
+      unawaited(_runWebdartcOfferer(sigServer.port, timeoutSec: 180));
 
       // ICE connected proves STUN binding request retransmission works.
+      // Slow CI runners need >60s under 5% loss + retransmit backoff.
       await waitFor(
         () async {
           final v = await browserState(driver, 'iceState');
           return v == 'connected' || v == 'completed';
         },
-        timeout: const Duration(seconds: 60),
+        timeout: const Duration(seconds: 120),
         interval: const Duration(seconds: 3),
       );
     });
@@ -755,12 +767,15 @@ void main() {
       );
 
       // Start offerer but don't wait for full exchange — only check dcOpen.
-      _runWebdartcOfferer(sigServer.port, timeoutSec: 90);
+      // See ICE/STUN test for why we unawait the offerer.
+      unawaited(_runWebdartcOfferer(sigServer.port, timeoutSec: 180));
 
       // Data channel open proves DTLS handshake + SCTP INIT completed.
+      // DTLS retransmission backoff under 5% loss can push handshake
+      // completion past 90s on CI.
       await waitFor(
         () async => await browserState(driver, 'dcOpen') == true,
-        timeout: const Duration(seconds: 90),
+        timeout: const Duration(seconds: 180),
       );
     });
   });
@@ -805,15 +820,18 @@ void main() {
       // Start offerer but don't wait for full 64KB exchange — the 1KB text
       // message is sufficient to prove SCTP retransmission works. The 64KB
       // binary takes too long with 5% loss due to SCTP's 3s T3-rtx timer.
-      _runWebdartcOfferer(sigServer.port, timeoutSec: 90);
+      // See ICE/STUN test for why we unawait the offerer.
+      unawaited(_runWebdartcOfferer(sigServer.port, timeoutSec: 180));
 
       // receivedCount >= 1 proves SCTP delivered the 1KB text through loss.
+      // CI's wall-clock variability pushed the original 90s window past
+      // the offerer's done-future on Linux runners.
       await waitFor(
         () async {
           final c = await browserState(driver, 'receivedCount');
           return c != null && (c as num) >= 1;
         },
-        timeout: const Duration(seconds: 90),
+        timeout: const Duration(seconds: 180),
       );
     });
   });
@@ -869,16 +887,17 @@ void main() {
 
       // Chrome sends RTP; some packets lost but enough get through.
       // rtpPacketsSent > 0 on Chrome + receiver helper exits 0 proves
-      // SRTP decryption and replay window tolerate loss.
+      // SRTP decryption and replay window tolerate loss. CI runners can
+      // be slow to flush stats — give 40s.
       await waitFor(
         () async {
           final sent = await browserState(driver, 'rtpPacketsSent');
           return sent != null && (sent as num) > 0;
         },
-        timeout: const Duration(seconds: 20),
+        timeout: const Duration(seconds: 40),
       );
 
-      await receiverFuture.timeout(const Duration(seconds: 60));
+      await receiverFuture.timeout(const Duration(seconds: 90));
     });
   });
 
@@ -919,14 +938,19 @@ void main() {
         timeout: const Duration(seconds: 10),
       );
 
-      final offererFuture = _runWebdartcOfferer(sigServer.port, timeoutSec: 90);
+      // CI runner subprocess startup latency: `dart run` JIT-compile of
+      // the offerer helper from cold cache can eat most of a 60s window
+      // before the first ICE state log line appears. 180s gives the
+      // offerer time to start + complete its DTLS/SCTP setup under
+      // 50ms+20ms jitter.
+      final offererFuture = _runWebdartcOfferer(sigServer.port, timeoutSec: 180);
 
       await waitFor(
         () async => await browserState(driver, 'dcOpen') == true,
-        timeout: const Duration(seconds: 60),
+        timeout: const Duration(seconds: 120),
       );
 
-      await offererFuture.timeout(const Duration(seconds: 90));
+      await offererFuture.timeout(const Duration(seconds: 180));
 
       final received = await browserState(driver, 'receivedCount');
       expect(received, greaterThanOrEqualTo(2));

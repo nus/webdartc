@@ -257,30 +257,45 @@ Future<int> _run(int sigPort, {int timeoutSec = 30}) async {
   stderr.writeln('[offerer] offer SDP:\n${offer.sdp}');
   ws.sendJson({'type': 'offer', 'sdp': offer.sdp});
 
-  // Process signaling messages.
-  ws.messages.listen((raw) async {
-    final msg = jsonDecode(raw) as Map<String, dynamic>;
-    stderr.writeln('[offerer] got signal: ${msg['type']}');
-    switch (msg['type'] as String?) {
-      case 'answer':
-        stderr.writeln('[offerer] setRemoteDescription (answer SDP):\n${msg['sdp']}\n---');
-        await pc.setRemoteDescription(SessionDescription(
-          type: SessionDescriptionType.answer,
-          sdp: msg['sdp'] as String,
-        ));
-
-      case 'candidate':
-        final cand = msg['candidate'];
-        if (cand != null && cand is Map<String, dynamic>) {
-          stderr.writeln('[offerer] addIceCandidate: ${cand['candidate']}');
-          await pc.addIceCandidate(IceCandidateInit(
-            candidate: cand['candidate'] as String? ?? '',
-            sdpMid: cand['sdpMid'] as String? ?? '0',
-            sdpMLineIndex: cand['sdpMLineIndex'] as int? ?? 0,
+  // Process signaling messages. onDone fires when the signaling
+  // server's WebSocket is closed by its end (e.g. test tearDown
+  // shutting the server down) — at that point there's no further
+  // useful work for the offerer, so exit cleanly instead of squatting
+  // on the runner until our own --timeout fires. Required for the
+  // packet-loss e2e tests where the test body verifies its own state
+  // and unawaits this subprocess; without this the leftover offerer
+  // CPU starves later tests' subprocess startup.
+  ws.messages.listen(
+    (raw) async {
+      final msg = jsonDecode(raw) as Map<String, dynamic>;
+      stderr.writeln('[offerer] got signal: ${msg['type']}');
+      switch (msg['type'] as String?) {
+        case 'answer':
+          stderr.writeln('[offerer] setRemoteDescription (answer SDP):\n${msg['sdp']}\n---');
+          await pc.setRemoteDescription(SessionDescription(
+            type: SessionDescriptionType.answer,
+            sdp: msg['sdp'] as String,
           ));
-        }
-    }
-  });
+
+        case 'candidate':
+          final cand = msg['candidate'];
+          if (cand != null && cand is Map<String, dynamic>) {
+            stderr.writeln('[offerer] addIceCandidate: ${cand['candidate']}');
+            await pc.addIceCandidate(IceCandidateInit(
+              candidate: cand['candidate'] as String? ?? '',
+              sdpMid: cand['sdpMid'] as String? ?? '0',
+              sdpMLineIndex: cand['sdpMLineIndex'] as int? ?? 0,
+            ));
+          }
+      }
+    },
+    onDone: () {
+      if (!done.isCompleted) {
+        stderr.writeln('[offerer] signaling WebSocket closed; exiting');
+        done.complete(0);
+      }
+    },
+  );
 
   final result = await done.future.timeout(
     Duration(seconds: timeoutSec),
