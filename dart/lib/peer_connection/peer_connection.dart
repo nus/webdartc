@@ -671,11 +671,20 @@ final class PeerConnection {
     // W3C: connectionState = "connected" when BOTH ICE and DTLS are up.
     _setConnectionState(PeerConnectionState.connected);
 
-    // Determine SRTP profile from DTLS negotiation
+    // Determine SRTP profile from DTLS negotiation (RFC 5764 / RFC 7714).
     final profileId = _dtls.selectedSrtpProfileId;
-    final srtpProfile = profileId == 0x0007
-        ? SrtpProfile.aesGcm128
-        : SrtpProfile.aesCm128HmacSha1_80;
+    final SrtpProfile srtpProfile;
+    switch (profileId) {
+      case 0x0008:
+        srtpProfile = SrtpProfile.aesGcm256;
+      case 0x0007:
+        srtpProfile = SrtpProfile.aesGcm128;
+      case 0x0002:
+        srtpProfile = SrtpProfile.aesCm128HmacSha1_32;
+      case 0x0001:
+      default:
+        srtpProfile = SrtpProfile.aesCm128HmacSha1_80;
+    }
     if (_debug) _log('[pc] DTLS connected: role=$role srtpProfile=0x${(profileId ?? 0).toRadixString(16)}');
     // Derive SRTP context
     final isClient = role == DtlsRole.client;

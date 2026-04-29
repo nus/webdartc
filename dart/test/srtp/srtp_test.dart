@@ -118,4 +118,135 @@ void main() {
       expect(dec.value, equals(plainRtp));
     });
   });
+
+  // RFC 5764 §4.2 + RFC 7714 §12 — the AEAD-GCM profiles use 12-byte
+  // master salts (and, for AES-256, 32-byte master keys), so the slicing
+  // of TLS-exporter output must be profile-aware.
+  group('SrtpContext.fromKeyMaterial layout (RFC 7714 §12)', () {
+    test('AEAD-AES-128-GCM consumes 56 bytes laid out 16+16+12+12', () {
+      // Distinct bytes per region so we can verify the splits without
+      // depending on the KDF: clientKey=0x11..., serverKey=0x22...,
+      // clientSalt=0x33..., serverSalt=0x44...
+      final km = Uint8List(56);
+      km.fillRange(0, 16, 0x11);
+      km.fillRange(16, 32, 0x22);
+      km.fillRange(32, 44, 0x33);
+      km.fillRange(44, 56, 0x44);
+
+      final clientCtx = SrtpContext.fromKeyMaterial(
+        keyMaterial: km,
+        profile: SrtpProfile.aesGcm128,
+        isClient: true,
+      );
+      final serverCtx = SrtpContext.fromKeyMaterial(
+        keyMaterial: km,
+        profile: SrtpProfile.aesGcm128,
+        isClient: false,
+      );
+
+      // Round trip a small RTP packet with each role: client-encrypt
+      // must decrypt with server-context (which uses the client's
+      // master-key/salt as its *remote* keys), and vice versa.
+      final rtp = Uint8List.fromList([
+        0x80, 0x60, 0x00, 0x42, 0x00, 0x00, 0x10, 0x00,
+        0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8,
+      ]);
+
+      final fromClient = clientCtx.encryptRtp(rtp);
+      final decFromClient = serverCtx.decryptRtp(fromClient);
+      expect(decFromClient.isOk, isTrue,
+          reason: 'GCM-128 client→server decrypt failed: '
+              '${decFromClient.isErr ? decFromClient.error : ""}');
+      expect(decFromClient.value, equals(rtp));
+
+      final fromServer = serverCtx.encryptRtp(rtp);
+      final decFromServer = clientCtx.decryptRtp(fromServer);
+      expect(decFromServer.isOk, isTrue,
+          reason: 'GCM-128 server→client decrypt failed: '
+              '${decFromServer.isErr ? decFromServer.error : ""}');
+      expect(decFromServer.value, equals(rtp));
+    });
+
+    test('AEAD-AES-256-GCM consumes 88 bytes laid out 32+32+12+12', () {
+      // Layout: clientKey(32) || serverKey(32) || clientSalt(12) ||
+      // serverSalt(12) — 88 bytes total per RFC 7714 §12.3.
+      final km = Uint8List(88);
+      km.fillRange(0, 32, 0x55);
+      km.fillRange(32, 64, 0x66);
+      km.fillRange(64, 76, 0x77);
+      km.fillRange(76, 88, 0x88);
+
+      final clientCtx = SrtpContext.fromKeyMaterial(
+        keyMaterial: km,
+        profile: SrtpProfile.aesGcm256,
+        isClient: true,
+      );
+      final serverCtx = SrtpContext.fromKeyMaterial(
+        keyMaterial: km,
+        profile: SrtpProfile.aesGcm256,
+        isClient: false,
+      );
+
+      final rtp = Uint8List.fromList([
+        0x80, 0x60, 0x00, 0x07, 0x00, 0x00, 0x20, 0x00,
+        0xCA, 0xFE, 0xBA, 0xBE, 9, 10, 11, 12, 13, 14, 15, 16,
+      ]);
+
+      final fromClient = clientCtx.encryptRtp(rtp);
+      final decFromClient = serverCtx.decryptRtp(fromClient);
+      expect(decFromClient.isOk, isTrue,
+          reason: 'GCM-256 client→server decrypt failed: '
+              '${decFromClient.isErr ? decFromClient.error : ""}');
+      expect(decFromClient.value, equals(rtp));
+
+      final fromServer = serverCtx.encryptRtp(rtp);
+      final decFromServer = clientCtx.decryptRtp(fromServer);
+      expect(decFromServer.isOk, isTrue,
+          reason: 'GCM-256 server→client decrypt failed: '
+              '${decFromServer.isErr ? decFromServer.error : ""}');
+      expect(decFromServer.value, equals(rtp));
+    });
+
+    test('GCM-128 uses serverKey/serverSalt for the outbound side when '
+        'isClient: false (cross-role, distinct keys)', () {
+      // If the slicing accidentally used 14-byte salts, the client and
+      // server would derive their per-direction salts from overlapping
+      // byte ranges. With profile-aware slicing, swapping the *server*
+      // key/salt bytes must change every server-side encryption result
+      // while leaving client-side outputs untouched.
+      Uint8List km(int seed) {
+        final b = Uint8List(56);
+        b.fillRange(0, 16, 0x11);
+        b.fillRange(16, 32, 0x22 ^ seed);
+        b.fillRange(32, 44, 0x33);
+        b.fillRange(44, 56, 0x44 ^ seed);
+        return b;
+      }
+
+      final km1 = km(0);
+      final km2 = km(0x0F);
+
+      final server1 = SrtpContext.fromKeyMaterial(
+        keyMaterial: km1,
+        profile: SrtpProfile.aesGcm128,
+        isClient: false,
+      );
+      final server2 = SrtpContext.fromKeyMaterial(
+        keyMaterial: km2,
+        profile: SrtpProfile.aesGcm128,
+        isClient: false,
+      );
+
+      // Force a stable per-call IV by sending a single packet from each
+      // context starting at SSRC=0 / SEQ=1 / ROC=0.
+      final rtp = Uint8List.fromList([
+        0x80, 0x60, 0x00, 0x01, 0x00, 0x00, 0x10, 0x00,
+        0x00, 0x00, 0x00, 0x00, 1, 2, 3, 4,
+      ]);
+      expect(server1.encryptRtp(rtp), isNot(equals(server2.encryptRtp(rtp))),
+          reason: 'flipping the server-write region must change '
+              'GCM-128 server-side ciphertext (catches off-by-2-byte '
+              'salt-slicing bugs)');
+    });
+  });
 }

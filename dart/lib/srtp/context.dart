@@ -85,7 +85,7 @@ final class SrtpContext {
   // Local (outbound) keys — for encrypting packets we send
   late final Uint8List _encKey;
   late final Uint8List _authKey;
-  late final Uint8List _encSalt;  // 14 bytes (112-bit salt for AES-CM)
+  late final Uint8List _encSalt;  // 14 bytes — KDF output is always 112 bits
   late final Uint8List _rtcpEncKey;
   late final Uint8List _rtcpAuthKey;
   late final Uint8List _rtcpEncSalt;
@@ -103,21 +103,83 @@ final class SrtpContext {
 
   SrtpContext._({required this.profile, required this.isClient});
 
+  /// Master-key length (bytes) for [profile].
+  ///
+  /// AES-128 profiles (CM-128 and AEAD-AES-128-GCM) use 16-byte keys;
+  /// AEAD-AES-256-GCM uses 32-byte keys (RFC 7714 §12.1, §12.3).
+  static int _masterKeyLength(SrtpProfile profile) {
+    switch (profile) {
+      case SrtpProfile.aesCm128HmacSha1_80:
+      case SrtpProfile.aesCm128HmacSha1_32:
+      case SrtpProfile.aesGcm128:
+        return 16;
+      case SrtpProfile.aesGcm256:
+        return 32;
+    }
+  }
+
+  /// Master-salt length (bytes) for [profile].
+  ///
+  /// AES-CM profiles use 14-byte (112-bit) salts (RFC 3711 §8.2);
+  /// AEAD-GCM profiles use 12-byte (96-bit) salts (RFC 7714 §12.1, §12.3).
+  static int _masterSaltLength(SrtpProfile profile) {
+    switch (profile) {
+      case SrtpProfile.aesCm128HmacSha1_80:
+      case SrtpProfile.aesCm128HmacSha1_32:
+        return 14;
+      case SrtpProfile.aesGcm128:
+      case SrtpProfile.aesGcm256:
+        return 12;
+    }
+  }
+
+  /// Total bytes of TLS-exported keying material this profile consumes:
+  /// `2 * (master_key + master_salt)` per RFC 5764 §4.2.
+  static int srtpKeyMaterialLength(SrtpProfile profile) =>
+      2 * (_masterKeyLength(profile) + _masterSaltLength(profile));
+
   /// Derive SRTP context from exported DTLS key material.
   ///
-  /// [keyMaterial] layout (RFC 5764 §4.2):
-  ///   client_write_SRTP_master_key   [0..15]
-  ///   server_write_SRTP_master_key   [16..31]
-  ///   client_write_SRTP_master_salt  [32..45]
-  ///   server_write_SRTP_master_salt  [46..59]
+  /// [keyMaterial] layout (RFC 5764 §4.2): the per-direction master keys
+  /// are concatenated first, followed by the per-direction master salts.
+  /// Lengths depend on the profile (RFC 7714 §12 for AEAD-GCM):
+  ///
+  ///   AES-128-CM-HMAC-SHA1 (60 bytes total):
+  ///     client_write_SRTP_master_key   [0..15]
+  ///     server_write_SRTP_master_key   [16..31]
+  ///     client_write_SRTP_master_salt  [32..45]   (14 bytes)
+  ///     server_write_SRTP_master_salt  [46..59]   (14 bytes)
+  ///
+  ///   AEAD-AES-128-GCM (56 bytes total):
+  ///     client_write_SRTP_master_key   [0..15]
+  ///     server_write_SRTP_master_key   [16..31]
+  ///     client_write_SRTP_master_salt  [32..43]   (12 bytes)
+  ///     server_write_SRTP_master_salt  [44..55]   (12 bytes)
+  ///
+  ///   AEAD-AES-256-GCM (88 bytes total):
+  ///     client_write_SRTP_master_key   [0..31]
+  ///     server_write_SRTP_master_key   [32..63]
+  ///     client_write_SRTP_master_salt  [64..75]   (12 bytes)
+  ///     server_write_SRTP_master_salt  [76..87]   (12 bytes)
   factory SrtpContext.fromKeyMaterial({
     required Uint8List keyMaterial,
     required SrtpProfile profile,
     required bool isClient,
   }) {
-    assert(keyMaterial.length >= 60, 'SRTP key material too short');
+    final keyLen = _masterKeyLength(profile);
+    final saltLen = _masterSaltLength(profile);
+    final expected = 2 * (keyLen + saltLen);
+    assert(keyMaterial.length >= expected,
+        'SRTP key material too short: have ${keyMaterial.length}, '
+        'need $expected for $profile');
 
     final ctx = SrtpContext._(profile: profile, isClient: isClient);
+
+    // Layout: clientKey || serverKey || clientSalt || serverSalt
+    final clientKeyOff = 0;
+    final serverKeyOff = keyLen;
+    final clientSaltOff = 2 * keyLen;
+    final serverSaltOff = 2 * keyLen + saltLen;
 
     // Select keys based on role: local keys for sending, remote keys for receiving
     final Uint8List localMasterKey;
@@ -125,30 +187,33 @@ final class SrtpContext {
     final Uint8List remoteMasterKey;
     final Uint8List remoteMasterSalt;
     if (isClient) {
-      localMasterKey   = keyMaterial.sublist(0, 16);
-      remoteMasterKey  = keyMaterial.sublist(16, 32);
-      localMasterSalt  = keyMaterial.sublist(32, 46);
-      remoteMasterSalt = keyMaterial.sublist(46, 60);
+      localMasterKey   = keyMaterial.sublist(clientKeyOff, clientKeyOff + keyLen);
+      remoteMasterKey  = keyMaterial.sublist(serverKeyOff, serverKeyOff + keyLen);
+      localMasterSalt  = keyMaterial.sublist(clientSaltOff, clientSaltOff + saltLen);
+      remoteMasterSalt = keyMaterial.sublist(serverSaltOff, serverSaltOff + saltLen);
     } else {
-      localMasterKey   = keyMaterial.sublist(16, 32);
-      remoteMasterKey  = keyMaterial.sublist(0, 16);
-      localMasterSalt  = keyMaterial.sublist(46, 60);
-      remoteMasterSalt = keyMaterial.sublist(32, 46);
+      localMasterKey   = keyMaterial.sublist(serverKeyOff, serverKeyOff + keyLen);
+      remoteMasterKey  = keyMaterial.sublist(clientKeyOff, clientKeyOff + keyLen);
+      localMasterSalt  = keyMaterial.sublist(serverSaltOff, serverSaltOff + saltLen);
+      remoteMasterSalt = keyMaterial.sublist(clientSaltOff, clientSaltOff + saltLen);
     }
 
-    // Derive local (outbound) session keys using AES-CM KDF (RFC 3711 §4.3.1)
-    ctx._encKey      = _deriveSessionKey(localMasterKey, localMasterSalt, 0x00, 16);
+    // Derive local (outbound) session keys using AES-CM KDF (RFC 3711 §4.3.1).
+    // The KDF output is always sized to RFC 3711's session-key shapes; for
+    // AEAD-GCM only the enc-key (16 or 32 bytes) and enc-salt (12 bytes,
+    // truncated below) are actually used at packet time.
+    ctx._encKey      = _deriveSessionKey(localMasterKey, localMasterSalt, 0x00, keyLen);
     ctx._authKey     = _deriveSessionKey(localMasterKey, localMasterSalt, 0x01, 20);
     ctx._encSalt     = _deriveSessionKey(localMasterKey, localMasterSalt, 0x02, 14);
-    ctx._rtcpEncKey  = _deriveSessionKey(localMasterKey, localMasterSalt, 0x03, 16);
+    ctx._rtcpEncKey  = _deriveSessionKey(localMasterKey, localMasterSalt, 0x03, keyLen);
     ctx._rtcpAuthKey = _deriveSessionKey(localMasterKey, localMasterSalt, 0x04, 20);
     ctx._rtcpEncSalt = _deriveSessionKey(localMasterKey, localMasterSalt, 0x05, 14);
 
     // Derive remote (inbound) session keys
-    ctx._remoteEncKey      = _deriveSessionKey(remoteMasterKey, remoteMasterSalt, 0x00, 16);
+    ctx._remoteEncKey      = _deriveSessionKey(remoteMasterKey, remoteMasterSalt, 0x00, keyLen);
     ctx._remoteAuthKey     = _deriveSessionKey(remoteMasterKey, remoteMasterSalt, 0x01, 20);
     ctx._remoteEncSalt     = _deriveSessionKey(remoteMasterKey, remoteMasterSalt, 0x02, 14);
-    ctx._remoteRtcpEncKey  = _deriveSessionKey(remoteMasterKey, remoteMasterSalt, 0x03, 16);
+    ctx._remoteRtcpEncKey  = _deriveSessionKey(remoteMasterKey, remoteMasterSalt, 0x03, keyLen);
     ctx._remoteRtcpAuthKey = _deriveSessionKey(remoteMasterKey, remoteMasterSalt, 0x04, 20);
     ctx._remoteRtcpEncSalt = _deriveSessionKey(remoteMasterKey, remoteMasterSalt, 0x05, 14);
 
@@ -169,18 +234,21 @@ final class SrtpContext {
     final index = tracker.indexFor(seq);
     tracker.update(seq);
 
-    final iv = _computeRtpIv(ssrc, index);
-
     final Uint8List encPayload;
     if (profile == SrtpProfile.aesGcm128 || profile == SrtpProfile.aesGcm256) {
+      // RFC 7714 §8.1: SRTP-GCM IV layout differs from RFC 3711's AES-CM
+      // IV — SSRC sits at bytes 2..5, ROC at 6..9, SEQ at 10..11 — and
+      // gets XORed with a 12-byte salt.
+      final iv = _computeGcmRtpIv(_encSalt, ssrc, index);
       final aad = rtpPacket.sublist(0, headerLen);
-      final result = AesGcm.encrypt(_encKey, iv.sublist(0, 12), payload, aad: aad);
+      final result = AesGcm.encrypt(_encKey, iv, payload, aad: aad);
       final out = Uint8List(headerLen + result.ciphertext.length + result.tag.length);
       out.setRange(0, headerLen, rtpPacket.sublist(0, headerLen));
       out.setRange(headerLen, headerLen + result.ciphertext.length, result.ciphertext);
       out.setRange(headerLen + result.ciphertext.length, out.length, result.tag);
       return out;
     } else {
+      final iv = _computeRtpIv(ssrc, index);
       encPayload = AesCm.encrypt(_encKey, iv, payload);
     }
 
@@ -219,7 +287,8 @@ final class SrtpContext {
       if (srtpPacket.length < headerLen + 16) {
         return Err(const CryptoError('SRTP: GCM packet too short'));
       }
-      final iv = _computeIv(_remoteEncSalt, ssrc, index).sublist(0, 12);
+      // RFC 7714 §8.1: SRTP-GCM IV (see encryptRtp comment).
+      final iv = _computeGcmRtpIv(_remoteEncSalt, ssrc, index);
       final aad = srtpPacket.sublist(0, headerLen);
       final ciphertext = srtpPacket.sublist(headerLen, srtpPacket.length - 16);
       final tag = srtpPacket.sublist(srtpPacket.length - 16);
@@ -281,8 +350,10 @@ final class SrtpContext {
     srtcpIndexBytes[3] = srtcpIndex & 0xFF;
 
     if (profile == SrtpProfile.aesGcm128 || profile == SrtpProfile.aesGcm256) {
-      // AES-GCM: encrypt payload, AAD = header + srtcpIndex
-      final iv = _computeRtcpIv(ssrc, srtcpIndex & 0x7FFFFFFF).sublist(0, 12);
+      // RFC 7714 §9.1: SRTCP-GCM IV is `0x00 0x00 || SSRC || 0x00 0x00 ||
+      // SRTCP_index` XORed with the 12-byte master salt. AAD =
+      // RTCP-header || E-bit-tagged-SRTCP-index.
+      final iv = _computeGcmRtcpIv(_rtcpEncSalt, ssrc, srtcpIndex & 0x7FFFFFFF);
       final aad = Uint8List(8 + 4);
       aad.setRange(0, 8, header);
       aad.setRange(8, 12, srtcpIndexBytes);
@@ -324,7 +395,8 @@ final class SrtpContext {
       final srtcpIndexWord = _readUint32(srtcpPacket, srtcpIndexOffset);
       final srtcpIndex = srtcpIndexWord & 0x7FFFFFFF;
       final ssrc = _readUint32(srtcpPacket, 4);
-      final iv = _computeRtcpIv(ssrc, srtcpIndex, remote: true).sublist(0, 12);
+      // RFC 7714 §9.1 SRTCP-GCM IV.
+      final iv = _computeGcmRtcpIv(_remoteRtcpEncSalt, ssrc, srtcpIndex);
       final header = srtcpPacket.sublist(0, 8);
       final aad = Uint8List(8 + 4);
       aad.setRange(0, 8, header);
@@ -458,6 +530,64 @@ final class SrtpContext {
     iv[11] ^= (index >> 16) & 0xFF;
     iv[12] ^= (index >>  8) & 0xFF;
     iv[13] ^= index & 0xFF;
+    return iv;
+  }
+
+  /// Compute the 12-byte SRTP-GCM IV per RFC 7714 §8.1:
+  ///
+  ///     0  1  2  3  4  5  6  7  8  9 10 11
+  ///   +--+--+--+--+--+--+--+--+--+--+--+--+
+  ///   |00|00|    SSRC   |     ROC   | SEQ |  XOR salt[0..11]
+  ///   +--+--+--+--+--+--+--+--+--+--+--+--+
+  ///
+  /// [salt] is the session encryption salt (≥ 12 bytes — the KDF returns
+  /// 14, of which only the first 12 are XORed in for AEAD-GCM).
+  static Uint8List _computeGcmRtpIv(Uint8List salt, int ssrc, int index) {
+    final roc = index >> 16;
+    final seq = index & 0xFFFF;
+    final iv = Uint8List(12);
+    for (var i = 0; i < 12; i++) {
+      iv[i] = salt[i];
+    }
+    // SSRC at bytes 2..5
+    iv[2] ^= (ssrc >> 24) & 0xFF;
+    iv[3] ^= (ssrc >> 16) & 0xFF;
+    iv[4] ^= (ssrc >>  8) & 0xFF;
+    iv[5] ^=  ssrc        & 0xFF;
+    // ROC at bytes 6..9
+    iv[6] ^= (roc >> 24) & 0xFF;
+    iv[7] ^= (roc >> 16) & 0xFF;
+    iv[8] ^= (roc >>  8) & 0xFF;
+    iv[9] ^=  roc        & 0xFF;
+    // SEQ at bytes 10..11
+    iv[10] ^= (seq >> 8) & 0xFF;
+    iv[11] ^=  seq       & 0xFF;
+    return iv;
+  }
+
+  /// Compute the 12-byte SRTCP-GCM IV per RFC 7714 §9.1:
+  ///
+  ///     0  1  2  3  4  5  6  7  8  9 10 11
+  ///   +--+--+--+--+--+--+--+--+--+--+--+--+
+  ///   |00|00|    SSRC   |00|00| SRTCP idx |  XOR salt[0..11]
+  ///   +--+--+--+--+--+--+--+--+--+--+--+--+
+  ///
+  /// [index] is the 31-bit SRTCP index (without the E-bit).
+  static Uint8List _computeGcmRtcpIv(Uint8List salt, int ssrc, int index) {
+    final iv = Uint8List(12);
+    for (var i = 0; i < 12; i++) {
+      iv[i] = salt[i];
+    }
+    // SSRC at bytes 2..5
+    iv[2] ^= (ssrc >> 24) & 0xFF;
+    iv[3] ^= (ssrc >> 16) & 0xFF;
+    iv[4] ^= (ssrc >>  8) & 0xFF;
+    iv[5] ^=  ssrc        & 0xFF;
+    // SRTCP index at bytes 8..11 (with E-bit cleared)
+    iv[8]  ^= (index >> 24) & 0xFF;
+    iv[9]  ^= (index >> 16) & 0xFF;
+    iv[10] ^= (index >>  8) & 0xFF;
+    iv[11] ^=  index        & 0xFF;
     return iv;
   }
 

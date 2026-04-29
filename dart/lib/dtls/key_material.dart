@@ -17,13 +17,15 @@ abstract final class DtlsKeyMaterial {
   /// [masterSecret] : 48-byte DTLS master secret
   /// [clientRandom] : 32-byte ClientHello.random
   /// [serverRandom] : 32-byte ServerHello.random
-  /// [length]       : number of bytes to export (default 60 for AES-128-CM-HMAC-SHA1-80)
+  /// [length]       : number of bytes to export. Caller must size this for
+  ///                  the negotiated RFC 5764 SRTP profile (RFC 7714 §12):
+  ///                    * SRTP_AES128_CM_HMAC_SHA1_80 / _32 → 60
+  ///                    * SRTP_AEAD_AES_128_GCM            → 56
+  ///                    * SRTP_AEAD_AES_256_GCM            → 88
   ///
-  /// Returns [length] bytes of key material to be split:
-  ///   client_write_SRTP_master_key   [0..15]
-  ///   server_write_SRTP_master_key   [16..31]
-  ///   client_write_SRTP_master_salt  [32..43]
-  ///   server_write_SRTP_master_salt  [44..55]
+  /// Returns [length] bytes of key material laid out per RFC 5764 §4.2 as
+  /// `client_master_key || server_master_key || client_master_salt
+  /// || server_master_salt`.
   ///
   /// RFC 5705 §4: exported_keying_material =
   ///   PRF(master_secret, label, client_random || server_random)[0..length-1]

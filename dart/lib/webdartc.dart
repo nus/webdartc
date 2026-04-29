@@ -39,6 +39,7 @@ export 'crypto/sha256.dart';
 export 'crypto/hkdf.dart';
 export 'crypto/aes_cm.dart';
 export 'crypto/aes_gcm.dart';
+export 'crypto/chacha20_poly1305.dart';
 export 'crypto/ecdh.dart';
 export 'crypto/ecdsa.dart';
 

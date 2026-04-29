@@ -6,10 +6,13 @@ import '../crypto/csprng.dart';
 import '../crypto/ecdh.dart';
 import '../crypto/ecdsa.dart';
 import '../crypto/sha256.dart';
+import '../crypto/x509_der.dart';
 import 'cipher_suite.dart';
 import 'handshake.dart';
 import 'key_material.dart';
 import 'record.dart';
+import 'v13/handshake.dart' as v13;
+import 'v13/state_machine.dart' as v13;
 
 export 'cipher_suite.dart' show CipherSuite;
 
@@ -37,6 +40,10 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   Uint8List? _sessionId;
   Uint8List?
   _peerPublicKeyBytes; // peer EC public key (from cert or key exchange)
+  /// Peer cert's public key, parsed from the Certificate message. Used to
+  /// verify ServerKeyExchange (client side) and CertificateVerify (server
+  /// side) signatures.
+  Uint8List? _peerCertPubKey;
   EcdhKeyPair? _ecdhKeyPair;
   Uint8List? _masterSecret;
   DtlsKeyBlock? _keyBlock;
@@ -84,6 +91,20 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   /// Called when application data is received.
   void Function(Uint8List data)? onApplicationData;
 
+  /// When the very first ClientHello on the server side advertises DTLS 1.3
+  /// (`supported_versions` extension contains `0xFEFC`), all further record
+  /// processing is delegated to a freshly-spun [v13.DtlsV13ServerStateMachine].
+  /// While this is non-null, the legacy DTLS 1.2 paths in this class are
+  /// bypassed entirely. `null` for client mode and for DTLS 1.2 clients.
+  v13.DtlsV13ServerStateMachine? _v13Inner;
+
+  /// Server-only knob: when true and the negotiated DTLS version is 1.3,
+  /// the inner [v13.DtlsV13ServerStateMachine] is constructed with
+  /// `requireClientAuth: true` (RFC 8446 §4.3.2 / RFC 8842 §5). The flag
+  /// has no effect on DTLS 1.2 (which always asks for a client cert) or
+  /// on the client role.
+  bool requireClientAuth = false;
+
   DtlsStateMachine({required this.role, required this.localCert});
 
   DtlsHandshakeState get state => _state;
@@ -105,6 +126,10 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   Result<ProcessResult, ProtocolError> sendApplicationData(
     Uint8List plaintext,
   ) {
+    final v13Inner = _v13Inner;
+    if (v13Inner != null) {
+      return v13Inner.sendApplicationData(plaintext);
+    }
     if (_state != DtlsHandshakeState.connected) {
       return Err(const StateError('DTLS: not connected'));
     }
@@ -130,6 +155,31 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   }) {
     _remoteIp = remoteIp;
     _remotePort = remotePort;
+
+    // If we've already committed to the DTLS 1.3 path, all subsequent
+    // datagrams flow through the v1.3 state machine verbatim.
+    final v13Inner = _v13Inner;
+    if (v13Inner != null) {
+      return v13Inner.processInput(packet,
+          remoteIp: remoteIp, remotePort: remotePort);
+    }
+
+    // Detect DTLS 1.3 on the very first server-side ClientHello and hand
+    // the rest of the session over to the v1.3 state machine.
+    if (role == DtlsRole.server &&
+        _state == DtlsHandshakeState.initial &&
+        _isDtls13ClientHello(packet)) {
+      final inner = v13.DtlsV13ServerStateMachine(
+        localCert: localCert,
+        requireClientAuth: requireClientAuth,
+      );
+      inner.expectedRemoteFingerprint = expectedRemoteFingerprint;
+      inner.onConnected = (km) => onConnected?.call(km);
+      inner.onApplicationData = (data) => onApplicationData?.call(data);
+      _v13Inner = inner;
+      return inner.processInput(packet,
+          remoteIp: remoteIp, remotePort: remotePort);
+    }
 
     // Parse record layer
     var offset = 0;
@@ -165,10 +215,45 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
   @override
   Result<ProcessResult, ProtocolError> handleTimeout(TimerToken token) {
+    final v13Inner = _v13Inner;
+    if (v13Inner != null) return v13Inner.handleTimeout(token);
     if (token is DtlsRetransmitToken) {
       return _retransmit(token.epoch);
     }
     return const Ok(ProcessResult.empty);
+  }
+
+  /// Peek into the very first server-side packet to decide whether the
+  /// rest of the session should be handled by the DTLS 1.3 server state
+  /// machine instead of the legacy 1.2 paths in this class.
+  ///
+  /// Returns true iff the packet is a server-bound ClientHello that either
+  /// (a) is fragmented — almost certainly DTLS 1.3 in practice, since v1.2
+  /// ClientHellos are small enough to fit a single record — or (b) has a
+  /// `supported_versions` extension listing `0xFEFC` (DTLS 1.3). The
+  /// fragmented heuristic is needed for WebRTC clients (Firefox, Chrome)
+  /// whose DTLS 1.3 ClientHellos exceed the path MTU and split across
+  /// multiple datagrams; we route them to the v1.3 path immediately so
+  /// that state machine can reassemble before parsing.
+  static bool _isDtls13ClientHello(Uint8List packet) {
+    final rec = DtlsRecord.parse(packet, 0);
+    if (rec == null) return false;
+    if (rec.epoch != 0) return false;
+    if (rec.contentType != DtlsContentType.handshake) return false;
+    final hs = DtlsHandshakeHeader.parse(rec.fragment);
+    if (hs == null) return false;
+    if (hs.msgType != v13.TlsV13HandshakeType.clientHello) return false;
+    if (hs.fragmentOffset != 0 || hs.fragmentLength != hs.length) {
+      // Fragmented ClientHello: assume DTLS 1.3.
+      return true;
+    }
+    final ch = v13.parseClientHello(hs.body);
+    if (ch == null) return false;
+    final sv = ch.extensionByType(v13.TlsV13ExtensionType.supportedVersions);
+    if (sv == null) return false;
+    final versions = v13.parseClientHelloSupportedVersionsExtData(sv.data);
+    if (versions == null) return false;
+    return versions.contains(v13.dtls13Version);
   }
 
   // ── Record processing ─────────────────────────────────────────────────────
@@ -388,11 +473,16 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         ? (msgType << 16) | ((fullFragment[4] << 8) | fullFragment[5])
         : -1;
 
-    // HelloVerifyRequest and Finished are NOT added to transcript here.
+    // HelloVerifyRequest, Finished, and CertificateVerify are NOT added to
+    // transcript here.
     // HVR: RFC 6347 §4.2.1 — excluded from transcript.
     // Finished: must verify against transcript hash BEFORE adding itself.
+    // CertificateVerify: signature is over the transcript hash *before* CV
+    // is folded in (RFC 5246 §7.4.8); the handler adds it on success.
     if (msgType != DtlsHandshakeType.helloVerifyRequest &&
-        msgType != DtlsHandshakeType.finished) {
+        msgType != DtlsHandshakeType.finished &&
+        !(role == DtlsRole.server &&
+            msgType == DtlsHandshakeType.certificateVerify)) {
       // Only add to transcript once (tracked by _receivedHandshake).
       if (!_receivedHandshake.contains(key)) {
         _receivedHandshake.add(key);
@@ -414,7 +504,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       DtlsHandshakeType.clientKeyExchange when role == DtlsRole.server =>
         _handleClientKeyExchange(body),
       DtlsHandshakeType.certificateVerify when role == DtlsRole.server =>
-        _handleCertificateVerify(body),
+        _handleCertificateVerify(body, fullFragment),
       _ => const Ok<ProcessResult, ProtocolError>(ProcessResult.empty),
     };
 
@@ -515,22 +605,72 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
     // Extract EC public key from SubjectPublicKeyInfo in DER
     _peerPublicKeyBytes = _extractEcPublicKey(certDer);
+    _peerCertPubKey = extractEcdsaP256PublicKey(certDer);
+    if (_peerCertPubKey == null) {
+      return Err(const CryptoError('DTLS: peer cert is not P-256 ecPublicKey'));
+    }
     return const Ok(ProcessResult.empty);
   }
 
   Result<ProcessResult, ProtocolError> _handleServerKeyExchange(
     Uint8List body,
   ) {
-    // Extract ECDH server public key
-    // body: ECParameters(3) || ECPoint length(1) || ECPoint
+    // body: ECParameters(3) || ECPoint length(1) || ECPoint(N) ||
+    //       SignatureAndHashAlgorithm(2) || signature_length(2) ||
+    //       signature(...)
     if (body.length < 5) {
       return Err(const ParseError('DTLS: bad ServerKeyExchange'));
     }
     final pointLen = body[3];
-    if (body.length < 4 + pointLen) {
+    final paramsEnd = 4 + pointLen;
+    if (body.length < paramsEnd + 4) {
       return Err(const ParseError('DTLS: truncated ServerKeyExchange'));
     }
-    _peerPublicKeyBytes = body.sublist(4, 4 + pointLen);
+    _peerPublicKeyBytes = body.sublist(4, paramsEnd);
+
+    final sigAlgHash = body[paramsEnd];
+    final sigAlgSig = body[paramsEnd + 1];
+    final sigLen = (body[paramsEnd + 2] << 8) | body[paramsEnd + 3];
+    if (body.length < paramsEnd + 4 + sigLen) {
+      return Err(const ParseError('DTLS: SKE signature truncated'));
+    }
+    if (sigAlgHash != 0x04 || sigAlgSig != 0x03) {
+      return Err(const CryptoError(
+          'DTLS 1.2: SKE signature scheme is not ECDSA-SHA256'));
+    }
+    final signature = body.sublist(paramsEnd + 4, paramsEnd + 4 + sigLen);
+
+    final peerPub = _peerCertPubKey;
+    if (peerPub == null) {
+      return Err(const StateError(
+          'DTLS 1.2: SKE arrived before Certificate'));
+    }
+
+    // Bytes signed = client_random || server_random || ec_params, where
+    // ec_params = curve_type(1) || named_curve(2) || ECPoint(1+N).
+    final ecParams = body.sublist(0, paramsEnd);
+    final serverRandom = _serverRandom;
+    if (serverRandom == null) {
+      return Err(const StateError(
+          'DTLS 1.2: SKE arrived before ServerHello'));
+    }
+    final signed = Uint8List(
+        _clientRandom.length + serverRandom.length + ecParams.length);
+    signed.setRange(0, _clientRandom.length, _clientRandom);
+    signed.setRange(_clientRandom.length,
+        _clientRandom.length + serverRandom.length, serverRandom);
+    signed.setRange(
+        _clientRandom.length + serverRandom.length, signed.length, ecParams);
+
+    final ok = EcdsaVerify.verifyP256Sha256(
+      publicKey: peerPub,
+      message: signed,
+      signature: signature,
+    );
+    if (!ok) {
+      return Err(const CryptoError(
+          'DTLS 1.2: ServerKeyExchange signature verification failed'));
+    }
     return const Ok(ProcessResult.empty);
   }
 
@@ -661,16 +801,39 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     _transcript.add(fullFragment);
     _state = DtlsHandshakeState.connected;
 
-    // Export SRTP key material
+    // Export SRTP key material — length depends on the profile picked
+    // from the server's use_srtp echo (RFC 7714 §12).
     final srtpKeyMaterial = DtlsKeyMaterial.exportSrtpKeyMaterial(
       masterSecret: _masterSecret!,
       clientRandom: _clientRandom,
       serverRandom: _serverRandom!,
+      length: _srtpExportLengthForSelectedProfile(),
     );
     // IMPORTANT: key material must never be logged
     onConnected?.call(srtpKeyMaterial);
 
     return const Ok(ProcessResult.empty);
+  }
+
+  /// Bytes of TLS-exported keying material the negotiated SRTP profile
+  /// expects. RFC 5764 §4.2 / RFC 7714 §12. Defaults to the legacy
+  /// 60-byte AES-CM length when no use_srtp profile is in scope, which
+  /// keeps non-SRTP code paths and unit tests working unchanged.
+  int _srtpExportLengthForSelectedProfile() {
+    final p = _selectedSrtpProfile;
+    if (p == null || p.length < 2) return 60;
+    final id = (p[0] << 8) | p[1];
+    switch (id) {
+      case 0x0001: // SRTP_AES128_CM_HMAC_SHA1_80
+      case 0x0002: // SRTP_AES128_CM_HMAC_SHA1_32
+        return 60;
+      case 0x0007: // SRTP_AEAD_AES_128_GCM
+        return 56;
+      case 0x0008: // SRTP_AEAD_AES_256_GCM
+        return 88;
+      default:
+        return 60;
+    }
   }
 
   // ── Server-side handlers ─────────────────────────────────────────────────
@@ -775,9 +938,14 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   List<int>? _selectedSrtpProfile;
 
   /// The negotiated SRTP profile ID (0x0001 = AES_CM_128_HMAC_SHA1_80).
-  int? get selectedSrtpProfileId => _selectedSrtpProfile != null
-      ? (_selectedSrtpProfile![0] << 8) | _selectedSrtpProfile![1]
-      : null;
+  /// Forwards to the inner v1.3 state machine when DTLS 1.3 was selected.
+  int? get selectedSrtpProfileId {
+    final v13Inner = _v13Inner;
+    if (v13Inner != null) return v13Inner.selectedSrtpProfileId;
+    return _selectedSrtpProfile != null
+        ? (_selectedSrtpProfile![0] << 8) | _selectedSrtpProfile![1]
+        : null;
+  }
 
   void _logClientHelloCipherSuites(Uint8List body, int afterCookie) {
     if (afterCookie + 2 > body.length) return;
@@ -1020,8 +1188,49 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> _handleCertificateVerify(
     Uint8List body,
+    Uint8List fullFragment,
   ) {
-    // Minimal: accept without verifying signature
+    // RFC 5246 §7.4.8: SignatureAndHashAlgorithm(2) || signature_length(2)
+    //                  || signature(...)
+    if (body.length < 4) {
+      return Err(const ParseError('DTLS 1.2: short CertificateVerify'));
+    }
+    final hashAlg = body[0];
+    final sigAlg = body[1];
+    final sigLen = (body[2] << 8) | body[3];
+    if (4 + sigLen != body.length) {
+      return Err(const ParseError('DTLS 1.2: bad CertificateVerify'));
+    }
+    if (hashAlg != 0x04 || sigAlg != 0x03) {
+      return Err(const CryptoError(
+          'DTLS 1.2: client CertificateVerify is not ECDSA-SHA256'));
+    }
+    final signature = body.sublist(4, 4 + sigLen);
+
+    final peerPub = _peerCertPubKey;
+    if (peerPub == null) {
+      return Err(const StateError(
+          'DTLS 1.2: CertificateVerify before client Certificate'));
+    }
+
+    // Transcript at this point excludes the CV message itself (the dispatcher
+    // skips folding CV in until verification succeeds). The bytes signed by
+    // the client are the transcript bytes; verifyP256Sha256 hashes internally.
+    final ok = EcdsaVerify.verifyP256Sha256(
+      publicKey: peerPub,
+      message: _transcript.bytes,
+      signature: signature,
+    );
+    if (!ok) {
+      return Err(const CryptoError(
+          'DTLS 1.2: client CertificateVerify failed'));
+    }
+    _transcript.add(fullFragment);
+    final key = fullFragment.length >= 6
+        ? (DtlsHandshakeType.certificateVerify << 16) |
+            ((fullFragment[4] << 8) | fullFragment[5])
+        : -1;
+    _receivedHandshake.add(key);
     return const Ok(ProcessResult.empty);
   }
 
@@ -1086,11 +1295,13 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     _lastFlight = flight;
     _state = DtlsHandshakeState.connected;
 
-    // Export SRTP key material
+    // Export SRTP key material — length depends on the profile picked
+    // from the client's use_srtp offer (RFC 7714 §12).
     final srtpKeyMaterial = DtlsKeyMaterial.exportSrtpKeyMaterial(
       masterSecret: _masterSecret!,
       clientRandom: _clientRandom,
       serverRandom: _serverRandom!,
+      length: _srtpExportLengthForSelectedProfile(),
     );
     onConnected?.call(srtpKeyMaterial);
 

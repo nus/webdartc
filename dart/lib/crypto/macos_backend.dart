@@ -5,6 +5,8 @@ import 'dart:ffi';
 import 'dart:typed_data';
 
 import 'aes_gcm.dart' show AesGcmResult;
+import 'chacha20_poly1305.dart' show AeadResult;
+import 'chacha20_poly1305_pure.dart' as cc20p1305;
 import 'common_crypto.dart';
 import 'crypto_backend.dart';
 import 'security_framework.dart';
@@ -142,6 +144,24 @@ final class MacosAesGcmBackend implements AesGcmBackend {
       libcAlloc.free(tagPtr);
       libcAlloc.free(tagLenPtr);
     }
+  }
+}
+
+// ── ChaCha20-Poly1305 ──────────────────────────────────────────────────────
+
+/// Pure-Dart fallback — see `chacha20_poly1305_pure.dart`. CommonCrypto
+/// has no ChaCha20-Poly1305 entry point and CryptoKit is Swift-only, so
+/// we run the RFC 8439 reference algorithm in Dart on macOS.
+final class MacosChaCha20Poly1305Backend implements ChaCha20Poly1305Backend {
+  @override
+  AeadResult encrypt(Uint8List key, Uint8List nonce, Uint8List plaintext, Uint8List aad) {
+    final r = cc20p1305.aeadEncrypt(key, nonce, plaintext, aad);
+    return AeadResult(ciphertext: r.ciphertext, tag: r.tag);
+  }
+
+  @override
+  Uint8List? decrypt(Uint8List key, Uint8List nonce, Uint8List ciphertext, Uint8List expectedTag, Uint8List aad) {
+    return cc20p1305.aeadDecrypt(key, nonce, ciphertext, expectedTag, aad);
   }
 }
 
@@ -378,5 +398,68 @@ final class MacosEcdsaBackend implements EcdsaBackend, Finalizable {
   void dispose() {
     _finalizer.detach(this);
     sec.cfRelease(_privateKeyRef.cast());
+  }
+}
+
+// ── ECDSA verify (stateless) ────────────────────────────────────────────────
+
+final class MacosEcdsaVerifyBackend implements EcdsaVerifyBackend {
+  @override
+  bool verifyP256Sha256({
+    required Uint8List publicKey,
+    required Uint8List message,
+    required Uint8List signature,
+  }) {
+    if (publicKey.length != 65 || publicKey[0] != 0x04) return false;
+    final s = sec;
+
+    final pubKeyData = s.bytesToCFData(publicKey);
+    final keys = libcAlloc.allocate<Pointer<Void>>(2);
+    final vals = libcAlloc.allocate<Pointer<Void>>(2);
+    try {
+      keys[0] = s.kSecAttrKeyType;
+      keys[1] = s.kSecAttrKeyClass;
+      vals[0] = s.kSecAttrKeyTypeECSECPrimeRandomRef;
+      vals[1] = s.kSecAttrKeyClassPublic;
+      final attrs = s.cfDictionaryCreate(
+        nullptr, keys, vals, 2,
+        s.kCFTypeDictionaryKeyCallBacks, s.kCFTypeDictionaryValueCallBacks,
+      );
+      final errPtr = libcAlloc.allocate<CFErrorRef>(1);
+      errPtr.value = nullptr;
+      try {
+        final pubKey = s.secKeyCreateWithData(pubKeyData, attrs, errPtr);
+        s.cfRelease(pubKeyData.cast());
+        if (pubKey == nullptr) return false;
+        try {
+          final msgRef = s.bytesToCFData(message);
+          final sigRef = s.bytesToCFData(signature);
+          final verifyErrPtr = libcAlloc.allocate<CFErrorRef>(1);
+          verifyErrPtr.value = nullptr;
+          try {
+            final ok = s.secKeyVerifySignature(
+              pubKey,
+              s.kSecKeyAlgorithmECDSASignatureMessageX962SHA256,
+              msgRef,
+              sigRef,
+              verifyErrPtr,
+            );
+            return ok;
+          } finally {
+            s.cfRelease(msgRef.cast());
+            s.cfRelease(sigRef.cast());
+            libcAlloc.free(verifyErrPtr);
+          }
+        } finally {
+          s.cfRelease(pubKey.cast());
+        }
+      } finally {
+        libcAlloc.free(errPtr);
+        s.cfRelease(attrs.cast());
+      }
+    } finally {
+      libcAlloc.free(keys);
+      libcAlloc.free(vals);
+    }
   }
 }
