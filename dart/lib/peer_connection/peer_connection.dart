@@ -406,6 +406,11 @@ final class PeerConnection {
         for (final pkt in result.value.outputPackets) {
           _transport.sendSctp(pkt.data);
         }
+        // RFC 4960 §6.3: schedule T3-rtx so a lost DATA chunk
+        // gets retransmitted. Discarding this timeout (as the code
+        // previously did) leaves un-ACKed chunks pending forever and
+        // the DC stalls under any packet loss.
+        _transport.scheduleSctpTimeout(result.value.nextTimeout);
       }
     };
     _dataChannels[id] = channel;
@@ -421,6 +426,8 @@ final class PeerConnection {
         for (final pkt in result.value.outputPackets) {
           _transport.sendSctp(pkt.data);
         }
+        // Same T3-rtx scheduling reason as the data send callback above.
+        _transport.scheduleSctpTimeout(result.value.nextTimeout);
       }
     });
 

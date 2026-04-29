@@ -299,6 +299,15 @@ final class TransportController {
     }
   }
 
+  /// Public hook so PeerConnection can schedule SCTP-layer timers
+  /// (T3-rtx, T1-init, T1-cookie) returned from `_sctp.sendData()` /
+  /// `_sctp.openDataChannel()`. Without this, lost SCTP DATA chunks
+  /// would never trigger retransmission because the per-chunk T3-rtx
+  /// `nextTimeout` returned by the SCTP state machine was being
+  /// discarded by the DataChannel send callback in peer_connection.dart.
+  void scheduleSctpTimeout(Timeout? timeout) =>
+      _scheduleTimeout(timeout, 'sctp');
+
   void _scheduleTimeout(Timeout? timeout, String key) {
     if (timeout == null) return;
     _timers[key]?.cancel();
