@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io' show Platform, stderr;
 import 'dart:typed_data';
 
+import '../api/media_engine.dart';
+import '../api/setting_engine.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
 import '../dtls/state_machine.dart';
@@ -140,6 +142,33 @@ final class PeerConnection {
 
   PeerConnection({required this.configuration}) {
     _init();
+  }
+
+  // ── Engines (low-level configuration owned by [WebdartcApi]) ──────────────
+
+  /// Network / ICE settings. Default-initialised so a `PeerConnection`
+  /// constructed directly behaves identically to before [WebdartcApi]
+  /// was introduced; the factory swaps it via [attachEngines].
+  SettingEngine _settingEngine = const SettingEngine();
+  SettingEngine get settingEngine => _settingEngine;
+
+  /// Codec / RTP-extension registry (currently a placeholder for the
+  /// Pion-style scaffolding; codec wiring lands in a follow-up).
+  MediaEngine _mediaEngine = const MediaEngine();
+  MediaEngine get mediaEngine => _mediaEngine;
+
+  /// Internal: invoked by [WebdartcApi.createPeerConnection] right
+  /// after construction to substitute the default engines with the
+  /// API-shared ones. Not part of the W3C surface — application code
+  /// should pass engines through [WebdartcApi] instead of calling this
+  /// directly. Calling it after the connection has started ICE
+  /// gathering is undefined behaviour.
+  void attachEngines({
+    required SettingEngine setting,
+    required MediaEngine media,
+  }) {
+    _settingEngine = setting;
+    _mediaEngine = media;
   }
 
   // ── State properties ──────────────────────────────────────────────────────
