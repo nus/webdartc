@@ -231,6 +231,11 @@ final class TransportController {
     }
   }
 
+  /// Sends each packet as a raw UDP datagram. Callers must pass packets
+  /// whose [OutputPacket.data] is already wire-ready — STUN messages,
+  /// DTLS records, or DTLS-encrypted application data. SCTP state-machine
+  /// output is plaintext SCTP and must go through [sendSctp] instead, which
+  /// applies the DTLS encryption layer first.
   void _sendOutputPackets(List<OutputPacket> packets) {
     for (final pkt in packets) {
       // If the IP is not a valid address (hostname), resolve it asynchronously.
@@ -321,7 +326,23 @@ final class TransportController {
     final result = _dispatchTimeout(token);
     if (result == null) return;
     if (result.isOk) {
-      _sendOutputPackets(result.value.outputPackets);
+      // SCTP timer outputs are raw SCTP packets — they must be encrypted
+      // via DTLS before going on the wire (the receive-side dispatch only
+      // recognises DTLS records 0x14–0x3F and discards anything else).
+      // The receive-path SCTP handler in PeerConnection routes ProcessResult
+      // packets through `sendSctp`, but timer-driven retransmits land here
+      // and would otherwise bypass DTLS, leaving every T3-rtx attempt to be
+      // dropped by the peer.
+      final isSctpTimer = token is SctpT1InitToken ||
+          token is SctpT1CookieToken ||
+          token is SctpT3RtxToken;
+      if (isSctpTimer) {
+        for (final pkt in result.value.outputPackets) {
+          sendSctp(pkt.data);
+        }
+      } else {
+        _sendOutputPackets(result.value.outputPackets);
+      }
       _scheduleTimeout(result.value.nextTimeout, key);
     }
   }
