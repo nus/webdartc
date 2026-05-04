@@ -73,7 +73,7 @@ void main() {
       // We can't override the SM's send path, but we can intercept by
       // running the loop manually and recording each step.
       final initial = client
-          .startHandshake(remoteIp: '127.0.0.1', remotePort: 5000)
+          .startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000)
           .value
           .outputPackets;
       final c2s = <OutputPacket>[...initial];
@@ -83,7 +83,7 @@ void main() {
         while (c2s.isNotEmpty) {
           final p = c2s.removeAt(0);
           final r = realProcess(p.data,
-              remoteIp: p.remoteIp, remotePort: p.remotePort);
+              remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
           expect(r.isOk, isTrue);
           serverOut.addAll(r.value.outputPackets);
           s2c.addAll(r.value.outputPackets);
@@ -91,7 +91,7 @@ void main() {
         while (s2c.isNotEmpty) {
           final p = s2c.removeAt(0);
           final r = client.processInput(p.data,
-              remoteIp: p.remoteIp, remotePort: p.remotePort);
+              remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
           expect(r.isOk, isTrue);
           c2s.addAll(r.value.outputPackets);
         }

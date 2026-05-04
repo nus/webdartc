@@ -11,10 +11,10 @@ void main() {
       ice.onLocalCandidate = (c) => emitted = c;
 
       final params = IceParameters(usernameFragment: 'ufrag', password: 'password');
-      ice.startGathering(params, localIp: '127.0.0.1', localPort: 12345);
+      ice.startGathering(params, hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 12345)]);
 
       expect(emitted, isNotNull);
-      expect(emitted!.ip, equals('127.0.0.1'));
+      expect(emitted!.ip, equals(IpAddress.parse('127.0.0.1')));
       expect(emitted!.port, equals(12345));
       expect(emitted!.type, equals(IceCandidateType.host));
     });
@@ -26,8 +26,7 @@ void main() {
 
       ice.startGathering(
         IceParameters(usernameFragment: 'u', password: 'p'),
-        localIp: '127.0.0.1',
-        localPort: 9999,
+        hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 9999)],
       );
 
       expect(states, contains(IceState.iceGatheringComplete));
@@ -44,9 +43,9 @@ void main() {
           IceParameters(usernameFragment: 'ctrd', password: 'ctrd_pass');
 
       controllingIce.startGathering(controllingParams,
-          localIp: '127.0.0.1', localPort: 10000);
+          hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 10000)]);
       controlledIce.startGathering(controlledParams,
-          localIp: '127.0.0.1', localPort: 10001);
+          hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 10001)]);
 
       controllingIce.setRemoteParameters(controlledParams);
       controlledIce.setRemoteParameters(controllingParams);
@@ -56,7 +55,7 @@ void main() {
         componentId: 1,
         transport: 'udp',
         priority: 1000,
-        ip: '127.0.0.1',
+        ip: IpAddress.parse('127.0.0.1'),
         port: 10001,
         type: IceCandidateType.host,
       ));
@@ -105,8 +104,7 @@ void main() {
 
       final result = ice.startGathering(
         IceParameters(usernameFragment: 'u', password: 'p'),
-        localIp: '192.168.1.10',
-        localPort: 5000,
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
       );
 
       // Should emit host candidate first.
@@ -135,8 +133,7 @@ void main() {
 
       final gatherResult = ice.startGathering(
         IceParameters(usernameFragment: 'u', password: 'p'),
-        localIp: '192.168.1.10',
-        localPort: 5000,
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
       );
 
       // Extract the STUN request to get the transaction ID.
@@ -150,23 +147,26 @@ void main() {
         type: StunMessageType.bindingSuccessResponse,
         transactionId: txId,
         attributes: [
-          XorMappedAddress(ip: '203.0.113.42', port: 12345),
+          XorMappedAddress(
+            address: IpAddress.parse('203.0.113.42'),
+            port: 12345,
+          ),
         ],
       );
       final responseBytes = StunMessageBuilder.build(response);
 
       ice.processInput(
         responseBytes,
-        remoteIp: '198.51.100.1',
+        remoteIp: IpAddress.parse('198.51.100.1'),
         remotePort: 3478,
       );
 
       // Should now have host + srflx candidates.
       expect(candidates.length, equals(2));
       expect(candidates[1].type, equals(IceCandidateType.srflx));
-      expect(candidates[1].ip, equals('203.0.113.42'));
+      expect(candidates[1].ip, equals(IpAddress.parse('203.0.113.42')));
       expect(candidates[1].port, equals(12345));
-      expect(candidates[1].relatedAddress, equals('192.168.1.10'));
+      expect(candidates[1].relatedAddress, equals(IpAddress.parse('192.168.1.10')));
       expect(candidates[1].relatedPort, equals(5000));
 
       // Gathering should be complete.
@@ -181,8 +181,7 @@ void main() {
 
       ice.startGathering(
         IceParameters(usernameFragment: 'u', password: 'p'),
-        localIp: '192.168.1.10',
-        localPort: 5000,
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
       );
 
       // Simulate timeout.
@@ -213,7 +212,7 @@ void main() {
         componentId: 1,
         transport: 'udp',
         priority: 123456,
-        ip: '192.168.1.1',
+        ip: IpAddress.parse('192.168.1.1'),
         port: 54321,
         type: IceCandidateType.host,
       );

@@ -28,7 +28,7 @@ void main() {
         final p = clientToServer.removeAt(0);
         final r = server.processInput(
           p.data,
-          remoteIp: p.remoteIp,
+          remoteIp: IpAddress.parse(p.remoteIp),
           remotePort: p.remotePort,
         );
         expect(r.isOk, isTrue,
@@ -39,7 +39,7 @@ void main() {
         final p = serverToClient.removeAt(0);
         final r = client.processInput(
           p.data,
-          remoteIp: p.remoteIp,
+          remoteIp: IpAddress.parse(p.remoteIp),
           remotePort: p.remotePort,
         );
         expect(r.isOk, isTrue,
@@ -60,7 +60,7 @@ void main() {
       localCert: EcdsaCertificate.selfSigned(),
     );
 
-    final start = client.startHandshake(remoteIp: '127.0.0.1', remotePort: 5000);
+    final start = client.startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
     expect(start.isOk, isTrue);
     drainLoopback(client, server, initial: start.value.outputPackets);
 
@@ -85,7 +85,7 @@ void main() {
     client.onApplicationData = fromServerToClient.add;
     server.onApplicationData = fromClientToServer.add;
 
-    final start = client.startHandshake(remoteIp: '127.0.0.1', remotePort: 5000);
+    final start = client.startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
     expect(start.isOk, isTrue);
     drainLoopback(client, server, initial: start.value.outputPackets);
     expect(client.state, equals(DtlsV13ClientState.connected));
@@ -98,7 +98,7 @@ void main() {
     for (final p in s2c.value.outputPackets) {
       final r = client.processInput(
         p.data,
-        remoteIp: p.remoteIp,
+        remoteIp: IpAddress.parse(p.remoteIp),
         remotePort: p.remotePort,
       );
       expect(r.isOk, isTrue);
@@ -114,7 +114,7 @@ void main() {
     for (final p in c2s.value.outputPackets) {
       final r = server.processInput(
         p.data,
-        remoteIp: p.remoteIp,
+        remoteIp: IpAddress.parse(p.remoteIp),
         remotePort: p.remotePort,
       );
       expect(r.isOk, isTrue);

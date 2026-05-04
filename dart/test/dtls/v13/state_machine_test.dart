@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
+import 'package:webdartc/core/ip_address.dart';
 import 'package:webdartc/crypto/csprng.dart';
 import 'package:webdartc/crypto/ecdh.dart';
 import 'package:webdartc/crypto/ecdsa.dart';
@@ -124,7 +125,7 @@ void main() {
       // ── Drive the server with the ClientHello ─────────────────────────
       final r1 = server.processInput(
         chPacket,
-        remoteIp: '127.0.0.1',
+        remoteIp: IpAddress.parse('127.0.0.1'),
         remotePort: 5000,
       );
       expect(r1.isOk, isTrue,
@@ -247,7 +248,7 @@ void main() {
       );
       final r2 = server.processInput(
         clientFinRecord,
-        remoteIp: '127.0.0.1',
+        remoteIp: IpAddress.parse('127.0.0.1'),
         remotePort: 5000,
       );
       expect(r2.isOk, isTrue,
@@ -279,7 +280,7 @@ void main() {
         0,
       );
       final r = server.processInput(packet,
-          remoteIp: '127.0.0.1', remotePort: 5000);
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(r.isErr, isTrue);
     });
 
@@ -304,7 +305,7 @@ void main() {
         0,
       );
       final r = server.processInput(packet,
-          remoteIp: '127.0.0.1', remotePort: 5000);
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(r.isErr, isTrue);
     });
 
@@ -328,7 +329,7 @@ void main() {
         0,
       );
       final r = server.processInput(packet,
-          remoteIp: '127.0.0.1', remotePort: 5000);
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(r.isErr, isTrue);
     });
 
@@ -360,7 +361,7 @@ void main() {
         0,
       );
       final r = server.processInput(packet,
-          remoteIp: '127.0.0.1', remotePort: 5000);
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(r.isErr, isTrue);
     });
   });

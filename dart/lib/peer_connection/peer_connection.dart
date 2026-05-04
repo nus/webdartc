@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform, stderr;
 import 'dart:typed_data';
 
+import '../api/setting_engine.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
 import '../dtls/state_machine.dart';
@@ -138,7 +139,16 @@ final class PeerConnection {
   final _signalingStateController =
       StreamController<SignalingState>.broadcast();
 
-  PeerConnection({required this.configuration}) {
+  /// Network / ICE settings. Pass via the `settingEngine` constructor
+  /// parameter (typically through [Webdartc.createPeerConnection]); the
+  /// default value is sufficient for single-interface, no-bind-control
+  /// callers.
+  final SettingEngine settingEngine;
+
+  PeerConnection({
+    required this.configuration,
+    this.settingEngine = const SettingEngine(),
+  }) {
     _init();
   }
 
@@ -275,8 +285,7 @@ final class PeerConnection {
     await _ensureTransportStarted();
     final result = _ice.startGathering(
       IceParameters(usernameFragment: _iceUfrag, password: _icePwd),
-      localIp: _transport.localAddress,
-      localPort: _transport.localPort,
+      hosts: _transport.bindings,
     );
     if (result.isErr) throw Exception(result.error.message);
     // Forward any initial check packets (answerer: remote params already set).
@@ -596,7 +605,7 @@ final class PeerConnection {
   Future<void> _ensureTransportStarted() async {
     if (_transportStarted) return;
     _transportStarted = true;
-    await _transport.start();
+    await _transport.start(settingEngine: settingEngine);
   }
 
   // ── Callbacks ─────────────────────────────────────────────────────────────

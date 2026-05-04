@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../api/setting_engine.dart';
 import '../core/state_machine.dart';
 import '../dtls/state_machine.dart';
 import '../ice/state_machine.dart';
@@ -13,19 +14,34 @@ import '../stun/parser.dart';
 
 /// The only module in webdartc that uses dart:io.
 ///
-/// Owns a [RawDatagramSocket] and dispatches incoming packets to the correct
-/// state machine. Drives timers on behalf of all protocol modules.
+/// Owns one [RawDatagramSocket] per bound local IP, dispatches incoming
+/// packets to the correct state machine, and drives timers on behalf of
+/// all protocol modules. Per-IP bind makes ICE replies leave on the
+/// same interface that received the request — each socket has a fixed
+/// source IP, sidestepping the kernel's source-address selection.
 final class TransportController {
-  RawDatagramSocket? _socket;
+  /// Bound sockets keyed by their bind IP. Wildcard fallback uses
+  /// `0.0.0.0` as the key; per-interface bind uses the interface IPs.
+  final Map<IpAddress, RawDatagramSocket> _sockets = {};
 
   IceStateMachine? _ice;
   DtlsStateMachine? _dtls;
   SrtpContext? _srtp;
   SctpStateMachine? _sctp;
 
-  int get localPort => _socket?.port ?? 0;
-  String _localAddress = '0.0.0.0';
-  String get localAddress => _localAddress;
+  /// (ip, port) pairs to advertise as ICE host candidates. Computed once
+  /// at [start] time from the resolved bind list; for the wildcard fallback
+  /// the IP is the auto-detected non-loopback address rather than 0.0.0.0.
+  List<HostBinding> _bindings = const [];
+  List<HostBinding> get bindings => _bindings;
+
+  /// First advertised IP, in canonical text form. Used by the legacy
+  /// single-IP SDP builder path.
+  String get localAddress =>
+      _bindings.isEmpty ? '0.0.0.0' : _bindings.first.ip.toCanonical();
+
+  /// First advertised port. Used by the legacy single-IP SDP builder path.
+  int get localPort => _bindings.isEmpty ? 0 : _bindings.first.port;
 
   final _timers = <String, Timer>{};
 
@@ -43,29 +59,96 @@ final class TransportController {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-  /// Bind to a UDP port and start receiving packets.
-  ///
-  /// If [candidateAddress] is provided, it's used as the local address for
-  /// ICE candidates (e.g. '127.0.0.1' for loopback testing, or a LAN IP).
-  /// If null, auto-detects a suitable local IPv4 address.
-  Future<void> start({int port = 0, String? candidateAddress}) async {
-    _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
-    _socket!.listen(_onEvent);
-    _localAddress = candidateAddress ?? await _findLocalIpv4();
+  /// Bind UDP sockets and start receiving packets. One socket per IP
+  /// resolved by [_resolveBindAddresses].
+  Future<void> start({
+    SettingEngine settingEngine = const SettingEngine(),
+    int port = 0,
+  }) async {
+    final bindIps = await _resolveBindAddresses(settingEngine);
+
+    if (bindIps.isEmpty) {
+      // Wildcard fallback: bind 0.0.0.0 and advertise the auto-detected
+      // non-loopback IP as the host candidate.
+      final socket =
+          await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
+      final bindIp = IpAddress.fromBytes(socket.address.rawAddress);
+      socket.listen((event) => _onEvent(socket, bindIp, event));
+      _sockets[bindIp] = socket;
+      _bindings = [(ip: await _findLocalIpv4(), port: socket.port)];
+      return;
+    }
+
+    final sockets = await Future.wait([
+      for (final ip in bindIps)
+        RawDatagramSocket.bind(InternetAddress(ip.toCanonical()), port),
+    ]);
+    final bindings = <HostBinding>[];
+    for (var i = 0; i < bindIps.length; i++) {
+      final ip = bindIps[i];
+      final socket = sockets[i];
+      socket.listen((event) => _onEvent(socket, ip, event));
+      _sockets[ip] = socket;
+      bindings.add((ip: ip, port: socket.port));
+    }
+    _bindings = bindings;
   }
 
-  static Future<String> _findLocalIpv4() async {
-    // Try to find a non-loopback IPv4 address; fall back to loopback.
+  /// Resolves the IPs the transport will bind to from a [SettingEngine].
+  /// Public for tests; production callers go through [start].
+  static Future<List<IpAddress>> _resolveBindAddresses(
+      SettingEngine engine) async {
+    if (engine.bindAddresses != null) {
+      return engine.bindAddresses!.map(IpAddress.parse).toList();
+    }
+
+    final nonLoopback = <IpAddress>[];
+    final loopback = <IpAddress>[];
     try {
       final interfaces = await NetworkInterface.list(
-          type: InternetAddressType.IPv4);
+        type: InternetAddressType.IPv4,
+        includeLoopback: true,
+      );
       for (final iface in interfaces) {
+        if (engine.interfaceFilter != null &&
+            !engine.interfaceFilter!(iface)) {
+          continue;
+        }
         for (final addr in iface.addresses) {
-          if (!addr.isLoopback) return addr.address;
+          final ip = IpAddress.fromBytes(addr.rawAddress);
+          if (ip.isLoopback) {
+            loopback.add(ip);
+          } else {
+            nonLoopback.add(ip);
+          }
         }
       }
-    } catch (_) {}
-    return '127.0.0.1';
+    } catch (_) {
+      // NetworkInterface.list can fail in restricted environments;
+      // caller falls back to wildcard bind.
+    }
+
+    if (nonLoopback.isEmpty) {
+      // Pure-loopback host — return loopback regardless of the engine's
+      // includeLoopbackCandidate setting, so we always have at least one
+      // bind to land on.
+      return loopback;
+    }
+    if (engine.includeLoopbackCandidate) {
+      return [...nonLoopback, ...loopback];
+    }
+    return nonLoopback;
+  }
+
+  /// First non-loopback IPv4 from interface enumeration, or `127.0.0.1`
+  /// if none. Used by the wildcard-bind fallback for the advertised
+  /// candidate IP.
+  static Future<IpAddress> _findLocalIpv4() async {
+    final ips = await _resolveBindAddresses(const SettingEngine());
+    return ips.firstWhere(
+      (ip) => !ip.isLoopback,
+      orElse: () => ips.isEmpty ? IpAddress.parse('127.0.0.1') : ips.first,
+    );
   }
 
   /// Forward a ProcessResult produced by an ICE control action (e.g.
@@ -82,8 +165,10 @@ final class TransportController {
       timer.cancel();
     }
     _timers.clear();
-    _socket?.close();
-    _socket = null;
+    for (final socket in _sockets.values) {
+      socket.close();
+    }
+    _sockets.clear();
   }
 
   // ── Module attachment ─────────────────────────────────────────────────────
@@ -107,7 +192,7 @@ final class TransportController {
   /// Start the DTLS handshake, sending the initial flight and scheduling
   /// the retransmit timer.  Must be called after ICE reaches connected.
   void startDtlsHandshake({
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
   }) {
     final dtls = _dtls;
@@ -127,7 +212,8 @@ final class TransportController {
   void sendRtp(Uint8List rtpBytes) {
     final pair = _ice?.selectedPair;
     if (pair == null) return;
-    _sendUdp(rtpBytes, pair.remote.ip, pair.remote.port);
+    _sendUdp(rtpBytes, pair.remote.ip.toCanonical(), pair.remote.port,
+        localIp: pair.local.ip);
   }
 
   void sendSctp(Uint8List sctpBytes) {
@@ -141,7 +227,8 @@ final class TransportController {
         _scheduleTimeout(result.value.nextTimeout, 'dtls-app');
       }
     } else {
-      _sendUdp(sctpBytes, pair.remote.ip, pair.remote.port);
+      _sendUdp(sctpBytes, pair.remote.ip.toCanonical(), pair.remote.port,
+          localIp: pair.local.ip);
     }
   }
 
@@ -150,19 +237,21 @@ final class TransportController {
   // Debug logging — set WEBDARTC_DEBUG=1 env var to trace packet flow.
   static final bool _debug = Platform.environment['WEBDARTC_DEBUG'] == '1';
 
-  void _onEvent(RawSocketEvent event) {
+  void _onEvent(
+      RawDatagramSocket socket, IpAddress bindIp, RawSocketEvent event) {
     if (event != RawSocketEvent.read) return;
     // Record arrival timestamp immediately, before any processing.
     final arrivalUs = _arrivalClock.elapsedMicroseconds;
-    final datagram = _socket?.receive();
+    final datagram = socket.receive();
     if (datagram == null) return;
 
     final data = datagram.data;
-    final remoteIp = datagram.address.address;
+    final remoteIp = IpAddress.fromBytes(datagram.address.rawAddress);
     final remotePort = datagram.port;
 
     if (_debug) {
       stderr.writeln('[transport] RX ${data.length}b from $remoteIp:$remotePort'
+          ' on local=$bindIp'
           ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
       if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
         final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
@@ -170,46 +259,50 @@ final class TransportController {
       }
     }
 
-    _dispatch(data, arrivalUs, remoteIp, remotePort);
+    _dispatch(data, arrivalUs, remoteIp, remotePort, bindIp);
   }
 
-  void _dispatch(Uint8List data, int arrivalUs, String remoteIp, int remotePort) {
+  void _dispatch(Uint8List data, int arrivalUs, IpAddress remoteIp,
+      int remotePort, IpAddress localIp) {
     if (data.isEmpty) return;
     final firstByte = data[0];
 
     if (StunParser.isStun(data)) {
-      _processIce(data, remoteIp, remotePort);
+      _processIce(data, remoteIp, remotePort, localIp);
     } else if (firstByte >= 20 && firstByte <= 63) {
       // DTLS record layer
       _processDtls(data, remoteIp, remotePort);
     } else if (firstByte >= 128 && firstByte <= 191) {
       // RTP or RTCP
-      _processSrtp(data, arrivalUs, remoteIp, remotePort);
+      _processSrtp(data, arrivalUs);
     }
     // Else: unknown — discard
   }
 
-  void _processIce(Uint8List data, String remoteIp, int remotePort) {
+  void _processIce(Uint8List data, IpAddress remoteIp, int remotePort,
+      IpAddress localIp) {
     final ice = _ice;
     if (ice == null) return;
-    final result = ice.processInput(data, remoteIp: remoteIp, remotePort: remotePort);
+    final result = ice.processInput(data,
+        remoteIp: remoteIp, remotePort: remotePort, localIp: localIp);
     if (result.isOk) {
       _sendOutputPackets(result.value.outputPackets);
       _scheduleTimeout(result.value.nextTimeout, 'ice-check');
     }
   }
 
-  void _processDtls(Uint8List data, String remoteIp, int remotePort) {
+  void _processDtls(Uint8List data, IpAddress remoteIp, int remotePort) {
     final dtls = _dtls;
     if (dtls == null) return;
-    final result = dtls.processInput(data, remoteIp: remoteIp, remotePort: remotePort);
+    final result = dtls.processInput(data,
+        remoteIp: remoteIp, remotePort: remotePort);
     if (result.isOk) {
       _sendOutputPackets(result.value.outputPackets);
       _scheduleTimeout(result.value.nextTimeout, 'dtls-retransmit');
     }
   }
 
-  void _processSrtp(Uint8List data, int arrivalUs, String remoteIp, int remotePort) {
+  void _processSrtp(Uint8List data, int arrivalUs) {
     final srtp = _srtp;
     if (srtp == null) return;
 
@@ -242,7 +335,7 @@ final class TransportController {
       if (InternetAddress.tryParse(pkt.remoteIp) == null && !_dnsCache.containsKey(pkt.remoteIp)) {
         _resolveAndSend(pkt);
       } else {
-        _sendUdp(pkt.data, pkt.remoteIp, pkt.remotePort);
+        _sendUdp(pkt.data, pkt.remoteIp, pkt.remotePort, localIp: pkt.localIp);
       }
     }
   }
@@ -250,7 +343,7 @@ final class TransportController {
   Future<void> _resolveAndSend(OutputPacket pkt) async {
     final addr = await _resolveAddress(pkt.remoteIp);
     if (addr != null) {
-      _sendUdp(pkt.data, pkt.remoteIp, pkt.remotePort);
+      _sendUdp(pkt.data, pkt.remoteIp, pkt.remotePort, localIp: pkt.localIp);
     }
   }
 
@@ -280,7 +373,19 @@ final class TransportController {
     return null;
   }
 
-  void _sendUdp(Uint8List data, String ip, int port) {
+  /// Pick a socket for sending. Prefers the one bound to [localIp]; falls
+  /// back to any socket when [localIp] is null (gather-path STUN) or when
+  /// the lookup misses (wildcard bind: socket key is `0.0.0.0`, candidate
+  /// IP is auto-detected).
+  RawDatagramSocket? _selectSocket(IpAddress? localIp) {
+    if (localIp != null) {
+      final s = _sockets[localIp];
+      if (s != null) return s;
+    }
+    return _sockets.values.firstOrNull;
+  }
+
+  void _sendUdp(Uint8List data, String ip, int port, {IpAddress? localIp}) {
     try {
       var addr = InternetAddress.tryParse(ip);
       if (addr == null) {
@@ -292,13 +397,15 @@ final class TransportController {
       if (addr.type == InternetAddressType.IPv6) return;
       if (_debug) {
         stderr.writeln('[transport] TX ${data.length}b to $ip:$port'
+            ' from local=${localIp ?? "?"}'
             ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
         if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
           final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
           stderr.writeln('[transport] TX hex: $hex');
         }
       }
-      _socket?.send(data, addr, port);
+      final socket = _selectSocket(localIp);
+      socket?.send(data, addr, port);
     } catch (_) {
       // Network errors are non-fatal in UDP
     }

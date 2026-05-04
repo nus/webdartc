@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../core/ip_address.dart';
 import '../core/result.dart';
 import '../core/state_machine.dart' show ParseError;
 import 'message.dart';
@@ -126,34 +127,42 @@ abstract final class StunParser {
     Uint8List value,
     List<int> transactionId,
   ) {
-    if (value.length < 8) return null;
-    final family = value[1];
-    final xPort = _readUint16(value, 2);
-    final port = xPort ^ (stunMagicCookie >> 16);
-
-    if (family == 0x01) {
-      // IPv4
-      final xAddr = _readUint32(value, 4);
-      final addr = xAddr ^ stunMagicCookie;
-      final ip =
-          '${(addr >> 24) & 0xFF}.${(addr >> 16) & 0xFF}.${(addr >> 8) & 0xFF}.${addr & 0xFF}';
-      return XorMappedAddress(ip: ip, port: port);
-    }
-    // IPv6 not implemented — return raw
-    return null;
+    final parsed = _parseAddress(value, transactionId);
+    if (parsed == null) return null;
+    return XorMappedAddress(address: parsed.$1, port: parsed.$2);
   }
 
   static MappedAddress? _parseMappedAddress(Uint8List value) {
+    final parsed = _parseAddress(value, null);
+    if (parsed == null) return null;
+    return MappedAddress(address: parsed.$1, port: parsed.$2);
+  }
+
+  /// Parse a STUN address attribute body (1 reserved + 1 family + 2 port +
+  /// N address bytes). When [xorTxId] is non-null, port and address are
+  /// XOR-decoded per RFC 5389 §15.2 — first 4 address bytes against the
+  /// magic cookie, remaining 12 (IPv6 only) against the transaction ID.
+  static (IpAddress, int)? _parseAddress(Uint8List value, List<int>? xorTxId) {
     if (value.length < 8) return null;
     final family = value[1];
-    final port = _readUint16(value, 2);
-    if (family == 0x01) {
-      final addr = _readUint32(value, 4);
-      final ip =
-          '${(addr >> 24) & 0xFF}.${(addr >> 16) & 0xFF}.${(addr >> 8) & 0xFF}.${addr & 0xFF}';
-      return MappedAddress(ip: ip, port: port);
+    final addrLen = family == 0x01 ? 4 : (family == 0x02 ? 16 : 0);
+    if (addrLen == 0) return null;
+    if (value.length < 4 + addrLen) return null;
+    final rawPort = _readUint16(value, 2);
+    final port = xorTxId == null ? rawPort : rawPort ^ (stunMagicCookie >> 16);
+    final bytes = Uint8List(addrLen);
+    if (xorTxId == null) {
+      bytes.setRange(0, addrLen, value, 4);
+    } else {
+      bytes[0] = value[4] ^ ((stunMagicCookie >> 24) & 0xFF);
+      bytes[1] = value[5] ^ ((stunMagicCookie >> 16) & 0xFF);
+      bytes[2] = value[6] ^ ((stunMagicCookie >> 8) & 0xFF);
+      bytes[3] = value[7] ^ (stunMagicCookie & 0xFF);
+      for (var i = 4; i < addrLen; i++) {
+        bytes[i] = value[4 + i] ^ xorTxId[i - 4];
+      }
     }
-    return null;
+    return (IpAddress.fromBytes(bytes), port);
   }
 
   static ErrorCodeAttr? _parseErrorCode(Uint8List value) {

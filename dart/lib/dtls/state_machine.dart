@@ -30,7 +30,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   DtlsHandshakeState _state = DtlsHandshakeState.initial;
 
   // Remote address (set on first processInput call)
-  String _remoteIp = '';
+  IpAddress _remoteIp = IpAddress.parse('0.0.0.0');
   int _remotePort = 0;
 
   // Handshake state
@@ -111,7 +111,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
   /// Start the DTLS handshake (client only — sends ClientHello).
   Result<ProcessResult, ProtocolError> startHandshake({
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
   }) {
     if (role != DtlsRole.client) {
@@ -139,7 +139,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         outputPackets: [
           OutputPacket(
             data: record,
-            remoteIp: _remoteIp,
+            remoteIp: _remoteIp.toCanonical(),
             remotePort: _remotePort,
           ),
         ],
@@ -150,7 +150,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   @override
   Result<ProcessResult, ProtocolError> processInput(
     Uint8List packet, {
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
   }) {
     _remoteIp = remoteIp;
@@ -353,7 +353,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         final packets = _lastFlight!
             .map((f) => OutputPacket(
                   data: f,
-                  remoteIp: _remoteIp,
+                  remoteIp: _remoteIp.toCanonical(),
                   remotePort: _remotePort,
                 ))
             .toList();
@@ -688,7 +688,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       final packets = _lastFlight!
           .map((f) => OutputPacket(
                 data: f,
-                remoteIp: _remoteIp,
+                remoteIp: _remoteIp.toCanonical(),
                 remotePort: _remotePort,
               ))
           .toList();
@@ -764,7 +764,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
     for (final f in flight) {
       packets.add(
-        OutputPacket(data: f, remoteIp: _remoteIp, remotePort: _remotePort),
+        OutputPacket(data: f, remoteIp: _remoteIp.toCanonical(), remotePort: _remotePort),
       );
     }
     _lastFlight = flight;
@@ -899,7 +899,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       final packets = <OutputPacket>[];
       for (final f in _lastFlight!) {
         packets.add(
-          OutputPacket(data: f, remoteIp: _remoteIp, remotePort: _remotePort),
+          OutputPacket(data: f, remoteIp: _remoteIp.toCanonical(), remotePort: _remotePort),
         );
       }
       return Ok(ProcessResult(outputPackets: packets));
@@ -1060,7 +1060,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         outputPackets: [
           OutputPacket(
             data: record,
-            remoteIp: _remoteIp,
+            remoteIp: _remoteIp.toCanonical(),
             remotePort: _remotePort,
           ),
         ],
@@ -1140,7 +1140,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
     for (final f in flight) {
       packets.add(
-        OutputPacket(data: f, remoteIp: _remoteIp, remotePort: _remotePort),
+        OutputPacket(data: f, remoteIp: _remoteIp.toCanonical(), remotePort: _remotePort),
       );
     }
     _lastFlight = flight;
@@ -1289,7 +1289,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
     for (final f in flight) {
       packets.add(
-        OutputPacket(data: f, remoteIp: _remoteIp, remotePort: _remotePort),
+        OutputPacket(data: f, remoteIp: _remoteIp.toCanonical(), remotePort: _remotePort),
       );
     }
     _lastFlight = flight;
@@ -1354,7 +1354,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         outputPackets: [
           OutputPacket(
             data: record,
-            remoteIp: _remoteIp,
+            remoteIp: _remoteIp.toCanonical(),
             remotePort: _remotePort,
           ),
         ],
@@ -1382,7 +1382,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         .map(
           (f) => OutputPacket(
             data: f,
-            remoteIp: _remoteIp,
+            remoteIp: _remoteIp.toCanonical(),
             remotePort: _remotePort,
           ),
         )
@@ -1492,7 +1492,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         outputPackets: [
           OutputPacket(
             data: record,
-            remoteIp: _remoteIp,
+            remoteIp: _remoteIp.toCanonical(),
             remotePort: _remotePort,
           ),
         ],

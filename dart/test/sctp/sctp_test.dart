@@ -7,7 +7,7 @@ void main() {
   group('SctpStateMachine', () {
     test('connect sends INIT packet', () {
       final sctp = SctpStateMachine(isClient: true);
-      final result = sctp.connect(remoteIp: '127.0.0.1', remotePort: 5000);
+      final result = sctp.connect(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(result.isOk, isTrue);
       expect(result.value.outputPackets.length, equals(1));
       final pkt = result.value.outputPackets.first;
@@ -19,8 +19,8 @@ void main() {
       final client = SctpStateMachine(isClient: true);
       final server = SctpStateMachine(isClient: false);
 
-      const clientIp = '127.0.0.1';
-      const serverIp = '127.0.0.1';
+      final clientIp = IpAddress.parse('127.0.0.1');
+      final serverIp = IpAddress.parse('127.0.0.1');
       const clientPort = 5000;
       const serverPort = 5001;
 

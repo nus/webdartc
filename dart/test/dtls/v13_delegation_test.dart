@@ -125,7 +125,7 @@ void main() {
     // delegate the rest of the flight to the v13 inner.
     final r1 = dtls.processInput(
       chPacket,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r1.isOk, isTrue,
@@ -220,7 +220,7 @@ void main() {
     );
     final r2 = dtls.processInput(
       clientFinRecord,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r2.isOk, isTrue);
@@ -242,11 +242,11 @@ void main() {
     server.expectedRemoteFingerprint = clientCert.sha256Fingerprint;
 
     // ── ClientHello (no cookie) → server sends HelloVerifyRequest ─────────
-    final r0 = client.startHandshake(remoteIp: '10.0.0.2', remotePort: 5001);
+    final r0 = client.startHandshake(remoteIp: IpAddress.parse('10.0.0.2'), remotePort: 5001);
     expect(r0.isOk, isTrue);
     final r1 = server.processInput(
       r0.value.outputPackets[0].data,
-      remoteIp: '10.0.0.1',
+      remoteIp: IpAddress.parse('10.0.0.1'),
       remotePort: 5000,
     );
     expect(r1.isOk, isTrue);
@@ -254,13 +254,13 @@ void main() {
     // ── Client receives HVR → sends ClientHello with cookie ───────────────
     final r2 = client.processInput(
       r1.value.outputPackets[0].data,
-      remoteIp: '10.0.0.2',
+      remoteIp: IpAddress.parse('10.0.0.2'),
       remotePort: 5001,
     );
     expect(r2.isOk, isTrue);
     final r3 = server.processInput(
       r2.value.outputPackets[0].data,
-      remoteIp: '10.0.0.1',
+      remoteIp: IpAddress.parse('10.0.0.1'),
       remotePort: 5000,
     );
     expect(r3.isOk, isTrue);
@@ -277,15 +277,15 @@ void main() {
     // ── Feed records to client in order; expect SKE to fail verification ──
     expect(
         client.processInput(flight[0].data,
-            remoteIp: '10.0.0.2', remotePort: 5001).isOk,
+            remoteIp: IpAddress.parse('10.0.0.2'), remotePort: 5001).isOk,
         isTrue);
     expect(
         client.processInput(flight[1].data,
-            remoteIp: '10.0.0.2', remotePort: 5001).isOk,
+            remoteIp: IpAddress.parse('10.0.0.2'), remotePort: 5001).isOk,
         isTrue);
     final rSke = client.processInput(
       skeRecordBytes,
-      remoteIp: '10.0.0.2',
+      remoteIp: IpAddress.parse('10.0.0.2'),
       remotePort: 5001,
     );
     expect(rSke.isErr, isTrue,
@@ -318,7 +318,7 @@ void main() {
     );
     final chPacket = wrapAsPlaintext(chFull);
     final r = dtls.processInput(chPacket,
-        remoteIp: '127.0.0.1', remotePort: 5000);
+        remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
     expect(r.isOk, isTrue);
     // Single output: HelloVerifyRequest at epoch 0.
     expect(r.value.outputPackets.length, equals(1));

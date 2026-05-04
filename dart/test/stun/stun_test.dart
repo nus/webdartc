@@ -52,7 +52,10 @@ void main() {
         type: StunMessageType.bindingSuccessResponse,
         transactionId: txId,
         attributes: [
-          XorMappedAddress(ip: '192.168.1.1', port: 54321),
+          XorMappedAddress(
+            address: IpAddress.parse('192.168.1.1'),
+            port: 54321,
+          ),
         ],
       );
       final key = Uint8List.fromList('password'.codeUnits);
@@ -66,19 +69,79 @@ void main() {
       expect(fp, isNotNull);
     });
 
-    test('XorMappedAddress encode/decode', () {
+    test('XorMappedAddress IPv4 encode/decode', () {
       final txId = Csprng.randomBytes(12);
       final msg = StunMessage(
         type: StunMessageType.bindingSuccessResponse,
         transactionId: txId,
-        attributes: [XorMappedAddress(ip: '10.0.0.1', port: 4567)],
+        attributes: [
+          XorMappedAddress(address: IpAddress.parse('10.0.0.1'), port: 4567),
+        ],
       );
       final raw = StunMessageBuilder.build(msg);
       final parsed = StunParser.parse(raw);
       expect(parsed.isOk, isTrue);
       final xma = parsed.value.attribute<XorMappedAddress>();
-      expect(xma?.ip, equals('10.0.0.1'));
+      expect(xma?.address, equals(IpAddress.parse('10.0.0.1')));
+      expect(xma?.address.isV4, isTrue);
       expect(xma?.port, equals(4567));
+    });
+
+    test('XorMappedAddress IPv6 encode/decode', () {
+      final txId = Csprng.randomBytes(12);
+      final msg = StunMessage(
+        type: StunMessageType.bindingSuccessResponse,
+        transactionId: txId,
+        attributes: [
+          XorMappedAddress(
+            address: IpAddress.parse('2001:db8::1'),
+            port: 9999,
+          ),
+        ],
+      );
+      final raw = StunMessageBuilder.build(msg);
+      final parsed = StunParser.parse(raw);
+      expect(parsed.isOk, isTrue);
+      final xma = parsed.value.attribute<XorMappedAddress>();
+      expect(xma?.address, equals(IpAddress.parse('2001:db8::1')));
+      expect(xma?.address.isV6, isTrue);
+      expect(xma?.port, equals(9999));
+    });
+
+    test('MappedAddress IPv4 encode/decode', () {
+      final txId = Csprng.randomBytes(12);
+      final msg = StunMessage(
+        type: StunMessageType.bindingSuccessResponse,
+        transactionId: txId,
+        attributes: [
+          MappedAddress(address: IpAddress.parse('10.0.0.2'), port: 1234),
+        ],
+      );
+      final raw = StunMessageBuilder.build(msg);
+      final parsed = StunParser.parse(raw);
+      expect(parsed.isOk, isTrue);
+      final ma = parsed.value.attribute<MappedAddress>();
+      expect(ma?.address, equals(IpAddress.parse('10.0.0.2')));
+      expect(ma?.port, equals(1234));
+      expect(ma?.family, equals(0x01));
+    });
+
+    test('MappedAddress IPv6 encode/decode', () {
+      final txId = Csprng.randomBytes(12);
+      final msg = StunMessage(
+        type: StunMessageType.bindingSuccessResponse,
+        transactionId: txId,
+        attributes: [
+          MappedAddress(address: IpAddress.parse('::1'), port: 4242),
+        ],
+      );
+      final raw = StunMessageBuilder.build(msg);
+      final parsed = StunParser.parse(raw);
+      expect(parsed.isOk, isTrue);
+      final ma = parsed.value.attribute<MappedAddress>();
+      expect(ma?.address, equals(IpAddress.parse('::1')));
+      expect(ma?.port, equals(4242));
+      expect(ma?.family, equals(0x02));
     });
   });
 }

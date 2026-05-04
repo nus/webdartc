@@ -1,13 +1,15 @@
+import '../core/ip_address.dart';
+
 /// ICE candidate (RFC 8445).
 final class IceCandidate {
   final String foundation;
   final int componentId; // 1 = RTP, 2 = RTCP (we only use 1)
   final String transport; // "udp"
   final int priority;
-  final String ip;
+  final IpAddress ip;
   final int port;
   final IceCandidateType type;
-  final String? relatedAddress;
+  final IpAddress? relatedAddress;
   final int? relatedPort;
   final String? tcpType; // ignored for UDP
 
@@ -43,9 +45,12 @@ final class IceCandidate {
 
   /// Encode as SDP a=candidate line (RFC 8839).
   String toSdpLine() {
-    final sb = StringBuffer('candidate:$foundation $componentId $transport $priority $ip $port typ ${type.name}');
+    final sb = StringBuffer(
+      'candidate:$foundation $componentId $transport $priority '
+      '${ip.toCanonical()} $port typ ${type.name}',
+    );
     if (relatedAddress != null) {
-      sb.write(' raddr $relatedAddress rport $relatedPort');
+      sb.write(' raddr ${relatedAddress!.toCanonical()} rport $relatedPort');
     }
     return sb.toString();
   }

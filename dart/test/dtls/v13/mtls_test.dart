@@ -39,7 +39,7 @@ void main() {
         final p = clientToServer.removeAt(0);
         final r = server.processInput(
           p.data,
-          remoteIp: p.remoteIp,
+          remoteIp: IpAddress.parse(p.remoteIp),
           remotePort: p.remotePort,
         );
         if (r.isErr) return r;
@@ -49,7 +49,7 @@ void main() {
         final p = serverToClient.removeAt(0);
         final r = client.processInput(
           p.data,
-          remoteIp: p.remoteIp,
+          remoteIp: IpAddress.parse(p.remoteIp),
           remotePort: p.remotePort,
         );
         if (r.isErr) return r;
@@ -75,7 +75,7 @@ void main() {
     server.onConnected = (km) => serverKm = km;
 
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(start.isOk, isTrue);
@@ -104,7 +104,7 @@ void main() {
         '${'AA:' * 31}AA';
 
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(start.isOk, isTrue);
@@ -180,7 +180,7 @@ void main() {
     // ─── Drive the server with CH and collect its full flight ────────────
     final r1 = server.processInput(
       chRecord,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r1.isOk, isTrue, reason: r1.isErr ? '${r1.error}' : '');
@@ -297,7 +297,7 @@ void main() {
     // Send Cert (server should accept it, advance to waitClientCertVerify).
     final r2 = server.processInput(
       clientCertRecord,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r2.isOk, isTrue,
@@ -308,7 +308,7 @@ void main() {
     // Send tampered CV → should fail with the documented CryptoError.
     final r3 = server.processInput(
       clientCvRecord,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r3.isErr, isTrue);
@@ -332,7 +332,7 @@ void main() {
     );
 
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     final err = drainLoopback(client, server, initial: start.value.outputPackets);
@@ -356,7 +356,7 @@ void main() {
     // The default real-loopback path picks x25519 first, so this just
     // re-checks the end-to-end mTLS handshake. Useful to keep around.
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     final err = drainLoopback(client, server, initial: start.value.outputPackets);

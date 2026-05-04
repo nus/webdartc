@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import '../core/ip_address.dart';
+
 /// STUN attribute types (RFC 5389 + RFC 8445).
 abstract final class StunAttributeType {
   StunAttributeType._();
@@ -47,18 +49,23 @@ sealed class StunAttribute {
 }
 
 final class MappedAddress extends StunAttribute {
-  final int family; // 0x01=IPv4, 0x02=IPv6
-  final String ip;
+  final IpAddress address;
   final int port;
-  const MappedAddress({required this.ip, required this.port, this.family = 1})
+  const MappedAddress({required this.address, required this.port})
       : super(StunAttributeType.mappedAddress);
+
+  /// Wire-format family byte (0x01=IPv4, 0x02=IPv6).
+  int get family => address.isV4 ? 0x01 : 0x02;
 }
 
 final class XorMappedAddress extends StunAttribute {
-  final String ip;
+  final IpAddress address;
   final int port;
-  const XorMappedAddress({required this.ip, required this.port})
+  const XorMappedAddress({required this.address, required this.port})
       : super(StunAttributeType.xorMappedAddress);
+
+  /// Wire-format family byte (0x01=IPv4, 0x02=IPv6).
+  int get family => address.isV4 ? 0x01 : 0x02;
 }
 
 final class UsernameAttr extends StunAttribute {

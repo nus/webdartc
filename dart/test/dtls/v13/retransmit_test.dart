@@ -19,12 +19,12 @@ void main() {
     DtlsV13ServerStateMachine server,
     DtlsV13ClientStateMachine client,
   ) {
-    final start = client.startHandshake(remoteIp: '127.0.0.1', remotePort: 5001);
+    final start = client.startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5001);
     expect(start.isOk, isTrue);
     final ch1 = start.value.outputPackets.single;
     final r = server.processInput(
       ch1.data,
-      remoteIp: ch1.remoteIp,
+      remoteIp: IpAddress.parse(ch1.remoteIp),
       remotePort: ch1.remotePort,
     );
     expect(r.isOk, isTrue);
@@ -79,7 +79,7 @@ void main() {
         localCert: EcdsaCertificate.selfSigned(),
       );
       // Drive the handshake to completion via loopback.
-      final start = client.startHandshake(remoteIp: '127.0.0.1', remotePort: 5001);
+      final start = client.startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5001);
       final c2s = <OutputPacket>[...start.value.outputPackets];
       final s2c = <OutputPacket>[];
       var rounds = 0;
@@ -87,13 +87,13 @@ void main() {
         while (c2s.isNotEmpty) {
           final p = c2s.removeAt(0);
           final r = server.processInput(p.data,
-              remoteIp: p.remoteIp, remotePort: p.remotePort);
+              remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
           if (r.isOk) s2c.addAll(r.value.outputPackets);
         }
         while (s2c.isNotEmpty) {
           final p = s2c.removeAt(0);
           final r = client.processInput(p.data,
-              remoteIp: p.remoteIp, remotePort: p.remotePort);
+              remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
           if (r.isOk) c2s.addAll(r.value.outputPackets);
         }
         rounds++;
@@ -141,7 +141,7 @@ void main() {
       final client = DtlsV13ClientStateMachine(
         localCert: EcdsaCertificate.selfSigned(),
       );
-      final r = client.startHandshake(remoteIp: '127.0.0.1', remotePort: 5001);
+      final r = client.startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5001);
       expect(r.isOk, isTrue);
       expect(r.value.outputPackets, hasLength(1));
       expect(r.value.nextTimeout, isNotNull);
@@ -152,7 +152,7 @@ void main() {
       final client = DtlsV13ClientStateMachine(
         localCert: EcdsaCertificate.selfSigned(),
       );
-      final start = client.startHandshake(remoteIp: '127.0.0.1', remotePort: 5001);
+      final start = client.startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5001);
       final ch1 = start.value.outputPackets.single.data;
       final r = client.handleTimeout(DtlsRetransmitToken(0));
       expect(r.isOk, isTrue);
@@ -174,7 +174,7 @@ void main() {
       final client = DtlsV13ClientStateMachine(
         localCert: EcdsaCertificate.selfSigned(),
       );
-      client.startHandshake(remoteIp: '127.0.0.1', remotePort: 5001);
+      client.startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5001);
       for (var i = 0; i < 6; i++) {
         final r = client.handleTimeout(DtlsRetransmitToken(0));
         expect(r.isOk, isTrue);
@@ -196,11 +196,11 @@ void main() {
       final server = DtlsV13ServerStateMachine(
         localCert: EcdsaCertificate.selfSigned(),
       );
-      final start = client.startHandshake(remoteIp: '127.0.0.1', remotePort: 5001);
+      final start = client.startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5001);
       // Deliver CH1 to server.
       final ch1 = start.value.outputPackets.single;
       final s1 = server.processInput(ch1.data,
-          remoteIp: ch1.remoteIp, remotePort: ch1.remotePort);
+          remoteIp: IpAddress.parse(ch1.remoteIp), remotePort: ch1.remotePort);
       expect(s1.isOk, isTrue);
       expect(s1.value.outputPackets, isNotEmpty);
 
@@ -215,7 +215,7 @@ void main() {
       var c2s = <OutputPacket>[];
       for (final p in retx.value.outputPackets) {
         final cr = client.processInput(p.data,
-            remoteIp: p.remoteIp, remotePort: p.remotePort);
+            remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
         expect(cr.isOk, isTrue);
         c2s.addAll(cr.value.outputPackets);
       }
@@ -225,13 +225,13 @@ void main() {
         final next = <OutputPacket>[];
         for (final p in c2s) {
           final sr = server.processInput(p.data,
-              remoteIp: p.remoteIp, remotePort: p.remotePort);
+              remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
           if (sr.isOk) next.addAll(sr.value.outputPackets);
         }
         c2s = <OutputPacket>[];
         for (final p in next) {
           final cr = client.processInput(p.data,
-              remoteIp: p.remoteIp, remotePort: p.remotePort);
+              remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
           if (cr.isOk) c2s.addAll(cr.value.outputPackets);
         }
         rounds++;

@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../core/ip_address.dart';
 import '../crypto/hmac_sha1.dart';
 import 'crc32c.dart';
 import 'message.dart';
@@ -10,7 +11,7 @@ abstract final class StunMessageBuilder {
 
   /// Serialize [msg] to wire format (no MESSAGE-INTEGRITY or FINGERPRINT).
   static Uint8List build(StunMessage msg) {
-    final body = _encodeAttributes(msg.attributes);
+    final body = _encodeAttributes(msg.attributes, msg.transactionId);
     return _buildHeader(msg.type, body.length, msg.transactionId, body);
   }
 
@@ -25,7 +26,7 @@ abstract final class StunMessageBuilder {
             a.type != StunAttributeType.fingerprint)
         .toList();
 
-    final userBody = _encodeAttributes(userAttrs);
+    final userBody = _encodeAttributes(userAttrs, msg.transactionId);
 
     // The HMAC covers the header + attributes up through (but not including)
     // MESSAGE-INTEGRITY. The length field in the header for HMAC purposes
@@ -41,7 +42,7 @@ abstract final class StunMessageBuilder {
 
     // Build with integrity included
     final allAttrs = [...userAttrs, integrityAttr];
-    final bodyWithIntegrity = _encodeAttributes(allAttrs);
+    final bodyWithIntegrity = _encodeAttributes(allAttrs, msg.transactionId);
 
     // FINGERPRINT covers header + all attributes up through MESSAGE-INTEGRITY
     // length field includes fingerprint (8 bytes)
@@ -55,7 +56,7 @@ abstract final class StunMessageBuilder {
     final fpAttr = FingerprintAttr(crc);
 
     final allWithFp = [...allAttrs, fpAttr];
-    final finalBody = _encodeAttributes(allWithFp);
+    final finalBody = _encodeAttributes(allWithFp, msg.transactionId);
     return _buildHeader(msg.type, finalBody.length, msg.transactionId, finalBody);
   }
 
@@ -83,10 +84,13 @@ abstract final class StunMessageBuilder {
     return header;
   }
 
-  static Uint8List _encodeAttributes(List<StunAttribute> attrs) {
+  static Uint8List _encodeAttributes(
+    List<StunAttribute> attrs,
+    Uint8List transactionId,
+  ) {
     final parts = <Uint8List>[];
     for (final attr in attrs) {
-      parts.add(_encodeAttribute(attr));
+      parts.add(_encodeAttribute(attr, transactionId));
     }
     final total = parts.fold(0, (s, p) => s + p.length);
     final out = Uint8List(total);
@@ -98,8 +102,11 @@ abstract final class StunMessageBuilder {
     return out;
   }
 
-  static Uint8List _encodeAttribute(StunAttribute attr) {
-    final value = _encodeAttributeValue(attr);
+  static Uint8List _encodeAttribute(
+    StunAttribute attr,
+    Uint8List transactionId,
+  ) {
+    final value = _encodeAttributeValue(attr, transactionId);
     final padded = (value.length + 3) & ~3;
     final out = Uint8List(4 + padded);
     out[0] = (attr.type >> 8) & 0xFF;
@@ -111,12 +118,15 @@ abstract final class StunMessageBuilder {
     return out;
   }
 
-  static Uint8List _encodeAttributeValue(StunAttribute attr) {
+  static Uint8List _encodeAttributeValue(
+    StunAttribute attr,
+    Uint8List transactionId,
+  ) {
     switch (attr) {
-      case XorMappedAddress(:final ip, :final port):
-        return _encodeXorMappedAddress(ip, port);
-      case MappedAddress(:final ip, :final port, :final family):
-        return _encodeMappedAddress(ip, port, family);
+      case XorMappedAddress(:final address, :final port):
+        return _encodeAddress(address, port, transactionId);
+      case MappedAddress(:final address, :final port):
+        return _encodeAddress(address, port, null);
       case UsernameAttr(:final username):
         return Uint8List.fromList(username.codeUnits);
       case MessageIntegrityAttr(:final hmac):
@@ -147,26 +157,35 @@ abstract final class StunMessageBuilder {
     }
   }
 
-  static Uint8List _encodeXorMappedAddress(String ip, int port) {
-    final xPort = port ^ (stunMagicCookie >> 16);
-    final parts = ip.split('.').map(int.parse).toList();
-    final addrInt = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
-    final xAddr = addrInt ^ stunMagicCookie;
-    return Uint8List.fromList([
-      0x00, 0x01,
-      (xPort >> 8) & 0xFF, xPort & 0xFF,
-      (xAddr >> 24) & 0xFF, (xAddr >> 16) & 0xFF, (xAddr >> 8) & 0xFF, xAddr & 0xFF,
-    ]);
-  }
-
-  static Uint8List _encodeMappedAddress(String ip, int port, int family) {
-    final parts = ip.split('.').map(int.parse).toList();
-    final addrInt = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
-    return Uint8List.fromList([
-      0x00, family & 0xFF,
-      (port >> 8) & 0xFF, port & 0xFF,
-      (addrInt >> 24) & 0xFF, (addrInt >> 16) & 0xFF, (addrInt >> 8) & 0xFF, addrInt & 0xFF,
-    ]);
+  /// Encode a STUN address attribute body. Layout: 1 reserved + 1 family +
+  /// 2 port + N address bytes (4 for IPv4, 16 for IPv6). When [xorTxId]
+  /// is non-null, port and address are XOR'd per RFC 5389 §15.2 — first
+  /// 4 bytes against the magic cookie, remaining 12 (IPv6 only) against
+  /// the transaction ID.
+  static Uint8List _encodeAddress(
+    IpAddress address,
+    int port,
+    Uint8List? xorTxId,
+  ) {
+    final addrBytes = address.toBytes();
+    final out = Uint8List(4 + addrBytes.length);
+    final txPort = xorTxId == null ? port : port ^ (stunMagicCookie >> 16);
+    out[0] = 0x00;
+    out[1] = address.isV4 ? 0x01 : 0x02;
+    out[2] = (txPort >> 8) & 0xFF;
+    out[3] = txPort & 0xFF;
+    if (xorTxId == null) {
+      out.setRange(4, out.length, addrBytes);
+    } else {
+      out[4] = addrBytes[0] ^ ((stunMagicCookie >> 24) & 0xFF);
+      out[5] = addrBytes[1] ^ ((stunMagicCookie >> 16) & 0xFF);
+      out[6] = addrBytes[2] ^ ((stunMagicCookie >> 8) & 0xFF);
+      out[7] = addrBytes[3] ^ (stunMagicCookie & 0xFF);
+      for (var i = 4; i < addrBytes.length; i++) {
+        out[4 + i] = addrBytes[i] ^ xorTxId[i - 4];
+      }
+    }
+    return out;
   }
 
   static Uint8List _uint32Bytes(int v) =>

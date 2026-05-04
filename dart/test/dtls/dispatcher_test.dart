@@ -85,7 +85,7 @@ void main() {
       // The v13 inner SM will fail validation later (no key_share), but
       // selection happens up front based on supported_versions alone.
       final r = disp.processInput(packet,
-          remoteIp: '127.0.0.1', remotePort: 5000);
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(disp.isV13, isTrue);
       expect(disp.inner, isA<v13.DtlsV13ServerStateMachine>());
       // r itself may be Err because the body was insufficient; selection
@@ -105,7 +105,7 @@ void main() {
           ),
         ],
       );
-      disp.processInput(packet, remoteIp: '127.0.0.1', remotePort: 5000);
+      disp.processInput(packet, remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(disp.isV13, isFalse);
       expect(disp.inner, isA<v12.DtlsStateMachine>());
     });
@@ -114,7 +114,7 @@ void main() {
       final cert = EcdsaCertificate.selfSigned();
       final disp = DtlsServerDispatcher(localCert: cert);
       final packet = clientHelloPacket(extensions: const []);
-      disp.processInput(packet, remoteIp: '127.0.0.1', remotePort: 5000);
+      disp.processInput(packet, remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(disp.isV13, isFalse);
       expect(disp.inner, isA<v12.DtlsStateMachine>());
     });
@@ -125,7 +125,7 @@ void main() {
       // Random non-DTLS bytes.
       final r = disp.processInput(
         bytes(List<int>.filled(32, 0xFF)),
-        remoteIp: '127.0.0.1',
+        remoteIp: IpAddress.parse('127.0.0.1'),
         remotePort: 5000,
       );
       expect(r.isErr, isTrue);
@@ -145,11 +145,11 @@ void main() {
           ),
         ],
       );
-      disp.processInput(packet, remoteIp: '127.0.0.1', remotePort: 5000);
+      disp.processInput(packet, remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(disp.inner, isNotNull);
       final firstInner = disp.inner;
       // Even if the second packet errors, dispatcher must not re-select.
-      disp.processInput(packet, remoteIp: '127.0.0.1', remotePort: 5000);
+      disp.processInput(packet, remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(disp.inner, same(firstInner));
     });
   });

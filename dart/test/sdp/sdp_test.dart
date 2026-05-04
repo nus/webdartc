@@ -44,7 +44,7 @@ a=candidate:1 1 udp 2122260223 192.168.1.1 9999 typ host
       expect(result.isOk, isTrue);
       final cands = result.value.media.first.candidates;
       expect(cands.length, equals(1));
-      expect(cands.first.ip, equals('192.168.1.1'));
+      expect(cands.first.ip, equals(IpAddress.parse('192.168.1.1')));
       expect(cands.first.port, equals(9999));
       expect(cands.first.type, equals(IceCandidateType.host));
     });

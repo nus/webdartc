@@ -1,3 +1,4 @@
+import '../core/ip_address.dart';
 import '../core/result.dart';
 import '../core/state_machine.dart' show ParseError;
 import '../ice/candidate.dart';
@@ -145,7 +146,8 @@ abstract final class SdpParser {
     final componentId = int.tryParse(parts[1]) ?? 1;
     final transport = parts[2].toLowerCase();
     final priority = int.tryParse(parts[3]) ?? 0;
-    final ip = parts[4];
+    final ip = IpAddress.tryParse(parts[4]);
+    if (ip == null) return null;
     final port = int.tryParse(parts[5]) ?? 0;
     // parts[6] == "typ"
     final typeStr = parts.length > 7 ? parts[7] : 'host';
@@ -154,10 +156,10 @@ abstract final class SdpParser {
       orElse: () => IceCandidateType.host,
     );
 
-    String? relatedAddress;
+    IpAddress? relatedAddress;
     int? relatedPort;
     for (var i = 8; i + 1 < parts.length; i += 2) {
-      if (parts[i] == 'raddr') relatedAddress = parts[i + 1];
+      if (parts[i] == 'raddr') relatedAddress = IpAddress.tryParse(parts[i + 1]);
       if (parts[i] == 'rport') relatedPort = int.tryParse(parts[i + 1]);
     }
 
@@ -211,7 +213,7 @@ abstract final class SdpBuilder {
         localPreference: 65535,
         componentId: 1,
       ),
-      ip: localIp,
+      ip: IpAddress.parse(localIp),
       port: localPort,
       type: IceCandidateType.host,
     );
@@ -301,7 +303,7 @@ abstract final class SdpBuilder {
             localPreference: 65535,
             componentId: 1,
           ),
-          ip: localIp,
+          ip: IpAddress.parse(localIp),
           port: localPort,
           type: IceCandidateType.host,
         ));
@@ -370,7 +372,7 @@ abstract final class SdpBuilder {
           proto: rm.proto,
           formats: rm.formats,
           attributes: attrs,
-          candidates: [_hostCandidate(localIp, localPort)],
+          candidates: [_hostCandidate(IpAddress.parse(localIp), localPort)],
         ));
       } else {
         // Audio or video — select supported codecs from offer
@@ -452,7 +454,7 @@ abstract final class SdpBuilder {
           formats: selectedFormats,
           attributes: attrs,
           rawAttributes: rawAttrs,
-          candidates: [_hostCandidate(localIp, localPort)],
+          candidates: [_hostCandidate(IpAddress.parse(localIp), localPort)],
         ));
       }
     }
@@ -480,7 +482,7 @@ abstract final class SdpBuilder {
     }
   }
 
-  static IceCandidate _hostCandidate(String ip, int port) => IceCandidate(
+  static IceCandidate _hostCandidate(IpAddress ip, int port) => IceCandidate(
     foundation: '1',
     componentId: 1,
     transport: 'udp',

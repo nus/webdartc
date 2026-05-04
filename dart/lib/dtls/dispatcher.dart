@@ -50,7 +50,7 @@ final class DtlsServerDispatcher implements ProtocolStateMachine {
   @override
   Result<ProcessResult, ProtocolError> processInput(
     Uint8List packet, {
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
   }) {
     final inner = _inner;

@@ -58,7 +58,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
   static const int _maxRetransmit = 10;
 
   // Remote address
-  String _remoteIp = '';
+  IpAddress _remoteIp = IpAddress.parse('0.0.0.0');
   int _remotePort = 0;
 
   // Local SCTP port (fixed for WebRTC: 5000)
@@ -88,7 +88,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
 
   /// Start the SCTP association (send INIT).
   Result<ProcessResult, ProtocolError> connect({
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
   }) {
     _remoteIp = remoteIp;
@@ -185,7 +185,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
   @override
   Result<ProcessResult, ProtocolError> processInput(
     Uint8List packet, {
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
   }) {
     _remoteIp = remoteIp;
@@ -681,7 +681,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
     packet[10] = (crc >> 16) & 0xFF;
     packet[11] = (crc >> 24) & 0xFF;
 
-    return OutputPacket(data: packet, remoteIp: _remoteIp, remotePort: _remotePort);
+    return OutputPacket(data: packet, remoteIp: _remoteIp.toCanonical(), remotePort: _remotePort);
   }
 
   // ── TSN comparison (RFC 4960 §6.3, 32-bit wrapped) ───────────────────────

@@ -14,11 +14,16 @@
 library;
 
 // Core types
+export 'core/ip_address.dart';
 export 'core/result.dart';
 export 'core/types.dart';
 
 // W3C PeerConnection API (data_channel.dart and events.dart are parts of peer_connection.dart)
 export 'peer_connection/peer_connection.dart';
+
+// API factory (optional; default `PeerConnection(...)` constructor still works)
+export 'api/webdartc.dart';
+export 'api/setting_engine.dart';
 
 // SDP
 export 'sdp/parser.dart';

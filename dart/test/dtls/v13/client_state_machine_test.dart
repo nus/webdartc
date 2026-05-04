@@ -43,7 +43,7 @@ void main() {
         final p = clientToServer.removeAt(0);
         final r = server.processInput(
           p.data,
-          remoteIp: p.remoteIp,
+          remoteIp: IpAddress.parse(p.remoteIp),
           remotePort: p.remotePort,
         );
         expect(r.isOk, isTrue,
@@ -54,7 +54,7 @@ void main() {
         final p = serverToClient.removeAt(0);
         final r = client.processInput(
           p.data,
-          remoteIp: p.remoteIp,
+          remoteIp: IpAddress.parse(p.remoteIp),
           remotePort: p.remotePort,
         );
         expect(r.isOk, isTrue,
@@ -77,7 +77,7 @@ void main() {
     server.onConnected = (km) => serverKm = km;
 
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(start.isOk, isTrue);
@@ -106,7 +106,7 @@ void main() {
     server.onConnected = (km) => serverKm = km;
 
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
       // SRTP_AEAD_AES_128_GCM is the server's first preference.
       supportedSrtpProfiles: const [0x0007],
@@ -132,7 +132,7 @@ void main() {
     final client = DtlsV13ClientStateMachine(localCert: cert);
 
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(start.isOk, isTrue);
@@ -179,7 +179,7 @@ void main() {
 
     final r1 = client.processInput(
       hrrRecord,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r1.isOk, isTrue,
@@ -284,7 +284,7 @@ void main() {
     ).encode();
     final r2 = client.processInput(
       shRecord,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r2.isOk, isTrue,
@@ -348,7 +348,7 @@ void main() {
     for (final p in [eePacket, certPacket, cvPacket]) {
       final r = client.processInput(
         p,
-        remoteIp: '127.0.0.1',
+        remoteIp: IpAddress.parse('127.0.0.1'),
         remotePort: 5000,
       );
       expect(r.isOk, isTrue);
@@ -356,7 +356,7 @@ void main() {
     }
     final rf = client.processInput(
       finPacket,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(rf.isOk, isTrue,
@@ -385,7 +385,7 @@ void main() {
     final cert = EcdsaCertificate.selfSigned();
     final client = DtlsV13ClientStateMachine(localCert: cert);
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(start.isOk, isTrue);
@@ -451,7 +451,7 @@ void main() {
       sequenceNumber: 0,
       fragment: shFull,
     ).encode();
-    expect(client.processInput(shRecord, remoteIp: '127.0.0.1', remotePort: 5000).isOk,
+    expect(client.processInput(shRecord, remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000).isOk,
         isTrue);
 
     final fakeSrvCert = EcdsaCertificate.selfSigned();
@@ -522,12 +522,12 @@ void main() {
 
     for (final p in [ee, certMsg, cv]) {
       expect(
-          client.processInput(p, remoteIp: '127.0.0.1', remotePort: 5000).isOk,
+          client.processInput(p, remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000).isOk,
           isTrue);
     }
     final r = client.processInput(
       fin,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r.isErr, isTrue,
@@ -540,7 +540,7 @@ void main() {
     final cert = EcdsaCertificate.selfSigned();
     final client = DtlsV13ClientStateMachine(localCert: cert);
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(start.isOk, isTrue);
@@ -602,7 +602,7 @@ void main() {
       fragment: shFull,
     ).encode();
     expect(
-        client.processInput(shRecord, remoteIp: '127.0.0.1', remotePort: 5000)
+        client.processInput(shRecord, remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000)
             .isOk,
         isTrue);
 
@@ -650,16 +650,16 @@ void main() {
     );
 
     expect(
-        client.processInput(ee, remoteIp: '127.0.0.1', remotePort: 5000).isOk,
+        client.processInput(ee, remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000).isOk,
         isTrue);
     expect(
         client
-            .processInput(certMsg, remoteIp: '127.0.0.1', remotePort: 5000)
+            .processInput(certMsg, remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000)
             .isOk,
         isTrue);
     final r = client.processInput(
       cv,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r.isErr, isTrue,
@@ -687,7 +687,7 @@ void main() {
     final server = DtlsV13ServerStateMachine(localCert: EcdsaCertificate.selfSigned());
 
     final start = client.startHandshake(
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     drainLoopback(client, server, initial: start.value.outputPackets);

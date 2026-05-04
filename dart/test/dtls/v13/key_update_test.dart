@@ -31,7 +31,7 @@ void _drainHandshake(
     while (clientToServer.isNotEmpty) {
       final p = clientToServer.removeAt(0);
       final r = server.processInput(p.data,
-          remoteIp: p.remoteIp, remotePort: p.remotePort);
+          remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
       expect(r.isOk, isTrue,
           reason: r.isErr ? 'server error: ${r.error}' : '');
       serverToClient.addAll(r.value.outputPackets);
@@ -39,7 +39,7 @@ void _drainHandshake(
     while (serverToClient.isNotEmpty) {
       final p = serverToClient.removeAt(0);
       final r = client.processInput(p.data,
-          remoteIp: p.remoteIp, remotePort: p.remotePort);
+          remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
       expect(r.isOk, isTrue,
           reason: r.isErr ? 'client error: ${r.error}' : '');
       clientToServer.addAll(r.value.outputPackets);
@@ -95,7 +95,7 @@ void main() {
       client.onApplicationData = clientRx.add;
 
       final start =
-          client.startHandshake(remoteIp: '127.0.0.1', remotePort: 5000);
+          client.startHandshake(remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
       expect(start.isOk, isTrue);
       _drainHandshake(client, server, initial: start.value.outputPackets);
       expect(client.state, equals(DtlsV13ClientState.connected));
@@ -113,14 +113,14 @@ void main() {
       // the client clear any retransmit state.
       for (final p in ku.value.outputPackets) {
         final r = server.processInput(p.data,
-            remoteIp: p.remoteIp, remotePort: p.remotePort);
+            remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
         expect(r.isOk, isTrue);
         expect(r.value.outputPackets, hasLength(1),
             reason: 'server should ACK the inbound KeyUpdate');
         // Deliver the ACK back to the client; no further records expected.
         for (final ackPkt in r.value.outputPackets) {
           final ackR = client.processInput(ackPkt.data,
-              remoteIp: ackPkt.remoteIp, remotePort: ackPkt.remotePort);
+              remoteIp: IpAddress.parse(ackPkt.remoteIp), remotePort: ackPkt.remotePort);
           expect(ackR.isOk, isTrue);
           expect(ackR.value.outputPackets, isEmpty);
         }
@@ -132,7 +132,7 @@ void main() {
       expect(c2s.isOk, isTrue);
       for (final p in c2s.value.outputPackets) {
         final r = server.processInput(p.data,
-            remoteIp: p.remoteIp, remotePort: p.remotePort);
+            remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
         expect(r.isOk, isTrue);
       }
       expect(serverRx, hasLength(1));
@@ -143,7 +143,7 @@ void main() {
       expect(s2c.isOk, isTrue);
       for (final p in s2c.value.outputPackets) {
         final r = client.processInput(p.data,
-            remoteIp: p.remoteIp, remotePort: p.remotePort);
+            remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
         expect(r.isOk, isTrue);
       }
       expect(clientRx, hasLength(1));
@@ -163,14 +163,14 @@ void main() {
       // RFC 8446 §4.6.3.
       for (final p in ku.value.outputPackets) {
         final r = client.processInput(p.data,
-            remoteIp: p.remoteIp, remotePort: p.remotePort);
+            remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
         expect(r.isOk, isTrue);
         expect(r.value.outputPackets, hasLength(1),
             reason: 'client should ACK the inbound KeyUpdate');
         // Deliver the ACK to the server; no further records expected.
         for (final ackPkt in r.value.outputPackets) {
           final ackR = server.processInput(ackPkt.data,
-              remoteIp: ackPkt.remoteIp, remotePort: ackPkt.remotePort);
+              remoteIp: IpAddress.parse(ackPkt.remoteIp), remotePort: ackPkt.remotePort);
           expect(ackR.isOk, isTrue);
           expect(ackR.value.outputPackets, isEmpty);
         }
@@ -186,7 +186,7 @@ void main() {
       // Deliver both records to the server in order.
       for (final p in c2s.value.outputPackets) {
         final r = server.processInput(p.data,
-            remoteIp: p.remoteIp, remotePort: p.remotePort);
+            remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
         expect(r.isOk, isTrue);
       }
       expect(serverRx, hasLength(1));
@@ -201,12 +201,12 @@ void main() {
         expect(ku.isOk, isTrue);
         for (final p in ku.value.outputPackets) {
           final r = server.processInput(p.data,
-              remoteIp: p.remoteIp, remotePort: p.remotePort);
+              remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
           expect(r.isOk, isTrue);
           // Drain the server's ACK back to the client.
           for (final ackPkt in r.value.outputPackets) {
             final ackR = client.processInput(ackPkt.data,
-                remoteIp: ackPkt.remoteIp, remotePort: ackPkt.remotePort);
+                remoteIp: IpAddress.parse(ackPkt.remoteIp), remotePort: ackPkt.remotePort);
             expect(ackR.isOk, isTrue);
           }
         }
@@ -218,7 +218,7 @@ void main() {
       expect(c2s.isOk, isTrue);
       for (final p in c2s.value.outputPackets) {
         final r = server.processInput(p.data,
-            remoteIp: p.remoteIp, remotePort: p.remotePort);
+            remoteIp: IpAddress.parse(p.remoteIp), remotePort: p.remotePort);
         expect(r.isOk, isTrue);
       }
       expect(serverRx, hasLength(1));

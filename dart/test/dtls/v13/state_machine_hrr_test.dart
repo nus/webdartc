@@ -9,6 +9,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
+import 'package:webdartc/core/ip_address.dart';
 import 'package:webdartc/crypto/csprng.dart';
 import 'package:webdartc/crypto/ecdh.dart';
 import 'package:webdartc/crypto/ecdsa.dart';
@@ -122,7 +123,7 @@ void main() {
     final ch1Packet = wrapAsPlaintext(ch1Full);
 
     final r1 = server.processInput(ch1Packet,
-        remoteIp: '127.0.0.1', remotePort: 5000);
+        remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
     expect(r1.isOk, isTrue,
         reason: r1.isErr ? '${r1.error}' : '');
     final hrrPackets = r1.value.outputPackets;
@@ -194,7 +195,7 @@ void main() {
     final ch2Packet = wrapAsPlaintext(ch2Full, seq: 1);
 
     final r2 = server.processInput(ch2Packet,
-        remoteIp: '127.0.0.1', remotePort: 5000);
+        remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
     expect(r2.isOk, isTrue,
         reason: r2.isErr ? '${r2.error}' : '');
     final flight = r2.value.outputPackets;
@@ -294,7 +295,7 @@ void main() {
     );
     final r3 = server.processInput(
       clientFinRecord,
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r3.isOk, isTrue);
@@ -340,7 +341,7 @@ void main() {
       body: ch1Body,
     );
     server.processInput(wrapAsPlaintext(ch1Full),
-        remoteIp: '127.0.0.1', remotePort: 5000);
+        remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 5000);
     expect(server.state, equals(DtlsV13ServerState.waitSecondClientHello));
 
     // CH2 with bogus cookie.
@@ -377,7 +378,7 @@ void main() {
     );
     final r2 = server.processInput(
       wrapAsPlaintext(ch2Full, seq: 1),
-      remoteIp: '127.0.0.1',
+      remoteIp: IpAddress.parse('127.0.0.1'),
       remotePort: 5000,
     );
     expect(r2.isErr, isTrue);

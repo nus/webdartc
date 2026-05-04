@@ -44,7 +44,7 @@ final class LossyChannel {
     }
 
     final receiver = sender == client ? server : client;
-    final senderIp = sender == client ? '10.0.0.1' : '10.0.0.2';
+    final senderIp = IpAddress.parse(sender == client ? '10.0.0.1' : '10.0.0.2');
     final senderPort = sender == client ? 5000 : 5001;
 
     for (final pkt in result.outputPackets) {
@@ -138,7 +138,7 @@ void main() {
 
       // Start handshake.
       final initResult = client.startHandshake(
-        remoteIp: '10.0.0.2',
+        remoteIp: IpAddress.parse('10.0.0.2'),
         remotePort: 5001,
       );
       expect(initResult.isOk, isTrue);
@@ -171,7 +171,7 @@ void main() {
       );
 
       final initResult = client.startHandshake(
-        remoteIp: '10.0.0.2',
+        remoteIp: IpAddress.parse('10.0.0.2'),
         remotePort: 5001,
       );
       expect(initResult.isOk, isTrue);
@@ -220,7 +220,7 @@ void main() {
           seed: trial * 1000 + 7,
         );
 
-        final init = c.startHandshake(remoteIp: '10.0.0.2', remotePort: 5001);
+        final init = c.startHandshake(remoteIp: IpAddress.parse('10.0.0.2'), remotePort: 5001);
         if (init.isOk) ch.deliverResult(c, init.value);
 
         var iter = 0;
@@ -262,7 +262,7 @@ void main() {
       );
 
       final initResult = client.startHandshake(
-        remoteIp: '10.0.0.2',
+        remoteIp: IpAddress.parse('10.0.0.2'),
         remotePort: 5001,
       );
       expect(initResult.isOk, isTrue);
@@ -285,7 +285,7 @@ void main() {
       for (final pkt in sendResult.value.outputPackets) {
         final r = server.processInput(
           pkt.data,
-          remoteIp: '10.0.0.1',
+          remoteIp: IpAddress.parse('10.0.0.1'),
           remotePort: 5000,
         );
         expect(r.isOk, isTrue);
@@ -302,7 +302,7 @@ void main() {
       for (final pkt in replyResult.value.outputPackets) {
         final r = client.processInput(
           pkt.data,
-          remoteIp: '10.0.0.2',
+          remoteIp: IpAddress.parse('10.0.0.2'),
           remotePort: 5001,
         );
         expect(r.isOk, isTrue);
@@ -330,7 +330,7 @@ void main() {
         seed: 42,
       );
 
-      final init = client.startHandshake(remoteIp: '10.0.0.2', remotePort: 5001);
+      final init = client.startHandshake(remoteIp: IpAddress.parse('10.0.0.2'), remotePort: 5001);
       expect(init.isOk, isTrue);
       channel.deliverResult(client, init.value);
 
@@ -364,7 +364,7 @@ void main() {
         seed: 0,
       );
 
-      final init = client.startHandshake(remoteIp: '10.0.0.2', remotePort: 5001);
+      final init = client.startHandshake(remoteIp: IpAddress.parse('10.0.0.2'), remotePort: 5001);
       expect(init.isOk, isTrue);
       channel.deliverResult(client, init.value);
 

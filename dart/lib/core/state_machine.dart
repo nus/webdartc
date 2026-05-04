@@ -53,7 +53,7 @@ abstract interface class ProtocolStateMachine {
   /// Process an incoming UDP packet.
   Result<ProcessResult, ProtocolError> processInput(
     Uint8List packet, {
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
   });
 

@@ -99,7 +99,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
 
   DtlsV13ClientState _state = DtlsV13ClientState.initial;
 
-  String? _remoteIp;
+  IpAddress? _remoteIp;
   int? _remotePort;
 
   TlsV13CipherSuite? _suite;
@@ -207,7 +207,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
   /// [supportedSrtpProfiles] is the list of RFC 5764 profile IDs to offer
   /// in `use_srtp`. Passing null omits the extension entirely.
   core.Result<ProcessResult, core.ProtocolError> startHandshake({
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
     List<int>? supportedSrtpProfiles,
   }) {
@@ -242,7 +242,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
   @override
   core.Result<ProcessResult, core.ProtocolError> processInput(
     Uint8List packet, {
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
   }) {
     _remoteIp = remoteIp;
@@ -1186,7 +1186,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     );
     outputs.add(OutputPacket(
       data: rec,
-      remoteIp: _remoteIp!,
+      remoteIp: _remoteIp!.toCanonical(),
       remotePort: _remotePort!,
     ));
     return core.Ok(ProcessResult(outputPackets: outputs));
@@ -1240,7 +1240,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     _peerRequestedKeyUpdate = false;
     return OutputPacket(
       data: rec,
-      remoteIp: _remoteIp!,
+      remoteIp: _remoteIp!.toCanonical(),
       remotePort: _remotePort!,
     );
   }
@@ -1287,7 +1287,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     );
     return OutputPacket(
       data: rec,
-      remoteIp: _remoteIp!,
+      remoteIp: _remoteIp!.toCanonical(),
       remotePort: _remotePort!,
     );
   }
@@ -1323,7 +1323,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     );
     return OutputPacket(
       data: rec,
-      remoteIp: _remoteIp!,
+      remoteIp: _remoteIp!.toCanonical(),
       remotePort: _remotePort!,
     );
   }
@@ -1338,7 +1338,7 @@ final class DtlsV13ClientStateMachine implements core.ProtocolStateMachine {
     ).encode();
     return OutputPacket(
       data: rec,
-      remoteIp: _remoteIp!,
+      remoteIp: _remoteIp!.toCanonical(),
       remotePort: _remotePort!,
     );
   }

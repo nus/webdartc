@@ -82,7 +82,7 @@ final class IceStateMachine implements ProtocolStateMachine {
   void Function(IceState)? onStateChange;
 
   /// Emitted when data arrives on the selected pair (non-STUN packet).
-  void Function(Uint8List data, String remoteIp, int remotePort)? onData;
+  void Function(Uint8List data, IpAddress remoteIp, int remotePort)? onData;
 
   IceStateMachine({
     required this.controlling,
@@ -92,44 +92,48 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   IceState get state => _state;
   CandidatePair? get selectedPair => _selectedPair;
-  String? get selectedRemoteIp => _selectedPair?.remote.ip;
+  String? get selectedRemoteIp => _selectedPair?.remote.ip.toCanonical();
   int? get selectedRemotePort => _selectedPair?.remote.port;
 
   // ── Public control API ───────────────────────────────────────────────────
 
-  /// Start ICE gathering with the given local parameters and host candidate.
-  ///
-  /// [localIp] and [localPort] are the bound UDP address.
-  /// Returns a [ProcessResult] — no packets to send at this stage, but the
-  /// caller should emit [onLocalCandidate] for the host candidate.
+  /// Start ICE gathering. One host candidate is emitted per [hosts]
+  /// entry. STUN binding requests for srflx discovery are sourced from
+  /// the first host.
   Result<ProcessResult, ProtocolError> startGathering(
     IceParameters localParams, {
-    required String localIp,
-    required int localPort,
+    required List<HostBinding> hosts,
   }) {
+    if (hosts.isEmpty) {
+      return Err(const StateError('ICE: startGathering requires at least one host binding'));
+    }
     _localParams = localParams;
     _setState(IceState.iceGathering);
 
-    final foundation = Csprng.randomHex(4);
-    final priority = IceCandidate.computePriority(
-      typePreference: IceCandidate.typePreferenceHost,
-      localPreference: 65535,
-      componentId: 1,
-    );
-    final hostCandidate = IceCandidate(
-      foundation: foundation,
-      componentId: 1,
-      transport: 'udp',
-      priority: priority,
-      ip: localIp,
-      port: localPort,
-      type: IceCandidateType.host,
-    );
-    _localCandidates.add(hostCandidate);
-    onLocalCandidate?.call(hostCandidate);
+    for (final host in hosts) {
+      final foundation = Csprng.randomHex(4);
+      final priority = IceCandidate.computePriority(
+        typePreference: IceCandidate.typePreferenceHost,
+        localPreference: 65535,
+        componentId: 1,
+      );
+      final hostCandidate = IceCandidate(
+        foundation: foundation,
+        componentId: 1,
+        transport: 'udp',
+        priority: priority,
+        ip: host.ip,
+        port: host.port,
+        type: IceCandidateType.host,
+      );
+      _localCandidates.add(hostCandidate);
+      onLocalCandidate?.call(hostCandidate);
+    }
 
-    // Send STUN Binding Requests to STUN servers for srflx candidates.
+    // Send STUN Binding Requests to STUN servers for srflx candidates,
+    // sourced from the first host binding.
     if (_stunServers.isNotEmpty) {
+      final firstHost = hosts.first;
       final packets = <OutputPacket>[];
       for (final server in _stunServers) {
         final txId = Csprng.randomBytes(12);
@@ -138,12 +142,17 @@ final class IceStateMachine implements ProtocolStateMachine {
           transactionId: txId,
         );
         final raw = StunMessageBuilder.build(msg);
-        packets.add(OutputPacket(data: raw, remoteIp: server.host, remotePort: server.port));
+        packets.add(OutputPacket(
+          data: raw,
+          remoteIp: server.host,
+          remotePort: server.port,
+          localIp: firstHost.ip,
+        ));
         _stunServerRequests[_txIdString(txId)] = _StunServerRequest(
           server: server,
           sentAt: DateTime.now(),
-          localIp: localIp,
-          localPort: localPort,
+          localIp: firstHost.ip,
+          localPort: firstHost.port,
         );
       }
       // Schedule a gathering timeout
@@ -210,8 +219,9 @@ final class IceStateMachine implements ProtocolStateMachine {
       outputPackets: [
         OutputPacket(
           data: payload,
-          remoteIp: pair.remote.ip,
+          remoteIp: pair.remote.ip.toCanonical(),
           remotePort: pair.remote.port,
+          localIp: pair.local.ip,
         ),
       ],
     ));
@@ -225,8 +235,9 @@ final class IceStateMachine implements ProtocolStateMachine {
   @override
   Result<ProcessResult, ProtocolError> processInput(
     Uint8List packet, {
-    required String remoteIp,
+    required IpAddress remoteIp,
     required int remotePort,
+    IpAddress? localIp,
   }) {
     if (!StunParser.isStun(packet)) {
       // Non-STUN packet delivered on selected pair — pass up.
@@ -241,7 +252,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     final msg = parseResult.value;
 
     if (msg.type == StunMessageType.bindingRequest) {
-      return _handleBindingRequest(msg, remoteIp, remotePort, packet);
+      return _handleBindingRequest(msg, remoteIp, remotePort, packet, localIp);
     } else if (msg.type == StunMessageType.bindingSuccessResponse) {
       // Check if this is a response to a STUN server gathering request.
       final txId = _txIdString(msg.transactionId);
@@ -277,42 +288,43 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> _handleBindingRequest(
     StunMessage msg,
-    String remoteIp,
+    IpAddress remoteAddr,
     int remotePort,
     Uint8List rawPacket,
+    IpAddress? localIp,
   ) {
     final remoteParams = _remoteParams;
     if (remoteParams == null) {
       // Not ready yet — respond with error 400
-      return _buildErrorResponse(msg.transactionId, 400, 'Bad Request', remoteIp, remotePort);
+      return _buildErrorResponse(msg.transactionId, 400, 'Bad Request', remoteAddr, remotePort, localIp);
     }
 
     // Validate USERNAME
     final usernameAttr = msg.attribute<UsernameAttr>();
     if (usernameAttr == null) {
-      return _buildErrorResponse(msg.transactionId, 400, 'Bad Request', remoteIp, remotePort);
+      return _buildErrorResponse(msg.transactionId, 400, 'Bad Request', remoteAddr, remotePort, localIp);
     }
     final localParams = _localParams!;
     final expectedUsername = '${localParams.usernameFragment}:${remoteParams.usernameFragment}';
     if (usernameAttr.username != expectedUsername) {
-      return _buildErrorResponse(msg.transactionId, 401, 'Unauthorized', remoteIp, remotePort);
+      return _buildErrorResponse(msg.transactionId, 401, 'Unauthorized', remoteAddr, remotePort, localIp);
     }
 
     // Validate MESSAGE-INTEGRITY
     final integrityAttr = msg.attribute<MessageIntegrityAttr>();
     if (integrityAttr == null) {
-      return _buildErrorResponse(msg.transactionId, 400, 'Bad Request', remoteIp, remotePort);
+      return _buildErrorResponse(msg.transactionId, 400, 'Bad Request', remoteAddr, remotePort, localIp);
     }
 
     // Check if NOMINATED (for controlled agent)
     final nominated = msg.attribute<UseCandidateAttr>() != null;
 
     // Find or create matching pair; may return triggered-check packets (RFC 8445 §7.3.1.4).
-    final triggeredPackets = _updatePairFromRequest(remoteIp, remotePort, nominated);
+    final triggeredPackets = _updatePairFromRequest(remoteAddr, remotePort, nominated);
 
     // Build success response
     final successResult = _buildSuccessResponse(
-        msg.transactionId, remoteIp, remotePort, localParams.password);
+        msg.transactionId, remoteAddr, remotePort, localParams.password, localIp);
     if (!successResult.isOk) return successResult;
 
     final allPackets = [
@@ -324,7 +336,7 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> _handleBindingResponse(
     StunMessage msg,
-    String remoteIp,
+    IpAddress remoteAddr,
     int remotePort,
   ) {
     final txId = _txIdString(msg.transactionId);
@@ -338,9 +350,11 @@ final class IceStateMachine implements ProtocolStateMachine {
 
     // Check XOR-MAPPED-ADDRESS for peer-reflexive candidate discovery
     final xma = msg.attribute<XorMappedAddress>();
-    if (xma != null && (xma.ip != check.pair.local.ip || xma.port != check.pair.local.port)) {
-      // Peer-reflexive candidate discovered — add to local candidates
-      _discoverPrflxCandidate(xma.ip, xma.port, check.pair);
+    if (xma != null) {
+      if (xma.address != check.pair.local.ip || xma.port != check.pair.local.port) {
+        // Peer-reflexive candidate discovered — add to local candidates
+        _discoverPrflxCandidate(xma.address, xma.port, check.pair);
+      }
     }
 
     // Nominate if controlling
@@ -402,7 +416,7 @@ final class IceStateMachine implements ProtocolStateMachine {
       // Only pair same transport (UDP)
       if (local.transport != remote.transport) continue;
       // Only pair same address family (RFC 8445 §6.1.2.2)
-      if (local.ip.contains(':') != remote.ip.contains(':')) continue;
+      if (local.ip.isV6 != remote.ip.isV6) continue;
       final pair = CandidatePair(local: local, remote: remote);
       pair.state = CandidatePairState.waiting;
       _pairs.add(pair);
@@ -450,17 +464,24 @@ final class IceStateMachine implements ProtocolStateMachine {
       retransmitCount: retransmitCount,
     );
 
-    return [OutputPacket(data: raw, remoteIp: pair.remote.ip, remotePort: pair.remote.port)];
+    return [
+      OutputPacket(
+        data: raw,
+        remoteIp: pair.remote.ip.toCanonical(),
+        remotePort: pair.remote.port,
+        localIp: pair.local.ip,
+      ),
+    ];
   }
 
   /// Updates an existing pair (or creates a peer-reflexive pair) when a
-  /// binding request arrives from [remoteIp]:[remotePort].
+  /// binding request arrives from [remoteAddr]:[remotePort].
   ///
   /// Returns triggered-check packets per RFC 8445 §7.3.1.4.
   List<OutputPacket> _updatePairFromRequest(
-      String remoteIp, int remotePort, bool nominated) {
+      IpAddress remoteAddr, int remotePort, bool nominated) {
     final matchingPair = _pairs
-        .where((p) => p.remote.ip == remoteIp && p.remote.port == remotePort)
+        .where((p) => p.remote.ip == remoteAddr && p.remote.port == remotePort)
         .firstOrNull;
 
     if (matchingPair != null) {
@@ -483,7 +504,7 @@ final class IceStateMachine implements ProtocolStateMachine {
 
     // RFC 8445 §7.3.1.4: source is not known — create a peer-reflexive remote
     // candidate and trigger an immediate connectivity check to it.
-    return _triggerPeerReflexiveCheck(remoteIp, remotePort, nominated);
+    return _triggerPeerReflexiveCheck(remoteAddr, remotePort, nominated);
   }
 
   /// Creates a peer-reflexive remote candidate for [remoteIp]:[remotePort]
@@ -502,7 +523,7 @@ final class IceStateMachine implements ProtocolStateMachine {
   /// webdartc may still be in iceGathering/iceGatheringComplete at that
   /// point. Skip only for terminally dead states.
   List<OutputPacket> _triggerPeerReflexiveCheck(
-      String remoteIp, int remotePort, bool nominated) {
+      IpAddress remoteAddr, int remotePort, bool nominated) {
     if (_localCandidates.isEmpty) return const [];
 
     // Terminal states: the agent is no longer processing checks.
@@ -514,7 +535,7 @@ final class IceStateMachine implements ProtocolStateMachine {
 
     // Avoid duplicates.
     final alreadyRemote =
-        _remoteCandidates.any((c) => c.ip == remoteIp && c.port == remotePort);
+        _remoteCandidates.any((c) => c.ip == remoteAddr && c.port == remotePort);
     if (alreadyRemote) return const [];
 
     final priority = IceCandidate.computePriority(
@@ -527,7 +548,7 @@ final class IceStateMachine implements ProtocolStateMachine {
       componentId: 1,
       transport: 'udp',
       priority: priority,
-      ip: remoteIp,
+      ip: remoteAddr,
       port: remotePort,
       type: IceCandidateType.prflx,
     );
@@ -539,7 +560,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     // Find the freshly-created pair and trigger a check immediately.
     final newPair = _pairs
         .where((p) =>
-            p.remote.ip == remoteIp &&
+            p.remote.ip == remoteAddr &&
             p.remote.port == remotePort &&
             p.state == CandidatePairState.waiting)
         .firstOrNull;
@@ -552,8 +573,8 @@ final class IceStateMachine implements ProtocolStateMachine {
     return _sendCheck(newPair, nominated: controlling);
   }
 
-  void _discoverPrflxCandidate(String ip, int port, CandidatePair triggeredBy) {
-    final exists = _localCandidates.any((c) => c.ip == ip && c.port == port);
+  void _discoverPrflxCandidate(IpAddress addr, int port, CandidatePair triggeredBy) {
+    final exists = _localCandidates.any((c) => c.ip == addr && c.port == port);
     if (exists) return;
     final priority = IceCandidate.computePriority(
       typePreference: IceCandidate.typePreferencePrflx,
@@ -565,7 +586,7 @@ final class IceStateMachine implements ProtocolStateMachine {
       componentId: 1,
       transport: 'udp',
       priority: priority,
-      ip: ip,
+      ip: addr,
       port: port,
       type: IceCandidateType.prflx,
     );
@@ -681,7 +702,12 @@ final class IceStateMachine implements ProtocolStateMachine {
     );
     return Ok(ProcessResult(
       outputPackets: [
-        OutputPacket(data: raw, remoteIp: pair.remote.ip, remotePort: pair.remote.port),
+        OutputPacket(
+          data: raw,
+          remoteIp: pair.remote.ip.toCanonical(),
+          remotePort: pair.remote.port,
+          localIp: pair.local.ip,
+        ),
       ],
       nextTimeout: nextTimeout,
     ));
@@ -698,7 +724,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     if (xma != null) {
       // Avoid duplicate srflx candidates.
       final exists = _localCandidates.any(
-          (c) => c.type == IceCandidateType.srflx && c.ip == xma.ip && c.port == xma.port);
+          (c) => c.type == IceCandidateType.srflx && c.ip == xma.address && c.port == xma.port);
       if (!exists) {
         final priority = IceCandidate.computePriority(
           typePreference: IceCandidate.typePreferenceSrflx,
@@ -710,7 +736,7 @@ final class IceStateMachine implements ProtocolStateMachine {
           componentId: 1,
           transport: 'udp',
           priority: priority,
-          ip: xma.ip,
+          ip: xma.address,
           port: xma.port,
           type: IceCandidateType.srflx,
           relatedAddress: req.localIp,
@@ -748,21 +774,29 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> _buildSuccessResponse(
     Uint8List transactionId,
-    String remoteIp,
+    IpAddress remoteAddr,
     int remotePort,
     String localPassword,
+    IpAddress? localIp,
   ) {
     final msg = StunMessage(
       type: StunMessageType.bindingSuccessResponse,
       transactionId: transactionId,
       attributes: [
-        XorMappedAddress(ip: remoteIp, port: remotePort),
+        XorMappedAddress(address: remoteAddr, port: remotePort),
       ],
     );
     final raw = StunMessageBuilder.buildWithIntegrity(
         msg, Uint8List.fromList(localPassword.codeUnits));
     return Ok(ProcessResult(
-      outputPackets: [OutputPacket(data: raw, remoteIp: remoteIp, remotePort: remotePort)],
+      outputPackets: [
+        OutputPacket(
+          data: raw,
+          remoteIp: remoteAddr.toCanonical(),
+          remotePort: remotePort,
+          localIp: localIp,
+        ),
+      ],
     ));
   }
 
@@ -770,8 +804,9 @@ final class IceStateMachine implements ProtocolStateMachine {
     Uint8List transactionId,
     int code,
     String reason,
-    String remoteIp,
+    IpAddress remoteAddr,
     int remotePort,
+    IpAddress? localIp,
   ) {
     final msg = StunMessage(
       type: StunMessageType.bindingErrorResponse,
@@ -780,7 +815,14 @@ final class IceStateMachine implements ProtocolStateMachine {
     );
     final raw = StunMessageBuilder.build(msg);
     return Ok(ProcessResult(
-      outputPackets: [OutputPacket(data: raw, remoteIp: remoteIp, remotePort: remotePort)],
+      outputPackets: [
+        OutputPacket(
+          data: raw,
+          remoteIp: remoteAddr.toCanonical(),
+          remotePort: remotePort,
+          localIp: localIp,
+        ),
+      ],
     ));
   }
 
@@ -812,7 +854,7 @@ class _PendingCheck {
 class _StunServerRequest {
   final StunServer server;
   final DateTime sentAt;
-  final String localIp;
+  final IpAddress localIp;
   final int localPort;
   _StunServerRequest({
     required this.server,
