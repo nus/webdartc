@@ -7,8 +7,18 @@ import 'dart:io' show Platform;
 import 'opus_bindings.g.dart' as op;
 
 ffi.DynamicLibrary _open() {
+  // macOS: brew prefix is /opt/homebrew on Apple Silicon and /usr/local on
+  // Intel; neither is in dyld's default search path, so absolute fallbacks
+  // are required for FFI to find libopus.
   final candidates = Platform.isMacOS
-      ? const ['libopus.dylib', 'libopus.0.dylib']
+      ? const [
+          'libopus.dylib',
+          'libopus.0.dylib',
+          '/opt/homebrew/lib/libopus.dylib',
+          '/opt/homebrew/lib/libopus.0.dylib',
+          '/usr/local/lib/libopus.dylib',
+          '/usr/local/lib/libopus.0.dylib',
+        ]
       : Platform.isWindows
           ? const ['opus.dll', 'libopus-0.dll']
           : const ['libopus.so.0', 'libopus.so'];
