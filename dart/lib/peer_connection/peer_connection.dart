@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io' show Platform, stderr;
 import 'dart:typed_data';
 
+import '../api/media_engine.dart';
 import '../api/setting_engine.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
@@ -52,32 +53,6 @@ final class SessionDescription {
 }
 
 enum SessionDescriptionType { offer, pranswer, answer, rollback }
-
-/// Returns the default [RtpCodec] for a given video codec name, or null if
-/// the library does not have a built-in entry for it.
-RtpCodec? _videoCodecByName(String name) {
-  switch (name.toUpperCase()) {
-    case 'VP8':
-      return const RtpCodec(
-        payloadType: 96,
-        name: 'VP8',
-        clockRate: 90000,
-        rtcpFb: ['nack', 'nack pli', 'ccm fir', 'goog-remb'],
-      );
-    case 'H264':
-      // Constrained Baseline 3.1 — maximum Chrome/Firefox interop.
-      return const RtpCodec(
-        payloadType: 102,
-        name: 'H264',
-        clockRate: 90000,
-        fmtpParams:
-            'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
-        rtcpFb: ['nack', 'nack pli', 'ccm fir', 'goog-remb'],
-      );
-    default:
-      return null;
-  }
-}
 
 /// WebRTC PeerConnection (W3C API without "RTC" prefix).
 ///
@@ -145,9 +120,16 @@ final class PeerConnection {
   /// callers.
   final SettingEngine settingEngine;
 
+  /// Codec capabilities to advertise in offer / answer SDP. Defaults to
+  /// VP8 + H.264 + Opus. Independent from the encoder/decoder backend
+  /// registry — register a codec here even when the application handles
+  /// RTP payloads directly via [onRtpPacket] / [RtpSender.sendRtp].
+  final MediaEngine mediaEngine;
+
   PeerConnection({
     required this.configuration,
     this.settingEngine = const SettingEngine(),
+    this.mediaEngine = const MediaEngine(),
   }) {
     _init();
   }
@@ -188,31 +170,18 @@ final class PeerConnection {
 
     final SdpSessionDescription sdp;
     if (_transceivers.isNotEmpty) {
-      // Media session
+      // Media session — codec list comes from MediaEngine, optionally
+      // narrowed by the transceiver's preferredCodecs.
       final tracks = _transceivers.map((t) {
-        if (t.kind == 'audio') {
-          return MediaTrack(
-            type: 'audio',
-            direction: t.direction,
-            senderSsrc: t.sender?.ssrc,
-            codecs: [
-              const RtpCodec(payloadType: 111, name: 'opus', clockRate: 48000, channels: 2,
-                  fmtpParams: 'minptime=10;useinbandfec=1'),
-            ],
-          );
-        } else {
-          final names = t.preferredCodecs ?? const ['VP8'];
-          final codecs = names
-              .map(_videoCodecByName)
-              .whereType<RtpCodec>()
-              .toList();
-          return MediaTrack(
-            type: 'video',
-            direction: t.direction,
-            senderSsrc: t.sender?.ssrc,
-            codecs: codecs,
-          );
-        }
+        final codecs = t.kind == 'audio'
+            ? mediaEngine.resolveAudioCodecs(t.preferredCodecs)
+            : mediaEngine.resolveVideoCodecs(t.preferredCodecs);
+        return MediaTrack(
+          type: t.kind,
+          direction: t.direction,
+          senderSsrc: t.sender?.ssrc,
+          codecs: codecs,
+        );
       }).toList();
       sdp = SdpBuilder.buildMediaSdp(
         ufrag: _iceUfrag,
@@ -263,6 +232,8 @@ final class PeerConnection {
       localIp: _transport.localAddress,
       localPort: _transport.localPort,
       localSenderSsrcs: localSenderSsrcs,
+      supportedAudioCodecs: mediaEngine.audioCodecNames,
+      supportedVideoCodecs: mediaEngine.videoCodecNames,
     );
     final answerSdp = sdp.build();
 

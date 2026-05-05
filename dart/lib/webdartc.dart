@@ -24,6 +24,7 @@ export 'peer_connection/peer_connection.dart';
 // API factory (optional; default `PeerConnection(...)` constructor still works)
 export 'api/webdartc.dart';
 export 'api/setting_engine.dart';
+export 'api/media_engine.dart';
 
 // SDP
 export 'sdp/parser.dart';
