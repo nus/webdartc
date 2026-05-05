@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>webdartc audio-send</title>
+  <style>
+    body { font-family: system-ui; background: #111; color: #eee; margin: 2rem; max-width: 600px; }
+    h1 { font-size: 1.4rem; }
+    button { padding: 0.5rem 1.5rem; font-size: 1rem; cursor: pointer; border-radius: 4px; border: none; background: #2a6; color: #fff; }
+    button:disabled { background: #555; cursor: default; }
+    .status { margin: 1rem 0; }
+    .status span { padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.85rem; }
+    .connected { background: #2a6; }
+    .connecting { background: #a82; }
+    .failed { background: #a22; }
+    #log { font-size: 0.8rem; color: #888; white-space: pre-wrap; margin-top: 1rem; max-height: 300px; overflow-y: auto; }
+    #vu { width: 100%; height: 24px; background: #222; border-radius: 4px; overflow: hidden; }
+    #vu > div { height: 100%; background: #2a6; transition: width 80ms linear; width: 0%; }
+  </style>
+</head>
+<body>
+<h1>webdartc audio-send</h1>
+<p>The pure-Dart server streams a 440 Hz sine tone over Opus. Click <b>Start</b> to negotiate and hear the tone.</p>
+<button id="startBtn" onclick="start()">Start</button>
+<div class="status">
+  ICE: <span id="iceStatus">-</span>
+  | Received: <span id="recvCount">0</span> Opus pkts
+  | <span id="trackStatus" style="background:#a22;">ontrack: not fired</span>
+</div>
+<div id="vu"><div></div></div>
+<audio id="remoteAudio" autoplay></audio>
+<pre id="log"></pre>
+
+<script>
+'use strict';
+
+const params = new URLSearchParams(location.search);
+const wsPort = params.get('port') || '8080';
+
+function log(msg) {
+  console.log(msg);
+  const el = document.getElementById('log');
+  el.textContent += msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+async function start() {
+  document.getElementById('startBtn').disabled = true;
+
+  const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' });
+
+  pc.oniceconnectionstatechange = () => {
+    const s = pc.iceConnectionState;
+    log('ICE: ' + s);
+    const el = document.getElementById('iceStatus');
+    el.textContent = s;
+    el.className = (s === 'connected' || s === 'completed') ? 'connected'
+                 : s === 'checking' ? 'connecting' : 'failed';
+  };
+
+  // Receive-only audio.
+  pc.addTransceiver('audio', { direction: 'recvonly' });
+
+  let remoteStream;
+  pc.ontrack = (evt) => {
+    log('ontrack: ' + evt.track.kind);
+    document.getElementById('trackStatus').textContent = 'ontrack: ' + evt.track.kind;
+    document.getElementById('trackStatus').style.background = '#2a6';
+    remoteStream = evt.streams[0] || new MediaStream([evt.track]);
+    document.getElementById('remoteAudio').srcObject = remoteStream;
+    setupVuMeter(remoteStream);
+  };
+
+  const ws = new WebSocket('ws://127.0.0.1:' + wsPort);
+  pc.onicecandidate = (evt) => {
+    if (evt.candidate) {
+      ws.send(JSON.stringify({ type: 'candidate', candidate: evt.candidate.toJSON() }));
+    }
+  };
+
+  ws.onopen = async () => {
+    log('WS connected');
+    ws.send(JSON.stringify({ type: 'register', role: 'offerer' }));
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+    log('Offer sent');
+  };
+
+  ws.onmessage = async (evt) => {
+    const msg = JSON.parse(evt.data);
+    if (msg.type === 'answer') {
+      await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      log('Answer received');
+    } else if (msg.type === 'candidate' && msg.candidate) {
+      try { await pc.addIceCandidate(msg.candidate); } catch (e) { log('addIceCandidate err: ' + e); }
+    }
+  };
+
+  ws.onerror = () => log('WS error');
+  ws.onclose = () => log('WS closed');
+
+  setInterval(async () => {
+    try {
+      const report = await pc.getStats();
+      let recv = 0;
+      for (const [, s] of report) {
+        if (s.type === 'inbound-rtp' && s.kind === 'audio') {
+          recv = s.packetsReceived || 0;
+        }
+      }
+      document.getElementById('recvCount').textContent = recv;
+    } catch (_) {}
+  }, 500);
+}
+
+// Volume meter on the received MediaStream so the user can see audio is
+// actually flowing even when output is muted by autoplay policy.
+function setupVuMeter(stream) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const source = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  source.connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+  const bar = document.querySelector('#vu > div');
+  function tick() {
+    analyser.getFloatTimeDomainData(buf);
+    let peak = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = Math.abs(buf[i]);
+      if (v > peak) peak = v;
+    }
+    bar.style.width = Math.min(100, peak * 100 * 1.5) + '%';
+    requestAnimationFrame(tick);
+  }
+  tick();
+}
+</script>
+</body>
+</html>
