@@ -58,7 +58,8 @@ jobs:
         run: dart pub get
       - working-directory: dart
         # `dart test` runs the build hook (dart/hook/build.dart) on macOS to
-        # compile the VideoToolbox C helper. On Linux the hook is a no-op.
+        # compile the VideoToolbox callback shim. On Linux the hook is a
+        # no-op.
         run: dart test --exclude-tags e2e --timeout=60s
 
   dart-test-e2e-linux:

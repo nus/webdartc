@@ -1,9 +1,13 @@
-// Build hook: compiles the VideoToolbox C helper on macOS/iOS.
+// Build hook: compiles the VideoToolbox callback shim on macOS/iOS.
 //
-// On other operating systems the hook is a no-op — the VideoToolbox
-// backend is macOS/iOS-only and the helper is only needed there.
+// The shim is a small C library (`src/wvt_callback.c`) that receives VT
+// compression/decompression callbacks on VT's worker threads, CFRetains
+// the resulting buffer, and pushes a node onto a thread-safe native queue.
+// The Dart side drains the queue from the isolate thread and does the
+// actual byte extraction via the ffigen-generated bindings.
 //
-// Docs: https://dart.dev/tools/hooks
+// On non-Apple platforms the hook is a no-op — VideoToolbox is macOS/iOS
+// only.
 
 import 'package:code_assets/code_assets.dart';
 import 'package:hooks/hooks.dart';
@@ -15,8 +19,8 @@ void main(List<String> args) async {
     final targetOS = input.config.code.targetOS;
     if (targetOS != OS.macOS && targetOS != OS.iOS) return;
 
-    // CBuilder only emits `-framework X` when language is Objective-C,
-    // so we pass framework flags directly for a plain-C helper.
+    // CBuilder only emits `-framework X` when language is Objective-C, so we
+    // pass framework flags directly for a plain-C shim.
     const frameworks = [
       'CoreFoundation',
       'CoreVideo',
@@ -24,9 +28,9 @@ void main(List<String> args) async {
       'VideoToolbox',
     ];
     final builder = CBuilder.library(
-      name: 'webdartc_vt_helper',
-      assetName: 'codec/h264/videotoolbox/vt_helper.dart',
-      sources: ['src/webdartc_vt_helper.c'],
+      name: 'wvt_callback',
+      assetName: 'codec/h264/videotoolbox/wvt_callback.dart',
+      sources: ['src/wvt_callback.c'],
       flags: [for (final f in frameworks) ...['-framework', f]],
     );
     await builder.run(input: input, output: output);
