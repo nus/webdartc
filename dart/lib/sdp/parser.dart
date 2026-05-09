@@ -425,8 +425,19 @@ abstract final class SdpBuilder {
           continue;
         }
 
-        // Reverse direction
-        final answerDir = _reverseDirection(rm.direction);
+        // Reverse direction; then downgrade if we have no sender for this
+        // kind. Telling the remote `sendrecv` while we never produce RTP
+        // confuses Chrome enough to stop routing its own media over the
+        // same BUNDLE.
+        var answerDir = _reverseDirection(rm.direction);
+        final hasLocalSender = localSenderSsrcs.containsKey(rm.type);
+        if (!hasLocalSender) {
+          if (answerDir == 'sendrecv') {
+            answerDir = 'recvonly';
+          } else if (answerDir == 'sendonly') {
+            answerDir = 'inactive';
+          }
+        }
 
         final attrs = <String, String>{
           'mid': remoteMid,
@@ -439,7 +450,6 @@ abstract final class SdpBuilder {
           'rtcp-mux': '',
         };
 
-        // Add a=ssrc for local sender if available
         final ssrc = localSenderSsrcs[rm.type];
         if (ssrc != null) {
           final mediaIdx = mediaDescriptions.length;
@@ -453,6 +463,7 @@ abstract final class SdpBuilder {
           proto: rm.proto,
           formats: selectedFormats,
           attributes: attrs,
+          allAttributes: _allAttrsFrom(attrs, rawAttrs),
           rawAttributes: rawAttrs,
           candidates: [_hostCandidate(IpAddress.parse(localIp), localPort)],
         ));
@@ -471,6 +482,22 @@ abstract final class SdpBuilder {
         'msid-semantic': ' WMS',
       },
     );
+  }
+
+  /// Mirror what SdpParser would produce when round-tripping
+  /// `attrs` + `rawAttrs` through `build()` and back: every entry shows up
+  /// in `allAttributes` so callers can use `getAll(key)`.
+  static List<(String, String)> _allAttrsFrom(
+      Map<String, String> attrs, List<String> rawAttrs) {
+    final out = <(String, String)>[];
+    for (final e in attrs.entries) {
+      out.add((e.key, e.value));
+    }
+    for (final r in rawAttrs) {
+      final i = r.indexOf(':');
+      out.add(i < 0 ? (r, '') : (r.substring(0, i), r.substring(i + 1)));
+    }
+    return out;
   }
 
   static String _reverseDirection(String dir) {

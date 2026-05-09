@@ -147,6 +147,82 @@ void main() {
       await answerer.close();
     });
 
+    test('answerer sender PT matches the negotiated codec, not the offer\'s '
+        'first preference', () async {
+      final offerer = PeerConnection(
+        configuration: const PeerConnectionConfiguration(),
+      );
+      offerer.addTransceiver('video'); // default: VP8 + H.264 (96, 102)
+      final offer = await offerer.createOffer();
+      await offerer.setLocalDescription(offer);
+
+      const onlyH264 = MediaEngine(
+        videoCodecs: [
+          RtpCodec(payloadType: 102, name: 'H264', clockRate: 90000),
+        ],
+        audioCodecs: [],
+      );
+      final answerer = PeerConnection(
+        configuration: const PeerConnectionConfiguration(),
+        mediaEngine: onlyH264,
+      );
+      answerer.addTransceiver('video', direction: 'sendrecv');
+      await answerer.setRemoteDescription(offer);
+      final answer = await answerer.createAnswer();
+      expect(answer.sdp, contains('H264/90000'));
+
+      final sender = answerer.getSenders().firstWhere((s) => s.kind == 'video');
+      expect(sender.payloadType, equals(102),
+          reason:
+              'answerer must stamp RTP with the negotiated H.264 PT (102), '
+              'not the offer\'s first format (96 = VP8)');
+
+      await offerer.close();
+      await answerer.close();
+    });
+
+    test('audio+video offer / video-only answerer with preferredCodecs=H264: '
+        'video sender gets H.264 mid + PT, not VP8 nor audio', () async {
+      final offerer = PeerConnection(
+        configuration: const PeerConnectionConfiguration(),
+      );
+      offerer.addTransceiver('audio');
+      offerer.addTransceiver('video');
+      final offer = await offerer.createOffer();
+      await offerer.setLocalDescription(offer);
+
+      final answerer = PeerConnection(
+        configuration: const PeerConnectionConfiguration(),
+      );
+      answerer.addTransceiver('video',
+          direction: 'sendrecv', preferredCodecs: const ['H264']);
+      await answerer.setRemoteDescription(offer);
+      final answer = await answerer.createAnswer();
+
+      final parsed = SdpParser.parse(answer.sdp).value;
+      final video = parsed.media.firstWhere((m) => m.type == 'video');
+      final audio = parsed.media.firstWhere((m) => m.type == 'audio');
+
+      final videoCodecs = video.getAll('rtpmap').map((s) => s.split(' ').last);
+      expect(videoCodecs, everyElement(startsWith('H264/')),
+          reason: 'preferredCodecs=[H264] must filter VP8 out of the answer');
+
+      final sender =
+          answerer.getSenders().firstWhere((s) => s.kind == 'video');
+      expect(sender.payloadType, equals(102),
+          reason:
+              'video sender PT must be H.264; if pairing skips past the '
+              'video transceiver while looking for an audio match, the PT '
+              'never gets assigned');
+
+      // Telling the remote `sendrecv` while we have no audio sender stops
+      // Chrome from routing OUR video over the same BUNDLE transport.
+      expect(audio.direction, equals('recvonly'));
+
+      await offerer.close();
+      await answerer.close();
+    });
+
     test('passthrough use case: empty backends, capability-only MediaEngine',
         () async {
       // Application registers no codec backends but still wants to negotiate

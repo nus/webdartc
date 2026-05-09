@@ -224,6 +224,7 @@ final class PeerConnection {
     for (final t in _transceivers) {
       if (t.sender != null) localSenderSsrcs[t.kind] = t.sender!.ssrc;
     }
+    // Honour each transceiver's preferredCodecs on the answer side.
     final sdp = SdpBuilder.buildAnswerFromOffer(
       remoteOffer: parsed.value,
       ufrag: _iceUfrag,
@@ -232,13 +233,14 @@ final class PeerConnection {
       localIp: _transport.localAddress,
       localPort: _transport.localPort,
       localSenderSsrcs: localSenderSsrcs,
-      supportedAudioCodecs: mediaEngine.audioCodecNames,
-      supportedVideoCodecs: mediaEngine.videoCodecNames,
+      supportedAudioCodecs: _answerCodecNames('audio'),
+      supportedVideoCodecs: _answerCodecNames('video'),
     );
     final answerSdp = sdp.build();
 
-    // Assign MID + extmap ID to senders for BUNDLE demux (RFC 8843).
-    _assignMidToSenders(parsed.value);
+    // PT must come from the answer (the codec we narrowed down to), not the
+    // offer (which lists every PT the remote was willing to use).
+    _assignMidToSenders(sdp);
 
     return SessionDescription(type: SessionDescriptionType.answer, sdp: answerSdp);
   }
@@ -453,6 +455,21 @@ final class PeerConnection {
   List<RtpSender> getSenders() =>
       _transceivers.where((t) => t.sender != null).map((t) => t.sender!).toList();
 
+  /// Codec names to advertise in the answer for [kind], filtered by the
+  /// matching transceiver's preferredCodecs (if any). m-lines without a
+  /// local transceiver still negotiate normally, treating the answerer as
+  /// recv-only for that kind.
+  List<String> _answerCodecNames(String kind) {
+    final prefs = _transceivers
+        .where((t) => t.kind == kind)
+        .firstOrNull
+        ?.preferredCodecs;
+    final resolved = kind == 'audio'
+        ? mediaEngine.resolveAudioCodecs(prefs)
+        : mediaEngine.resolveVideoCodecs(prefs);
+    return [for (final c in resolved) c.name];
+  }
+
   /// Align senders to the remote SDP: set MID, MID header-extension ID (if
   /// negotiated), and the negotiated payload type. Runs for both offerer
   /// (after receiving the answer) and answerer (when building the answer).
@@ -467,28 +484,27 @@ final class PeerConnection {
       }
     }
 
-    int tIdx = 0;
-    for (final m in remoteSdp.media) {
-      if (m.type == 'application') continue;
-      final mid = m.mid ?? '${remoteSdp.media.indexOf(m)}';
-      while (tIdx < _transceivers.length && _transceivers[tIdx].kind != m.type) {
-        tIdx++;
-      }
-      if (tIdx < _transceivers.length && _transceivers[tIdx].sender != null) {
-        final sender = _transceivers[tIdx].sender!;
+    // Pair each m-line with the first unassigned matching-kind sender.
+    // Walking transceivers in lockstep with m-lines breaks when the two
+    // lists diverge (e.g. offer m=audio+m=video, only video transceiver).
+    final assigned = <RtpSender>{};
+    for (var i = 0; i < remoteSdp.media.length; i++) {
+      final m = remoteSdp.media[i];
+      if (m.type == 'application' || m.port == 0) continue;
+      final mid = m.mid ?? '$i';
+      for (final t in _transceivers) {
+        if (t.kind != m.type) continue;
+        final sender = t.sender;
+        if (sender == null || assigned.contains(sender)) continue;
         sender._mid = mid;
         sender._midExtId = midExtId;
-        // Update sender PT to match the negotiated codec. Without this the
-        // sender keeps its default PT (96) which the remote SDP may not
-        // associate with any codec → RTP is received but frames never
-        // assemble (Firefox uses PT 109 for Opus vs Chrome 111; for video
-        // H.264 uses 102 while VP8 uses 96).
         if (m.formats.isNotEmpty) {
           final negotiatedPt = int.tryParse(m.formats.first);
           if (negotiatedPt != null) sender.payloadType = negotiatedPt;
         }
-        if (_debug) _log('[pc] sender ${_transceivers[tIdx].kind} mid=$mid extId=$midExtId pt=${sender.payloadType}');
-        tIdx++;
+        assigned.add(sender);
+        if (_debug) _log('[pc] sender ${t.kind} mid=$mid extId=$midExtId pt=${sender.payloadType}');
+        break;
       }
     }
   }
