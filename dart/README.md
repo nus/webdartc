@@ -10,17 +10,19 @@ Supports data channels and media (audio/video) send/receive.
 
 ## Features
 
-- **RFC-compliant protocols**: STUN (RFC 5389), ICE (RFC 8445), Trickle ICE (RFC 8840), DTLS 1.2 (RFC 6347), SRTP (RFC 3711), SCTP (RFC 4960), DCEP (RFC 8832), RTP/RTCP (RFC 3550), SDP (RFC 4566/8866), H.264 RTP (RFC 6184, STAP-A + FU-A), VP8 RTP (RFC 7741)
+- **RFC-compliant protocols**: STUN (RFC 5389), ICE (RFC 8445), Trickle ICE (RFC 8840), DTLS 1.2 (RFC 6347), SRTP (RFC 3711), SCTP (RFC 4960), DCEP (RFC 8832), RTP/RTCP (RFC 3550), SDP (RFC 4566/8866), H.264 RTP (RFC 6184, STAP-A + FU-A), VP8 RTP (RFC 7741), Opus RTP (RFC 7587)
 - **Pure state machines**: All protocol modules produce deterministic outputs from inputs — no hidden I/O
 - **Platform-native crypto**: CommonCrypto + Security.framework on macOS, OpenSSL on Linux, via FFI
 - **Data channels**: SCTP over DTLS with DCEP negotiation
 - **Media**: Transceivers, RTP/RTCP, audio/video frame APIs (W3C Media Capture & Streams, WebCodecs)
-- **Codecs**: VP8 via libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS/iOS) or OpenH264 (software, other platforms). Auto-selected by `registerH264Codec()`.
+- **Codecs**: VP8 via libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS/iOS) or OpenH264 (software, other platforms); Opus via vendored libopus (statically linked, no system install needed).
 
 ## Requirements
 
 - Dart SDK >= 3.11.0, < 4.0.0
-- macOS (Xcode for VideoToolbox / CoreMedia / CoreVideo) or Linux (`libssl-dev libvpx-dev libopenh264-dev`)
+- CMake (used by the build hook to compile the vendored libopus)
+- macOS (Xcode for VideoToolbox / CoreMedia / CoreVideo) or Linux (`clang libssl-dev libvpx-dev libopenh264-dev`)
+- The `dart/third_party/opus/` submodule must be checked out (`git clone --recurse-submodules` or `git submodule update --init --recursive`).
 
 ## Installation
 
@@ -77,10 +79,14 @@ Each protocol module follows the same pattern:
 
 ```
 hook/
-└── build.dart                 # Dart build hook: compiles VideoToolbox C helper on macOS/iOS
+└── build.dart                 # Dart build hook: VideoToolbox C helper (Apple) + bundled libopus (macOS/Linux)
 src/
-├── webdartc_vt_helper.c       # VT encoder/decoder + CFRetain+queue bridge
-└── webdartc_vt_helper.h
+├── wvt_callback.c             # VT encoder/decoder callback + CFRetain+queue bridge
+├── wvt_callback.h
+├── webdartc_opus.c            # libopus wrapper (only `webdartc_opus_*` exported)
+└── webdartc_opus.h
+third_party/
+└── opus/                      # libopus submodule (statically linked, hidden symbols)
 
 lib/
 ├── webdartc.dart              # Public API exports
@@ -92,7 +98,9 @@ lib/
 ├── codec/
 │   ├── codec_registry.dart
 │   ├── video_codec.dart       # W3C VideoEncoder / VideoDecoder
+│   ├── audio_codec.dart       # W3C AudioEncoder / AudioDecoder
 │   ├── vp8/                   # libvpx FFI encoder
+│   ├── opus/                  # libopus FFI encoder/decoder (bundled)
 │   └── h264/
 │       ├── h264_encoder_backend.dart          # OpenH264 (SW)
 │       ├── videotoolbox/                      # @Native bindings to the C helper
@@ -107,6 +115,8 @@ test/
 
 example/
 ├── ice_gather.dart            # ICE candidate gathering
+├── opus_codec.dart            # Opus encode/decode round-trip + SNR check
+├── audio_send/                # Browser ↔ Dart audio call (Opus)
 ├── reflect/                   # Audio/video reflection server + browser client
 └── video_call/                # Browser ↔ Dart video call (VP8 / H.264, sendonly or bidir)
 ```
@@ -152,8 +162,11 @@ dart run example/video_call/bin/sender.dart --port=8080 --codec=h264 --bidir
 | H.264 (macOS/iOS) | VideoToolbox (HW) | VideoToolbox (HW) | `dart/hook/build.dart` auto-compiles a C helper |
 | H.264 (Linux/Windows) | OpenH264 (SW) | — (roadmap) | `libopenh264-dev` |
 | VP8 | libvpx (SW) | — (roadmap) | `libvpx-dev` |
+| Opus (macOS/Linux) | libopus (SW) | libopus (SW) | `dart/third_party/opus/` submodule, statically linked |
 
-On macOS, `dart test` triggers `hook/build.dart` which compiles `src/webdartc_vt_helper.c` into a bundled dynamic library. The helper wraps `VTCompressionSession` / `VTDecompressionSession`, retaining `CMSampleBuffer`s before the VT callback returns (a problem Dart FFI's async `NativeCallable.listener` cannot solve alone).
+On macOS, `dart test` triggers `hook/build.dart` which compiles `src/wvt_callback.c` into a bundled dynamic library. The shim retains `CMSampleBuffer`s before the VT callback returns and pushes them onto a thread-safe queue that the Dart side drains (a problem Dart FFI's async `NativeCallable.listener` cannot solve alone).
+
+On macOS and Linux the same hook also configures CMake, builds libopus from `third_party/opus/` as a static archive (`libopus.a`), and links it into a single `webdartc_codecs` shared library alongside `src/webdartc_opus.c` (a thin wrapper that re-exports a small subset of the libopus API). Every libopus symbol is hidden by `-fvisibility=hidden` plus `-DOPUS_EXPORT=` (which neutralizes libopus's own `visibility("default")` attribute) — only `webdartc_opus_*` is visible from outside, so the bundled copy can't collide with another libopus loaded into the same process.
 
 ## Crypto backends
 

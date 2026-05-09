@@ -1,48 +1,77 @@
-/// Internal libopus binding entry point shared by encoder and decoder.
+/// Bindings for the `webdartc_opus_*` wrapper API exposed by
+/// `dart/src/webdartc_opus.{h,c}`.
+///
+/// libopus is statically linked into `webdartc_codecs.dylib` (built by
+/// `dart/hook/build.dart` from the `dart/third_party/opus/` submodule). The
+/// only symbols exported from that dylib are the `webdartc_opus_*`
+/// functions below; libopus's own `opus_*` symbols are hidden so they
+/// can't collide with another libopus loaded elsewhere in the process.
+@ffi.DefaultAsset('package:webdartc/codec/opus/webdartc_opus.dart')
 library;
 
 import 'dart:ffi' as ffi;
-import 'dart:io' show Platform;
 
-import 'opus_bindings.g.dart' as op;
+// Mirror libopus values (verbatim from opus_defines.h).
+const int opusOk = 0;
+const int opusApplicationVoip = 2048;
+const int opusSetBitrateRequest = 4002;
 
-ffi.DynamicLibrary _open() {
-  // macOS: brew prefix is /opt/homebrew on Apple Silicon and /usr/local on
-  // Intel; neither is in dyld's default search path, so absolute fallbacks
-  // are required for FFI to find libopus.
-  final candidates = Platform.isMacOS
-      ? const [
-          'libopus.dylib',
-          'libopus.0.dylib',
-          '/opt/homebrew/lib/libopus.dylib',
-          '/opt/homebrew/lib/libopus.0.dylib',
-          '/usr/local/lib/libopus.dylib',
-          '/usr/local/lib/libopus.0.dylib',
-        ]
-      : Platform.isWindows
-          ? const ['opus.dll', 'libopus-0.dll']
-          : const ['libopus.so.0', 'libopus.so'];
-  Object? lastError;
-  for (final name in candidates) {
-    try {
-      return ffi.DynamicLibrary.open(name);
-    } catch (e) {
-      lastError = e;
-    }
-  }
-  throw StateError('Could not load libopus ($candidates): $lastError');
-}
+/// Opaque handles. The wrapper layer takes care of the actual
+/// `OpusEncoder` / `OpusDecoder` C types — Dart only passes pointers.
+final class OpusEncoder extends ffi.Opaque {}
 
-final ffi.DynamicLibrary _dylib = _open();
-final op.OpusBindings libopus = op.OpusBindings(_dylib);
+final class OpusDecoder extends ffi.Opaque {}
 
-/// `opus_encoder_ctl(st, request, value)` — variadic-stripped 3-arg form for
-/// integer-valued CTL requests (bitrate, complexity, etc.). The ffigen
-/// binding only exposes the 2-arg form, so look up the symbol manually.
-typedef _OpusEncCtlIntNative = ffi.Int Function(
-    ffi.Pointer<op.OpusEncoder>, ffi.Int32, ffi.Int32);
-typedef OpusEncCtlIntDart = int Function(
-    ffi.Pointer<op.OpusEncoder>, int, int);
-final OpusEncCtlIntDart opusEncoderCtlInt = _dylib
-    .lookup<ffi.NativeFunction<_OpusEncCtlIntNative>>('opus_encoder_ctl')
-    .asFunction<OpusEncCtlIntDart>();
+@ffi.Native<
+    ffi.Pointer<OpusEncoder> Function(
+        ffi.Int32, ffi.Int, ffi.Int, ffi.Pointer<ffi.Int>)>(
+    symbol: 'webdartc_opus_encoder_create')
+external ffi.Pointer<OpusEncoder> opusEncoderCreate(
+    int sampleRate, int channels, int application, ffi.Pointer<ffi.Int> error);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<OpusEncoder>)>(
+    symbol: 'webdartc_opus_encoder_destroy')
+external void opusEncoderDestroy(ffi.Pointer<OpusEncoder> st);
+
+@ffi.Native<
+    ffi.Int32 Function(ffi.Pointer<OpusEncoder>, ffi.Pointer<ffi.Int16>,
+        ffi.Int, ffi.Pointer<ffi.UnsignedChar>, ffi.Int32)>(
+    symbol: 'webdartc_opus_encode')
+external int opusEncode(
+    ffi.Pointer<OpusEncoder> st,
+    ffi.Pointer<ffi.Int16> pcm,
+    int frameSize,
+    ffi.Pointer<ffi.UnsignedChar> data,
+    int maxDataBytes);
+
+@ffi.Native<ffi.Int Function(ffi.Pointer<OpusEncoder>, ffi.Int, ffi.Int32)>(
+    symbol: 'webdartc_opus_encoder_ctl_int')
+external int opusEncoderCtlInt(
+    ffi.Pointer<OpusEncoder> st, int request, int value);
+
+@ffi.Native<
+    ffi.Pointer<OpusDecoder> Function(
+        ffi.Int32, ffi.Int, ffi.Pointer<ffi.Int>)>(
+    symbol: 'webdartc_opus_decoder_create')
+external ffi.Pointer<OpusDecoder> opusDecoderCreate(
+    int sampleRate, int channels, ffi.Pointer<ffi.Int> error);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<OpusDecoder>)>(
+    symbol: 'webdartc_opus_decoder_destroy')
+external void opusDecoderDestroy(ffi.Pointer<OpusDecoder> st);
+
+@ffi.Native<
+    ffi.Int Function(ffi.Pointer<OpusDecoder>, ffi.Pointer<ffi.UnsignedChar>,
+        ffi.Int32, ffi.Pointer<ffi.Int16>, ffi.Int, ffi.Int)>(
+    symbol: 'webdartc_opus_decode')
+external int opusDecode(
+    ffi.Pointer<OpusDecoder> st,
+    ffi.Pointer<ffi.UnsignedChar> data,
+    int len,
+    ffi.Pointer<ffi.Int16> pcm,
+    int frameSize,
+    int decodeFec);
+
+@ffi.Native<ffi.Pointer<ffi.Char> Function()>(
+    symbol: 'webdartc_opus_get_version_string')
+external ffi.Pointer<ffi.Char> opusGetVersionString();

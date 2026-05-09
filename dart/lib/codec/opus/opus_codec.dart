@@ -1,7 +1,10 @@
 /// Opus codec registration entry point.
 library;
 
+import 'package:ffi/ffi.dart' as pkgffi;
+
 import '../codec_registry.dart';
+import '_libopus.dart' as libopus;
 import 'opus_decoder_backend.dart';
 import 'opus_encoder_backend.dart';
 
@@ -9,4 +12,11 @@ import 'opus_encoder_backend.dart';
 void registerOpusCodec() {
   CodecRegistry.registerAudioEncoder('opus', OpusEncoderBackend.new);
   CodecRegistry.registerAudioDecoder('opus', OpusDecoderBackend.new);
+}
+
+/// Returns the bundled libopus's `opus_get_version_string()` (e.g.
+/// "libopus 1.6.1" or "libopus 1.6.1-fixed"). Useful for asserting which
+/// libopus build is loaded after a `dart/third_party/opus` submodule bump.
+String opusLibraryVersion() {
+  return libopus.opusGetVersionString().cast<pkgffi.Utf8>().toDartString();
 }

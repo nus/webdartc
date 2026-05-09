@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
@@ -38,6 +40,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
@@ -45,10 +49,7 @@ jobs:
         name: Install native codec libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev libvpx-dev libopenh264-dev libopus-dev
-      - if: runner.os == 'macOS'
-        name: Install native codec libraries (macOS)
-        run: brew install opus
+          sudo apt-get install -y libssl-dev libvpx-dev libopenh264-dev
       - name: Detach from workspace
         run: |
           rm -f pubspec.yaml
@@ -57,9 +58,10 @@ jobs:
       - working-directory: dart
         run: dart pub get
       - working-directory: dart
-        # `dart test` runs the build hook (dart/hook/build.dart) on macOS to
-        # compile the VideoToolbox callback shim. On Linux the hook is a
-        # no-op.
+        # `dart test` runs the build hook (dart/hook/build.dart): builds the
+        # bundled libopus on both macOS and Linux, plus the VideoToolbox
+        # callback shim on macOS. The opus submodule must be checked out
+        # (see `submodules: recursive` above).
         run: dart test --exclude-tags e2e --timeout=60s
 
   dart-test-e2e-linux:
@@ -67,13 +69,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
       - name: Install native codec libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev libvpx-dev libopenh264-dev libopus-dev
+          sudo apt-get install -y libssl-dev libvpx-dev libopenh264-dev
       - name: Detach from workspace
         run: |
           rm -f pubspec.yaml
@@ -90,6 +94,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
@@ -115,6 +121,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -131,6 +139,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -153,6 +163,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - uses: subosito/flutter-action@v2
         with:
           channel: stable

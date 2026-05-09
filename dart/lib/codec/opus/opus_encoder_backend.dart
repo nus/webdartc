@@ -8,8 +8,7 @@ import 'package:ffi/ffi.dart' as pkgffi;
 
 import '../../media/audio_data.dart';
 import '../audio_codec.dart';
-import '_libopus.dart';
-import 'opus_bindings.g.dart' as op;
+import '_libopus.dart' as op;
 
 /// Maximum Opus packet size per RFC 6716 §3.
 const int _maxOpusPacketBytes = 1275;
@@ -33,7 +32,7 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
   int _samplesPerFrameAllChannels = 1920;
 
   // Persistent native scratch buffers (allocated in configure, freed in close).
-  ffi.Pointer<op.opus_int16> _pcmScratch = ffi.nullptr;
+  ffi.Pointer<ffi.Int16> _pcmScratch = ffi.nullptr;
   ffi.Pointer<ffi.UnsignedChar> _outScratch = ffi.nullptr;
 
   // Carry-over buffer for samples not yet aligned to a 20 ms frame.
@@ -60,27 +59,27 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
     _samplesPerFrameAllChannels = _samplesPerFrame * _channels;
 
     final errPtr = pkgffi.calloc<ffi.Int>();
-    final enc = libopus.opus_encoder_create(
+    final enc = op.opusEncoderCreate(
       _sampleRate,
       _channels,
-      op.OPUS_APPLICATION_VOIP,
+      op.opusApplicationVoip,
       errPtr,
     );
     final err = errPtr.value;
     pkgffi.calloc.free(errPtr);
-    if (err != op.OPUS_OK || enc == ffi.nullptr) {
+    if (err != op.opusOk || enc == ffi.nullptr) {
       throw StateError('opus_encoder_create failed: $err');
     }
 
     final bitrate = config.bitrate ?? _defaultBitrate;
-    final ctlRes = opusEncoderCtlInt(enc, op.OPUS_SET_BITRATE_REQUEST, bitrate);
-    if (ctlRes != op.OPUS_OK) {
-      libopus.opus_encoder_destroy(enc);
+    final ctlRes = op.opusEncoderCtlInt(enc, op.opusSetBitrateRequest, bitrate);
+    if (ctlRes != op.opusOk) {
+      op.opusEncoderDestroy(enc);
       throw StateError('OPUS_SET_BITRATE failed: $ctlRes');
     }
 
     _encoder = enc;
-    _pcmScratch = pkgffi.calloc<op.opus_int16>(_samplesPerFrameAllChannels);
+    _pcmScratch = pkgffi.calloc<ffi.Int16>(_samplesPerFrameAllChannels);
     _outScratch = pkgffi.calloc<ffi.UnsignedChar>(_maxOpusPacketBytes);
     _residue = Int16List(_samplesPerFrameAllChannels);
     _residueFill = 0;
@@ -162,7 +161,7 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
         .asTypedList(_samplesPerFrameAllChannels);
     pcmList.setRange(0, _samplesPerFrameAllChannels, src, srcOffset);
 
-    final encoded = libopus.opus_encode(
+    final encoded = op.opusEncode(
       _encoder!,
       _pcmScratch,
       _samplesPerFrame,
@@ -201,7 +200,7 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
   void close() {
     final enc = _encoder;
     if (enc != null) {
-      libopus.opus_encoder_destroy(enc);
+      op.opusEncoderDestroy(enc);
       _encoder = null;
     }
     if (_pcmScratch != ffi.nullptr) {

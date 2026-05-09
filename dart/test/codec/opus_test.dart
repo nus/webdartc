@@ -1,7 +1,6 @@
 @Tags(['native'])
 library;
 
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
@@ -9,34 +8,18 @@ import 'package:webdartc/codec/audio_codec.dart';
 import 'package:webdartc/codec/opus/opus_codec.dart';
 import 'package:webdartc/media/audio_data.dart';
 
+import 'opus_test_helpers.dart';
+
 const _sampleRate = 48000;
 const _channels = 2;
 const _samplesPerFrame = 960; // 20ms at 48kHz
 
-/// Generate a sine-wave AudioData buffer of [frameCount] frames at 440 Hz.
-AudioData _sineFrame({
-  required int frameCount,
-  required int timestampUs,
-  int sampleRate = _sampleRate,
-  int channels = _channels,
-}) {
-  final pcm = Uint8List(frameCount * channels * 2);
-  final view = ByteData.sublistView(pcm);
-  const freq = 440.0;
-  for (var i = 0; i < frameCount; i++) {
-    final t = i / sampleRate;
-    final sample = (math.sin(2 * math.pi * freq * t) * 16384).round();
-    for (var c = 0; c < channels; c++) {
-      view.setInt16((i * channels + c) * 2, sample, Endian.little);
-    }
-  }
-  return AudioData(
-    format: AudioSampleFormat.s16,
-    sampleRate: sampleRate,
-    numberOfChannels: channels,
-    numberOfFrames: frameCount,
-    timestamp: timestampUs,
-    data: pcm,
+AudioData _sineFrame({required int frameCount, required int timestampUs}) {
+  return sineFrame(
+    sampleRate: _sampleRate,
+    channels: _channels,
+    frameCount: frameCount,
+    timestampUs: timestampUs,
   );
 }
 
