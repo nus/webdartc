@@ -63,3 +63,39 @@ helper is compiled automatically by `dart/hook/build.dart` during the build.
   DTLS/SRTP/ICE, with `sent` and `recv` counters both advancing.
 - macOS sandbox entitlements permit WebSocket + UDP
   (`com.apple.security.network.client` / `network.server`).
+
+## Ayame variant
+
+`lib/ayame_main.dart` is an alternate entry point that talks to an
+[OpenAyame](https://github.com/OpenAyame/ayame-spec) signaling server
+instead of the local `dart/example/video_call/` server. Pair two clients
+on the same `roomId` (two instances of this app, the official
+`ayame-web-sdk` demo, etc.) for a 1-on-1 video chat.
+
+Run an Ayame server (e.g. the
+[OpenAyame/ayame](https://github.com/OpenAyame/ayame) reference
+implementation) and then:
+
+```bash
+cd flutter/example
+flutter run -d macos -t lib/ayame_main.dart
+```
+
+The launch screen has input fields for the **Signaling URL**, **Room
+ID**, and an optional **Signaling key**. Initial values can be
+pre-populated via `--dart-define=AYAME_URL=...`,
+`--dart-define=AYAME_ROOM=...`, and
+`--dart-define=AYAME_SIGNALING_KEY=...`.
+
+After "Join" the app:
+- registers to the room with a random `clientId` and the optional
+  signaling key,
+- becomes the offerer when `isExistClient: true` (someone is already
+  there), otherwise waits for the peer's offer,
+- consumes the `iceServers` advertised in the `accept` message
+  (STUN/TURN if the Ayame deployment provides any),
+- exchanges trickle ICE candidates and replies to `ping` with `pong`.
+
+Codec is H.264 via VideoToolbox; the AppBar shows the current peer state
+and `sent` / `recv` frame counters. The "Leave" button in the AppBar
+disconnects and returns to the input form.
