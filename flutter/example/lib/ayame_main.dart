@@ -47,17 +47,29 @@ class _Home extends StatefulWidget {
 }
 
 class _HomeState extends State<_Home> {
-  _AyameConfig? _config;
+  /// Active call config. `null` means we are showing the form.
+  _AyameConfig? _activeConfig;
+
+  /// Most recent config — survives Leave so the form can pre-fill on
+  /// re-entry.
+  _AyameConfig? _lastConfig;
 
   @override
   Widget build(BuildContext context) {
-    if (_config == null) {
-      return _ConfigForm(onSubmit: (cfg) => setState(() => _config = cfg));
+    final active = _activeConfig;
+    if (active == null) {
+      return _ConfigForm(
+        initial: _lastConfig,
+        onSubmit: (cfg) => setState(() => _activeConfig = cfg),
+      );
     }
     return _CallView(
-      key: ValueKey(_config!.url + _config!.room),
-      config: _config!,
-      onLeave: () => setState(() => _config = null),
+      key: ValueKey(active.url + active.room),
+      config: active,
+      onLeave: () => setState(() {
+        _lastConfig = active;
+        _activeConfig = null;
+      }),
     );
   }
 }
@@ -77,8 +89,12 @@ class _AyameConfig {
 // ── Connection form ──────────────────────────────────────────────────────
 
 class _ConfigForm extends StatefulWidget {
-  const _ConfigForm({required this.onSubmit});
+  const _ConfigForm({required this.onSubmit, this.initial});
   final ValueChanged<_AyameConfig> onSubmit;
+
+  /// Pre-filled values (e.g. the last submitted config). Falls back to
+  /// `--dart-define` defaults when null.
+  final _AyameConfig? initial;
   @override
   State<_ConfigForm> createState() => _ConfigFormState();
 }
@@ -100,9 +116,11 @@ class _ConfigFormState extends State<_ConfigForm> {
   @override
   void initState() {
     super.initState();
-    _urlCtl = TextEditingController(text: _defaultUrl);
-    _roomCtl = TextEditingController(text: _defaultRoom);
-    _keyCtl = TextEditingController(text: _defaultSignalingKey);
+    final init = widget.initial;
+    _urlCtl = TextEditingController(text: init?.url ?? _defaultUrl);
+    _roomCtl = TextEditingController(text: init?.room ?? _defaultRoom);
+    _keyCtl = TextEditingController(
+        text: init?.signalingKey ?? _defaultSignalingKey);
   }
 
   @override
