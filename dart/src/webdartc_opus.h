@@ -15,14 +15,11 @@
 
 #include <stdint.h>
 
+#include "webdartc_export.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-// Force the wrapper symbols to be exported even when the dylib is built
-// with -fvisibility=hidden (which hides every statically-linked libopus
-// symbol).
-#define WEBDARTC_API __attribute__((visibility("default")))
 
 typedef struct WebdartcOpusEncoder WebdartcOpusEncoder;
 typedef struct WebdartcOpusDecoder WebdartcOpusDecoder;

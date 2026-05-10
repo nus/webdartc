@@ -15,14 +15,14 @@ Supports data channels and media (audio/video) send/receive.
 - **Platform-native crypto**: CommonCrypto + Security.framework on macOS, OpenSSL on Linux, via FFI
 - **Data channels**: SCTP over DTLS with DCEP negotiation
 - **Media**: Transceivers, RTP/RTCP, audio/video frame APIs (W3C Media Capture & Streams, WebCodecs)
-- **Codecs**: VP8 via libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS/iOS) or OpenH264 (software, other platforms); Opus via vendored libopus (statically linked, no system install needed).
+- **Codecs**: VP8 + VP9 via vendored libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS/iOS) or OpenH264 (software, other platforms); Opus via vendored libopus. libvpx and libopus are statically linked into per-codec wrapper dylibs by the build hook — no system install needed.
 
 ## Requirements
 
 - Dart SDK >= 3.11.0, < 4.0.0
 - CMake (used by the build hook to compile the vendored libopus)
-- macOS (Xcode for VideoToolbox / CoreMedia / CoreVideo) or Linux (`clang libssl-dev libvpx-dev libopenh264-dev`)
-- The `dart/third_party/opus/` submodule must be checked out (`git clone --recurse-submodules` or `git submodule update --init --recursive`).
+- macOS (Xcode for VideoToolbox / CoreMedia / CoreVideo) or Linux (`clang yasm libssl-dev libopenh264-dev` — yasm is required by libvpx's x86_64 SIMD assembly; OpenH264 still consumed from system)
+- The `dart/third_party/opus/` and `dart/third_party/libvpx/` submodules must be checked out (`git clone --recurse-submodules` or `git submodule update --init --recursive`).
 
 ## Installation
 
@@ -79,14 +79,18 @@ Each protocol module follows the same pattern:
 
 ```
 hook/
-└── build.dart                 # Dart build hook: VideoToolbox C helper (Apple) + bundled libopus (macOS/Linux)
+└── build.dart                 # Dart build hook: VT C helper (Apple) +
+                                #   bundled libopus + libvpx (macOS/Linux)
 src/
-├── wvt_callback.c             # VT encoder/decoder callback + CFRetain+queue bridge
-├── wvt_callback.h
-├── webdartc_opus.c            # libopus wrapper (only `webdartc_opus_*` exported)
-└── webdartc_opus.h
+├── webdartc_export.h          # Single source for the WEBDARTC_API macro
+├── wvt_callback.{h,c}         # VT encoder/decoder callback + CFRetain+queue bridge
+├── webdartc_opus.{h,c}        # libopus wrapper (`webdartc_opus_*` exported)
+├── webdartc_vp8.{h,c}         # libvpx wrapper, VP8 enc + dec (`webdartc_vp8_*`)
+└── webdartc_vp9.{h,c}         # libvpx wrapper, VP9 enc + dec (`webdartc_vp9_*`)
 third_party/
-└── opus/                      # libopus submodule (statically linked, hidden symbols)
+├── opus/                      # libopus submodule (statically linked, hidden symbols)
+└── libvpx/                    # libvpx submodule (statically linked, hidden symbols;
+                                #   shared archive across webdartc_vp8 + webdartc_vp9)
 
 lib/
 ├── webdartc.dart              # Public API exports
@@ -99,8 +103,9 @@ lib/
 │   ├── codec_registry.dart
 │   ├── video_codec.dart       # W3C VideoEncoder / VideoDecoder
 │   ├── audio_codec.dart       # W3C AudioEncoder / AudioDecoder
-│   ├── vp8/                   # libvpx FFI encoder
-│   ├── opus/                  # libopus FFI encoder/decoder (bundled)
+│   ├── vp8/                   # libvpx FFI encoder + decoder (bundled)
+│   ├── vp9/                   # libvpx FFI encoder + decoder (bundled)
+│   ├── opus/                  # libopus FFI encoder + decoder (bundled)
 │   └── h264/
 │       ├── h264_encoder_backend.dart          # OpenH264 (SW)
 │       ├── videotoolbox/                      # @Native bindings to the C helper
@@ -118,7 +123,7 @@ example/
 ├── opus_codec.dart            # Opus encode/decode round-trip + SNR check
 ├── audio_send/                # Browser ↔ Dart audio call (Opus)
 ├── reflect/                   # Audio/video reflection server + browser client
-└── video_call/                # Browser ↔ Dart video call (VP8 / H.264, sendonly or bidir)
+└── video_call/                # Browser ↔ Dart video call (VP8 / H.264; sendonly or bidir)
 ```
 
 ## Running tests
@@ -161,12 +166,18 @@ dart run example/video_call/bin/sender.dart --port=8080 --codec=h264 --bidir
 |-------|---------|---------|--------|
 | H.264 (macOS/iOS) | VideoToolbox (HW) | VideoToolbox (HW) | `dart/hook/build.dart` auto-compiles a C helper |
 | H.264 (Linux/Windows) | OpenH264 (SW) | — (roadmap) | `libopenh264-dev` |
-| VP8 | libvpx (SW) | — (roadmap) | `libvpx-dev` |
+| VP8 (macOS/Linux) | libvpx (SW) | libvpx (SW) | `dart/third_party/libvpx/` submodule, statically linked |
+| VP9 (macOS/Linux) | libvpx (SW) | libvpx (SW) | same archive as VP8 |
 | Opus (macOS/Linux) | libopus (SW) | libopus (SW) | `dart/third_party/opus/` submodule, statically linked |
 
 On macOS, `dart test` triggers `hook/build.dart` which compiles `src/wvt_callback.c` into a bundled dynamic library. The shim retains `CMSampleBuffer`s before the VT callback returns and pushes them onto a thread-safe queue that the Dart side drains (a problem Dart FFI's async `NativeCallable.listener` cannot solve alone).
 
-On macOS and Linux the same hook also configures CMake, builds libopus from `third_party/opus/` as a static archive (`libopus.a`), and links it into a single `webdartc_codecs` shared library alongside `src/webdartc_opus.c` (a thin wrapper that re-exports a small subset of the libopus API). Every libopus symbol is hidden by `-fvisibility=hidden` plus `-DOPUS_EXPORT=` (which neutralizes libopus's own `visibility("default")` attribute) — only `webdartc_opus_*` is visible from outside, so the bundled copy can't collide with another libopus loaded into the same process.
+On macOS and Linux the same hook also vendor-builds the codec libraries from their submodules and links each into a per-codec wrapper dylib:
+
+- **libopus** → CMake → `libopus.a` → linked with `webdartc_opus.c` into `libwebdartc_codecs.dylib` (exports `webdartc_opus_*`).
+- **libvpx** (VP8 + VP9 enabled) → libvpx's own configure + make → `libvpx.a` → linked with `webdartc_vp8.c` into `libwebdartc_vp8.dylib` (exports `webdartc_vp8_*`) AND with `webdartc_vp9.c` into `libwebdartc_vp9.dylib` (exports `webdartc_vp9_*`). The libvpx archive is built once per arch and reused.
+
+Every codec symbol is hidden by `-fvisibility=hidden`; only the explicitly-tagged `webdartc_*` wrapper functions are exported, so the bundled copies can't collide with another libopus / libvpx loaded into the same process. For libopus we additionally pre-define `OPUS_EXPORT=` to neutralize its own `visibility("default")` attribute.
 
 ## Crypto backends
 

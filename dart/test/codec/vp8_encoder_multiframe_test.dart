@@ -1,10 +1,9 @@
 @Tags(['native'])
-@TestOn('!mac-os')
 library;
 
 import 'package:test/test.dart';
 import 'package:webdartc/codec/video_codec.dart';
-import 'package:webdartc/codec/vp8/vp8_encoder_backend.dart';
+import 'package:webdartc/codec/vp8/vp8_codec.dart';
 import 'package:webdartc/media/fake_video_source.dart';
 
 void main() {

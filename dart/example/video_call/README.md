@@ -15,10 +15,13 @@ The browser page lays out two tiles side-by-side:
 ## Prerequisites
 
 - Dart SDK 3.11+
-- For **VP8**: `libvpx` (Linux: `apt install libvpx-dev`, macOS: `brew install libvpx`)
 - For **H.264**: `libopenh264` (Linux: `apt install libopenh264-dev`,
   macOS: `brew install openh264` — not needed on macOS if you only use
   VideoToolbox, which is auto-selected for `--codec=h264`)
+
+VP8 has no system dependency — `libvpx` is vendored under
+`dart/third_party/libvpx/` and built statically by `dart/hook/build.dart`
+into a wrapper dylib with hidden symbols.
 
 ## Run
 

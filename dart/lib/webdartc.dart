@@ -75,6 +75,7 @@ export 'media/fake_audio_source.dart';
 export 'codec/video_codec.dart';
 export 'codec/audio_codec.dart';
 export 'codec/codec_registry.dart';
-export 'codec/vp8/vp8_encoder_backend.dart';
+export 'codec/vp8/vp8_codec.dart';
+export 'codec/vp9/vp9_codec.dart';
 export 'codec/h264/h264_encoder_backend.dart';
 export 'codec/opus/opus_codec.dart';

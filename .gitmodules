@@ -2,3 +2,7 @@
 	path = dart/third_party/opus
 	url = https://github.com/xiph/opus.git
 	shallow = true
+[submodule "dart/third_party/libvpx"]
+	path = dart/third_party/libvpx
+	url = https://github.com/webmproject/libvpx.git
+	shallow = true

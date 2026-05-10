@@ -1,12 +1,17 @@
 // Build hook for webdartc native code assets.
 //
 // Apple platforms (macOS / iOS): compile the VideoToolbox callback shim.
-// macOS + Linux: vendor-build libopus and link it into a single
-// `webdartc_codecs` shared library alongside the `webdartc_opus_*`
-// wrapper. Only the wrapper symbols are exported (`-fvisibility=hidden`
-// plus per-function `visibility("default")` in webdartc_opus.h), so
-// libopus's own `opus_*` symbols cannot collide with another libopus
-// loaded into the same process.
+// macOS + Linux: vendor-build each codec library and link it into a
+// dedicated wrapper shared library:
+//   - libopus  → webdartc_codecs  (exports webdartc_opus_*)
+//   - libvpx   → webdartc_vp8     (exports webdartc_vp8_*)
+//              → webdartc_vp9     (exports webdartc_vp9_*)
+// (the libvpx static archive is built once per arch and reused across
+// the VP8 / VP9 wrappers)
+// Only the wrapper symbols are exported (`-fvisibility=hidden` plus
+// per-function `visibility("default")` in webdartc_*.h), so the codec
+// libraries' own symbols cannot collide with another copy loaded into
+// the same process.
 
 import 'dart:io';
 
@@ -22,11 +27,14 @@ void main(List<String> args) async {
     // The two builds are independent (distinct asset names + cmake dirs);
     // running them concurrently overlaps the cmake configure with the VT
     // shim compile.
-    await Future.wait([
+    await Future.wait<void>([
       if (targetOS == OS.macOS || targetOS == OS.iOS)
         _buildVtCallback(input, output),
-      if (targetOS == OS.macOS || targetOS == OS.linux)
+      if (targetOS == OS.macOS || targetOS == OS.linux) ...[
         _buildOpusCodecs(input, output),
+        _buildVp8Codec(input, output),
+        _buildVp9Codec(input, output),
+      ],
     ]);
   });
 }
@@ -70,17 +78,33 @@ Future<void> _buildOpusCodecs(
       // internal. Only the wrapper functions (annotated with
       // visibility("default") in webdartc_opus.h) get exported.
       '-fvisibility=hidden',
-      // CBuilder emits flags BEFORE source files. macOS `ld64` rescans
-      // archives so order doesn't matter, but Linux `ld` is single-pass
-      // and skips an archive that precedes its referencing objects.
-      // `--whole-archive` forces every member to be linked regardless of
-      // position; hidden visibility still keeps the symbols internal.
-      if (targetOS == OS.linux) '-Wl,--whole-archive',
-      libopusA,
-      if (targetOS == OS.linux) '-Wl,--no-whole-archive',
+      ..._linkArchive(targetOS, libopusA),
     ],
   );
   await builder.run(input: input, output: output);
+}
+
+/// Link flags that pull every member of [archivePath] into the output
+/// dylib, then prevent any of them from being auto-exported.
+///
+/// On Linux, `ld` is single-pass — without `--whole-archive` it would
+/// discard members that aren't referenced yet by the time the archive
+/// is processed (CBuilder emits flags before sources). And without
+/// `--exclude-libs`, every symbol pulled in via `--whole-archive` ends
+/// up in the dylib's dynamic export table regardless of source-level
+/// `-fvisibility=hidden` — notably libvpx's x86 SIMD TUs are
+/// assembled by yasm, which doesn't emit visibility metadata at all.
+/// macOS `ld64` rescans archives and respects per-symbol visibility,
+/// so neither flag is needed there.
+List<String> _linkArchive(OS targetOS, String archivePath) {
+  if (targetOS != OS.linux) return [archivePath];
+  final basename = archivePath.split('/').last;
+  return [
+    '-Wl,--whole-archive',
+    archivePath,
+    '-Wl,--no-whole-archive',
+    '-Wl,--exclude-libs,$basename',
+  ];
 }
 
 String? _findArchive(Uri prefix) {
@@ -153,9 +177,144 @@ Future<(Uri, String)> _cmakeBuildOpus(BuildInput input) async {
   return (installDir.uri, installed);
 }
 
+Future<void> _buildVp8Codec(
+    BuildInput input, BuildOutputBuilder output) async {
+  await _buildLibvpxWrapper(
+    input: input,
+    output: output,
+    name: 'webdartc_vp8',
+    assetName: 'codec/vp8/webdartc_vp8.dart',
+    source: 'src/webdartc_vp8.c',
+  );
+}
+
+Future<void> _buildVp9Codec(
+    BuildInput input, BuildOutputBuilder output) async {
+  await _buildLibvpxWrapper(
+    input: input,
+    output: output,
+    name: 'webdartc_vp9',
+    assetName: 'codec/vp9/webdartc_vp9.dart',
+    source: 'src/webdartc_vp9.c',
+  );
+}
+
+/// Compiles a `webdartc_*` libvpx wrapper TU and links it against the
+/// shared static libvpx archive. The archive itself is built once per
+/// arch by [_configureMakeLibvpx] and reused across codec wrappers.
+Future<void> _buildLibvpxWrapper({
+  required BuildInput input,
+  required BuildOutputBuilder output,
+  required String name,
+  required String assetName,
+  required String source,
+}) async {
+  final (vpxInstall, libvpxA) = await _configureMakeLibvpx(input);
+  final includeDir = vpxInstall.resolve('include/').toFilePath();
+  final targetOS = input.config.code.targetOS;
+  final builder = CBuilder.library(
+    name: name,
+    assetName: assetName,
+    sources: [source],
+    includes: [includeDir],
+    flags: [
+      '-fvisibility=hidden',
+      ..._linkArchive(targetOS, libvpxA),
+    ],
+  );
+  await builder.run(input: input, output: output);
+}
+
+/// In-process memoisation keyed on the resolved libvpx target tuple
+/// (`arm64-darwin23-gcc`, `x86_64-linux-gcc`, …). VP8 and VP9 wrapper
+/// builds run concurrently via `Future.wait` and would otherwise both
+/// invoke configure+make on the same build dir, racing
+/// vpx_config.c regeneration against itself ("redefinition of cfg").
+final Map<String, Future<(Uri, String)>> _libvpxFutures = {};
+
+/// Configure + build libvpx (VP8 + VP9, both encoder + decoder) into a
+/// single static archive, returning the install prefix URI plus the
+/// resolved archive path. Cached the same way as libopus and reused
+/// across all `webdartc_vpN` wrapper builds for this arch.
+Future<(Uri, String)> _configureMakeLibvpx(BuildInput input) {
+  final target = _libvpxTarget(
+      input.config.code.targetOS, input.config.code.targetArchitecture);
+  return _libvpxFutures[target] ??= _configureMakeLibvpxOnce(input);
+}
+
+Future<(Uri, String)> _configureMakeLibvpxOnce(BuildInput input) async {
+  final targetOS = input.config.code.targetOS;
+  final arch = input.config.code.targetArchitecture;
+  final target = _libvpxTarget(targetOS, arch);
+
+  final shared = input.outputDirectoryShared;
+  final buildDir = Directory.fromUri(shared.resolve('vpx-build-$target/'));
+  final installDir = Directory.fromUri(shared.resolve('vpx-install-$target/'));
+  final installed = File.fromUri(installDir.uri.resolve('lib/libvpx.a'));
+  if (installed.existsSync()) return (installDir.uri, installed.path);
+
+  await buildDir.create(recursive: true);
+  final src = input.packageRoot.resolve('third_party/libvpx/').toFilePath();
+  final configure = File('$src/configure');
+  if (!configure.existsSync()) {
+    throw StateError(
+        'libvpx submodule not initialised — run `git submodule update '
+        '--init dart/third_party/libvpx`');
+  }
+  await _runChecked('bash', [
+    configure.path,
+    '--target=$target',
+    '--prefix=${installDir.path}',
+    '--enable-static',
+    '--disable-shared',
+    '--enable-pic',
+    '--disable-examples',
+    '--disable-tools',
+    '--disable-docs',
+    '--disable-unit-tests',
+    // Hidden visibility on every TU; webdartc_vp8.c / webdartc_vp9.c
+    // re-export their own symbols via __attribute__((visibility("default"))).
+    '--extra-cflags=-fvisibility=hidden',
+  ], desc: 'libvpx configure', workingDirectory: buildDir.path);
+  await _runChecked('make', [
+    '-C', buildDir.path,
+    '-j${Platform.numberOfProcessors}',
+    'install',
+  ], desc: 'libvpx make install');
+  if (!installed.existsSync()) {
+    throw StateError(
+        'libvpx make install produced no ${installed.path}');
+  }
+  return (installDir.uri, installed.path);
+}
+
+String _libvpxTarget(OS targetOS, Architecture arch) {
+  if (targetOS == OS.macOS) {
+    // The version-less `arm64-darwin-gcc` target defaults to iOS in
+    // libvpx 1.16 (arm64+darwin was iOS-only when the tuple was added),
+    // which produces a Mach-O incompatible with macOS linkers. Always
+    // pick a numbered tuple — the version only affects host compiler
+    // heuristics, not ABI, so the latest pinned value works on any
+    // newer macOS.
+    return switch (arch) {
+      Architecture.arm64 => 'arm64-darwin23-gcc',
+      Architecture.x64 => 'x86_64-darwin25-gcc',
+      _ => throw UnsupportedError('libvpx macOS build: unsupported arch $arch'),
+    };
+  }
+  if (targetOS == OS.linux) {
+    return switch (arch) {
+      Architecture.arm64 => 'arm64-linux-gcc',
+      Architecture.x64 => 'x86_64-linux-gcc',
+      _ => throw UnsupportedError('libvpx Linux build: unsupported arch $arch'),
+    };
+  }
+  throw UnsupportedError('libvpx build: unsupported OS $targetOS');
+}
+
 Future<void> _runChecked(String exe, List<String> args,
-    {required String desc}) async {
-  final r = await Process.run(exe, args);
+    {required String desc, String? workingDirectory}) async {
+  final r = await Process.run(exe, args, workingDirectory: workingDirectory);
   if (r.exitCode != 0) {
     throw StateError('$desc failed:\n${r.stdout}\n${r.stderr}');
   }

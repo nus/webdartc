@@ -46,10 +46,15 @@ jobs:
         with:
           sdk: '3.11.0'
       - if: runner.os == 'Linux'
-        name: Install native codec libraries
+        name: Install native build deps
+        # libssl-dev: crypto FFI. libopenh264-dev: H.264 (still consumed
+        # from system pending Phase 3). yasm: required by libvpx's
+        # x86_64 SIMD assembly. cmake comes preinstalled on
+        # ubuntu-latest. VP8 / VP9 / Opus are vendored — no system
+        # libvpx-dev / libopus-dev needed.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev libvpx-dev libopenh264-dev
+          sudo apt-get install -y libssl-dev libopenh264-dev yasm
       - name: Detach from workspace
         run: |
           rm -f pubspec.yaml
@@ -58,10 +63,11 @@ jobs:
       - working-directory: dart
         run: dart pub get
       - working-directory: dart
-        # `dart test` runs the build hook (dart/hook/build.dart): builds the
-        # bundled libopus on both macOS and Linux, plus the VideoToolbox
-        # callback shim on macOS. The opus submodule must be checked out
-        # (see `submodules: recursive` above).
+        # `dart test` runs the build hook (dart/hook/build.dart): builds
+        # the bundled libopus + libvpx (VP8 + VP9) on both macOS and
+        # Linux, plus the VideoToolbox callback shim on macOS. The opus
+        # and libvpx submodules must be checked out (see
+        # `submodules: recursive` above).
         run: dart test --exclude-tags e2e --timeout=60s
 
   dart-test-e2e-linux:
@@ -74,10 +80,11 @@ jobs:
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: '3.11.0'
-      - name: Install native codec libraries
+      - name: Install native build deps
+        # See dart-test-unit above for what each package is for.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev libvpx-dev libopenh264-dev
+          sudo apt-get install -y libssl-dev libopenh264-dev yasm
       - name: Detach from workspace
         run: |
           rm -f pubspec.yaml
@@ -85,8 +92,9 @@ jobs:
       - working-directory: dart
         run: dart pub get
       - working-directory: dart
-        # Runs the sendonly video_call test with VP8 and H.264 (via OpenH264
-        # on Linux). The bidirectional test is @TestOn('mac-os') so skipped.
+        # Runs the sendonly video_call test with VP8 and H.264 (via
+        # OpenH264 on Linux). VP8 uses the bundled libvpx wrapper. The
+        # bidirectional test is @TestOn('mac-os') so skipped.
         run: dart test test/e2e/ --timeout=180s
 
   dart-test-e2e-macos:
@@ -145,7 +153,14 @@ jobs:
         with:
           channel: stable
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+        # `flutter pub get` walks the workspace and triggers
+        # dart/hook/build.dart, which configures + builds bundled libopus
+        # and libvpx — needs cmake (preinstalled), yasm (libvpx x86_64
+        # SIMD asm), libssl-dev (crypto FFI), libopenh264-dev (system
+        # H.264, pending Phase 3).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev libopenh264-dev yasm
       - run: flutter pub get
       - working-directory: flutter
         # Widget tests use a mock MethodChannel; native plugin code is not

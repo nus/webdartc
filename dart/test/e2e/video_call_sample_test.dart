@@ -42,11 +42,6 @@ void main() {
 
   for (final codec in ['vp8', 'h264']) {
     test('browser decodes $codec video frames from Dart sender', () async {
-      if (codec == 'vp8' && Platform.isMacOS) {
-        markTestSkipped('VP8 not supported on macOS (no libvpx); '
-            'VideoToolbox covers H.264');
-        return;
-      }
       final port = await _findFreePort();
 
       // 1. Start the sample server.
