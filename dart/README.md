@@ -175,7 +175,7 @@ dart run example/video_call/bin/sender.dart --port=8080 --codec=h264 --bidir
 
 On macOS, `dart test` triggers `hook/build.dart` which compiles `src/wvt_callback.c` into a bundled dynamic library. The shim retains `CMSampleBuffer`s before the VT callback returns and pushes them onto a thread-safe queue that the Dart side drains (a problem Dart FFI's async `NativeCallable.listener` cannot solve alone).
 
-On Linux, the same hook downloads Cisco's royalty-free OpenH264 prebuilt (see `_openH264Version` / `_openH264Sha256` in `hook/build.dart`) into the shared build cache and registers it as a `DynamicLoadingBundled` code asset under `package:webdartc/codec/h264/_openh264.dart`. Building from OpenH264 source instead would shift H.264 patent royalties onto the binary distributor — Cisco assumes that obligation only for the binaries they themselves publish.
+On Linux, the same hook downloads Cisco's prebuilt OpenH264 binary from `ciscobinary.openh264.org` (see `_openH264Version` / `_openH264Sha256` in `hook/build.dart`) into the shared build cache and registers it as a `DynamicLoadingBundled` code asset under `package:webdartc/codec/h264/_openh264.dart`. See https://www.openh264.org/ for the upstream project's distribution terms.
 
 On macOS and Linux the same hook also vendor-builds the codec libraries from their submodules and links each into a per-codec wrapper dylib:
 
@@ -195,3 +195,7 @@ Every codec symbol is hidden by `-fvisibility=hidden`; only the explicitly-tagge
 | HMAC-SHA1/SHA-256 | package:crypto | package:crypto |
 | HKDF | CommonCrypto | Manual |
 | CSPRNG | CCRandomGenerateBytes | Random.secure() |
+
+## Third-party licenses
+
+`webdartc` bundles or downloads third-party codec libraries — their licenses apply to any binary you redistribute. Full text for each (libvpx, libopus, OpenH264) lives in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). On Linux, `dart/hook/build.dart` also drops a `NOTICE.txt` alongside the downloaded OpenH264 dylib (`.dart_tool/hooks_runner/shared/webdartc/openh264-*/NOTICE.txt`) so the governing text travels with the binary.

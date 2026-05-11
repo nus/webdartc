@@ -328,11 +328,10 @@ Future<void> _runChecked(String exe, List<String> args,
 
 // ── OpenH264 ────────────────────────────────────────────────────────────
 //
-// Cisco distributes royalty-free prebuilt OpenH264 binaries via
+// Cisco distributes prebuilt OpenH264 binaries via
 // `https://ciscobinary.openh264.org/` (the same channel Firefox's GMP
-// auto-update uses). Rebuilding from source instead would shift H.264
-// patent royalty obligations onto whoever ships the binary, so we keep
-// the prebuilt path even though the .so is opaque.
+// auto-update uses). See https://www.openh264.org/ for the upstream
+// project's distribution terms.
 //
 // Bumping `_openH264Version`:
 //   1. Pick a version published at https://ciscobinary.openh264.org/.
@@ -358,6 +357,19 @@ const Map<String, String> _openH264Sha256 = {
 /// Keep that exact filename so any tooling that probes the SONAME at
 /// runtime (`readelf -d`) sees the canonical name.
 const String _openH264Soname = 'libopenh264.so.7';
+
+/// Upstream LICENSE text for OpenH264, pinned by SHA-256 so we catch any
+/// drift in the Cisco BSD-2 wording. The binary releases at 2.5.1 etc
+/// don't get their own source tags (Cisco only tags major minors); the
+/// closest source tag is v2.5.0 and the LICENSE file has been unchanged
+/// since 2013 so cross-version drift is effectively impossible. Kept as
+/// a separate constant from `_openH264Version` so future maintainers
+/// see the deliberate divergence.
+const String _openH264LicenseTag = 'v2.5.0';
+const String _openH264LicenseUrl =
+    'https://raw.githubusercontent.com/cisco/openh264/$_openH264LicenseTag/LICENSE';
+const String _openH264LicenseSha =
+    'dd5c1c9668512530fa5a96e4c29ac4033d70a7eeb0eed7a42fddb6dd794ebdbb';
 
 Future<void> _bundleOpenH264(
     BuildInput input, BuildOutputBuilder output) async {
@@ -405,6 +417,24 @@ Future<void> _bundleOpenH264(
           'Either Cisco re-published the binary (verify and update '
           '_openH264Sha256), or the download was corrupted.');
     }
+    // Emit OpenH264's BSD-2 LICENSE alongside the .so so any consumer
+    // inspecting the cache directory finds the governing license text.
+    // The body comes verbatim from upstream (SHA-pinned); the header
+    // is a neutral pointer back to https://www.openh264.org/.
+    final licenseFile = File.fromUri(cacheDir.uri.resolve('LICENSE'));
+    await _downloadFile(_openH264LicenseUrl, licenseFile);
+    final licenseSha = await _sha256Hex(licenseFile);
+    if (licenseSha != _openH264LicenseSha) {
+      throw StateError(
+          'OpenH264 LICENSE SHA-256 mismatch:\n'
+          '  expected: $_openH264LicenseSha\n'
+          '  actual:   $licenseSha\n'
+          'Upstream may have changed the BSD-2 wording — verify and '
+          'update _openH264LicenseSha.');
+    }
+    final licenseBody = await licenseFile.readAsString();
+    await File.fromUri(cacheDir.uri.resolve('NOTICE.txt'))
+        .writeAsString('$_openH264NoticeHeader\n$licenseBody');
   }
 
   output.assets.code.add(CodeAsset(
@@ -414,6 +444,18 @@ Future<void> _bundleOpenH264(
     file: dylibFile.uri,
   ));
 }
+
+const String _openH264NoticeHeader = '''
+OpenH264 — Cisco prebuilt binary
+================================
+
+The OpenH264 shared library in this directory was downloaded from
+https://ciscobinary.openh264.org/. See https://www.openh264.org/ for
+the upstream project's distribution terms.
+
+OpenH264 is licensed under BSD 2-Clause (verbatim from
+$_openH264LicenseUrl):
+''';
 
 Future<void> _downloadFile(String url, File dest) async {
   final client = HttpClient();
