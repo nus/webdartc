@@ -12,10 +12,15 @@
 // per-function `visibility("default")` in webdartc_*.h), so the codec
 // libraries' own symbols cannot collide with another copy loaded into
 // the same process.
+//
+// Linux also bundles Cisco's prebuilt OpenH264 dylib (downloaded by
+// [_bundleOpenH264]). macOS uses VideoToolbox so OpenH264 isn't shipped
+// there.
 
 import 'dart:io';
 
 import 'package:code_assets/code_assets.dart';
+import 'package:crypto/crypto.dart';
 import 'package:hooks/hooks.dart';
 import 'package:native_toolchain_c/native_toolchain_c.dart';
 
@@ -35,6 +40,7 @@ void main(List<String> args) async {
         _buildVp8Codec(input, output),
         _buildVp9Codec(input, output),
       ],
+      if (targetOS == OS.linux) _bundleOpenH264(input, output),
     ]);
   });
 }
@@ -318,4 +324,114 @@ Future<void> _runChecked(String exe, List<String> args,
   if (r.exitCode != 0) {
     throw StateError('$desc failed:\n${r.stdout}\n${r.stderr}');
   }
+}
+
+// ── OpenH264 ────────────────────────────────────────────────────────────
+//
+// Cisco distributes royalty-free prebuilt OpenH264 binaries via
+// `https://ciscobinary.openh264.org/` (the same channel Firefox's GMP
+// auto-update uses). Rebuilding from source instead would shift H.264
+// patent royalty obligations onto whoever ships the binary, so we keep
+// the prebuilt path even though the .so is opaque.
+//
+// Bumping `_openH264Version`:
+//   1. Pick a version published at https://ciscobinary.openh264.org/.
+//      Note: source releases on GitHub generally land first; the
+//      prebuilt binary may lag by weeks.
+//   2. Probe the new URLs and update both SHAs in `_openH264Sha256`
+//      (and the version string in `dart/test/codec/openh264_version_test.dart`).
+//   3. Wipe `.dart_tool/hooks_runner/shared/webdartc/openh264-*/` so the
+//      cached download is refetched.
+const String _openH264Version = '2.5.1';
+
+// SHAs are of the decompressed .so payload (not the .bz2 archive on the
+// CDN), matching what `_sha256Hex` checks after `bunzip2 -c`.
+const Map<String, String> _openH264Sha256 = {
+  'linux64':
+      'd828a944d4d2bb64195ada89cf2cde9bc41733b1547d0788ef49fb8cb231b76f',
+  'linux-arm64':
+      'aab3312e2e7e49a8e24793bf1b9e752e658edd98a7542ae8e9d16fbede0c7327',
+};
+
+/// Cisco's `libopenh264-X.Y.Z-${platform}.7.so` is the actual SONAME
+/// (the one OpenH264 itself emits via `-Wl,-soname=libopenh264.so.7`).
+/// Keep that exact filename so any tooling that probes the SONAME at
+/// runtime (`readelf -d`) sees the canonical name.
+const String _openH264Soname = 'libopenh264.so.7';
+
+Future<void> _bundleOpenH264(
+    BuildInput input, BuildOutputBuilder output) async {
+  final arch = input.config.code.targetArchitecture;
+  final platform = switch (arch) {
+    Architecture.x64 => 'linux64',
+    Architecture.arm64 => 'linux-arm64',
+    _ => throw UnsupportedError(
+        'OpenH264 prebuilt: unsupported Linux arch $arch'),
+  };
+  final expectedSha = _openH264Sha256[platform]!;
+
+  final shared = input.outputDirectoryShared;
+  final cacheDir = Directory.fromUri(
+      shared.resolve('openh264-$_openH264Version-$platform/'));
+  final dylibFile = File.fromUri(cacheDir.uri.resolve(_openH264Soname));
+
+  if (!dylibFile.existsSync() ||
+      await _sha256Hex(dylibFile) != expectedSha) {
+    await cacheDir.create(recursive: true);
+    final url = 'https://ciscobinary.openh264.org/'
+        'libopenh264-$_openH264Version-$platform.7.so.bz2';
+    final bz2File = File.fromUri(cacheDir.uri.resolve('download.so.bz2'));
+    await _downloadFile(url, bz2File);
+    // Pipe `bunzip2 -c` straight into the canonical SONAME path.
+    // Avoids `bash -c '... > "..."'` and its quoting hazards. (Don't
+    // use `bunzip2 -k` in-place — that leaves a .so named after the
+    // URL slug, not after the SONAME.)
+    final proc = await Process.start('bunzip2', ['-c', bz2File.path]);
+    await Future.wait<void>([
+      proc.stdout.pipe(dylibFile.openWrite()),
+      proc.stderr.drain<void>(),
+    ]);
+    final exitCode = await proc.exitCode;
+    if (exitCode != 0) {
+      throw StateError('bunzip2 OpenH264 prebuilt failed (exit $exitCode)');
+    }
+    await bz2File.delete();
+    final actualSha = await _sha256Hex(dylibFile);
+    if (actualSha != expectedSha) {
+      throw StateError(
+          'OpenH264 prebuilt SHA-256 mismatch for $platform:\n'
+          '  expected: $expectedSha\n'
+          '  actual:   $actualSha\n'
+          'Either Cisco re-published the binary (verify and update '
+          '_openH264Sha256), or the download was corrupted.');
+    }
+  }
+
+  output.assets.code.add(CodeAsset(
+    package: 'webdartc',
+    name: 'codec/h264/_openh264.dart',
+    linkMode: DynamicLoadingBundled(),
+    file: dylibFile.uri,
+  ));
+}
+
+Future<void> _downloadFile(String url, File dest) async {
+  final client = HttpClient();
+  try {
+    final req = await client.getUrl(Uri.parse(url));
+    final resp = await req.close();
+    if (resp.statusCode != 200) {
+      throw StateError('GET $url returned HTTP ${resp.statusCode}');
+    }
+    final sink = dest.openWrite();
+    await resp.pipe(sink);
+  } finally {
+    client.close(force: true);
+  }
+}
+
+Future<String> _sha256Hex(File f) async {
+  if (!f.existsSync()) return '';
+  final digest = await sha256.bind(f.openRead()).first;
+  return digest.toString();
 }

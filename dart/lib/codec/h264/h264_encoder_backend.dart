@@ -14,40 +14,25 @@ import 'package:ffi/ffi.dart' as pkgffi;
 import '../../media/video_frame.dart';
 import '../codec_registry.dart';
 import '../video_codec.dart';
+import '_openh264.dart' as wels;
+import 'h264_decoder_backend.dart';
 import 'openh264_bindings.g.dart' as oh;
 import 'videotoolbox_decoder_backend.dart';
 import 'videotoolbox_encoder_backend.dart';
 
-ffi.DynamicLibrary _openLibOpenH264() {
-  final candidates = Platform.isMacOS
-      ? const ['libopenh264.dylib', 'libopenh264.7.dylib']
-      : Platform.isWindows
-          ? const ['openh264.dll']
-          : const ['libopenh264.so.7', 'libopenh264.so'];
-  Object? lastError;
-  for (final name in candidates) {
-    try {
-      return ffi.DynamicLibrary.open(name);
-    } catch (e) {
-      lastError = e;
-    }
-  }
-  throw StateError('Could not load libopenh264 ($candidates): $lastError');
-}
-
-final oh.OpenH264Bindings _lib = oh.OpenH264Bindings(_openLibOpenH264());
-
 /// Registers H.264 codecs under the key `h264`.
 ///
 /// On macOS/iOS this wires up the hardware-accelerated VideoToolbox
-/// encoder/decoder. On other platforms it registers the OpenH264 software
-/// encoder (the decoder side is not implemented off-Apple yet).
+/// encoder/decoder. On other platforms it registers OpenH264's software
+/// encoder + decoder (the dylib is bundled as a code asset by
+/// `dart/hook/build.dart`; see `lib/codec/h264/_openh264.dart`).
 void registerH264Codec() {
   if (Platform.isMacOS || Platform.isIOS) {
     CodecRegistry.registerVideoEncoder('h264', VideoToolboxEncoderBackend.new);
     CodecRegistry.registerVideoDecoder('h264', VideoToolboxDecoderBackend.new);
   } else {
     CodecRegistry.registerVideoEncoder('h264', H264EncoderBackend.new);
+    CodecRegistry.registerVideoDecoder('h264', H264DecoderBackend.new);
   }
 }
 
@@ -79,7 +64,7 @@ final class H264EncoderBackend implements VideoEncoderBackend {
     // slot: Pointer<ISVCEncoder> = Pointer<Pointer<ISVCEncoderVtbl>>.
     // WelsCreateSVCEncoder takes Pointer<Pointer<ISVCEncoder>> = address of slot.
     final ppEnc = pkgffi.calloc<ffi.Pointer<oh.ISVCEncoder>>();
-    final createRes = _lib.WelsCreateSVCEncoder(ppEnc);
+    final createRes = wels.welsCreateSVCEncoder(ppEnc);
     if (createRes != 0 || ppEnc.value == ffi.nullptr) {
       pkgffi.calloc.free(ppEnc);
       throw StateError('WelsCreateSVCEncoder failed: $createRes');
@@ -88,7 +73,21 @@ final class H264EncoderBackend implements VideoEncoderBackend {
     pkgffi.calloc.free(ppEnc); // slot no longer needed; handle is owned by OpenH264.
     final vtbl = handle.value.ref;
 
-    final param = pkgffi.calloc<oh.SEncParamBase>();
+    // Use InitializeExt + GetDefaultParams instead of Initialize (which
+    // takes the cut-down SEncParamBase). Two reasons:
+    //   1. We need to pin the spatial layer's profile to baseline so the
+    //      SPS in the emitted bitstream has profile_idc=66. OpenH264
+    //      ≥2.5.0 stopped silently auto-correcting profile=0 to baseline
+    //      and instead writes profile_idc=PRO_UNKNOWN, which Chrome
+    //      rejects (the receiver sees the SPS but no frames decode).
+    //   2. SEncParamBase doesn't expose per-layer config at all.
+    final param = pkgffi.calloc<oh.SEncParamExt>();
+    final getDefaults = vtbl.GetDefaultParams.asFunction<
+        int Function(
+          ffi.Pointer<oh.ISVCEncoder>,
+          ffi.Pointer<oh.SEncParamExt>,
+        )>();
+    getDefaults(handle, param);
     param.ref.iUsageTypeAsInt =
         oh.EUsageType.CAMERA_VIDEO_REAL_TIME.value;
     param.ref.iPicWidth = _width;
@@ -96,17 +95,24 @@ final class H264EncoderBackend implements VideoEncoderBackend {
     param.ref.iTargetBitrate = bitrate;
     param.ref.iRCModeAsInt = oh.RC_MODES.RC_BITRATE_MODE.value;
     param.ref.fMaxFrameRate = fps;
+    param.ref.iSpatialLayerNum = 1;
+    final layer = param.ref.sSpatialLayers[0];
+    layer.iVideoWidth = _width;
+    layer.iVideoHeight = _height;
+    layer.fFrameRate = fps;
+    layer.iSpatialBitrate = bitrate;
+    layer.uiProfileIdcAsInt = oh.EProfileIdc.PRO_BASELINE.value;
 
-    final init = vtbl.Initialize.asFunction<
+    final init = vtbl.InitializeExt.asFunction<
         int Function(
           ffi.Pointer<oh.ISVCEncoder>,
-          ffi.Pointer<oh.SEncParamBase>,
+          ffi.Pointer<oh.SEncParamExt>,
         )>();
     final initRes = init(handle, param);
     pkgffi.calloc.free(param);
     if (initRes != 0) {
-      _lib.WelsDestroySVCEncoder(handle);
-      throw StateError('ISVCEncoder.Initialize failed: $initRes');
+      wels.welsDestroySVCEncoder(handle);
+      throw StateError('ISVCEncoder.InitializeExt failed: $initRes');
     }
 
     _encoder = handle;
@@ -252,7 +258,7 @@ final class H264EncoderBackend implements VideoEncoderBackend {
       final uninit = vtbl.Uninitialize.asFunction<
           int Function(ffi.Pointer<oh.ISVCEncoder>)>();
       uninit(encoder);
-      _lib.WelsDestroySVCEncoder(encoder);
+      wels.welsDestroySVCEncoder(encoder);
       _encoder = null;
     }
   }

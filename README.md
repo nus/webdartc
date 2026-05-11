@@ -6,7 +6,7 @@ A Dart-native WebRTC stack. This monorepo contains the protocol library and its 
 
 | Package | Purpose | Status |
 |---|---|---|
-| [`dart/`](dart) | Pure-Dart WebRTC library. RFC-compliant protocol state machines (ICE / DTLS / SRTP / SCTP / RTP / SDP) with all network I/O isolated to a single `TransportController`. Codec backends via FFI (H.264 via VideoToolbox on Apple / OpenH264 elsewhere, VP8 + VP9 + Opus via vendored libvpx + libopus). Platform-native crypto (CommonCrypto on macOS, OpenSSL on Linux). | Implemented |
+| [`dart/`](dart) | Pure-Dart WebRTC library. RFC-compliant protocol state machines (ICE / DTLS / SRTP / SCTP / RTP / SDP) with all network I/O isolated to a single `TransportController`. Codec backends via FFI (H.264 via VideoToolbox on Apple / Cisco-prebuilt OpenH264 on Linux, VP8 + VP9 + Opus via vendored libvpx + libopus). Platform-native crypto (CommonCrypto on macOS, OpenSSL on Linux). | Implemented |
 | [`flutter/`](flutter) | Flutter integration on top of `dart`. Provides a Metal-backed video-rendering `Widget` (macOS), with Linux GLES and iOS support on the roadmap. Depends on `dart` via path. | macOS renderer working; other platforms in progress |
 
 ## Layout
@@ -74,17 +74,17 @@ The `flutter` package depends on `dart` via a local `path:` reference, so change
 
 | Codec | macOS / iOS | Linux | Windows |
 |-------|-------------|-------|---------|
-| H.264 | VideoToolbox (HW) | OpenH264 (SW) | OpenH264 (SW) |
+| H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt, bundled, SW) | — (roadmap) |
 | VP8   | libvpx (bundled, SW) | libvpx (bundled, SW) | — (roadmap) |
 | VP9   | libvpx (bundled, SW) | libvpx (bundled, SW) | — (roadmap) |
 | Opus  | libopus (bundled, SW) | libopus (bundled, SW) | — (roadmap) |
 
-`registerH264Codec()` / `registerVp8Codec()` / `registerVp9Codec()` / `registerOpusCodec()` each pick the right backend for the current platform automatically. The VideoToolbox helper is a small C shim compiled by `dart/hook/build.dart` — no manual build step required. libopus + libvpx are vendored as submodules and statically linked into per-codec wrapper shared libraries (`webdartc_codecs` for opus, `webdartc_vp8` and `webdartc_vp9` for VP8/VP9). The same hidden-symbol pattern applies: only the `webdartc_*` wrapper functions are exported, so the bundled copies can't collide with another libopus / libvpx loaded into the same process.
+`registerH264Codec()` / `registerVp8Codec()` / `registerVp9Codec()` / `registerOpusCodec()` each pick the right backend for the current platform automatically. The VideoToolbox helper is a small C shim compiled by `dart/hook/build.dart` — no manual build step required. libopus + libvpx are vendored as submodules and statically linked into per-codec wrapper shared libraries (`webdartc_codecs` for opus, `webdartc_vp8` and `webdartc_vp9` for VP8/VP9). The same hidden-symbol pattern applies: only the `webdartc_*` wrapper functions are exported, so the bundled copies can't collide with another libopus / libvpx loaded into the same process. On Linux, `dart/hook/build.dart` additionally downloads Cisco's royalty-free prebuilt OpenH264 dylib from `ciscobinary.openh264.org` (pinned by version + SHA-256) and registers it as a code asset — no system H.264 install needed.
 
 ### Native library requirements
 
 - **macOS / iOS**: Xcode (for CoreMedia / VideoToolbox frameworks) and CMake (`brew install cmake`). `dart pub get` + `dart test` handle the rest.
-- **Linux**: `sudo apt-get install cmake clang yasm libssl-dev libopenh264-dev` (CMake + clang to build bundled libopus, yasm for libvpx's x86_64 SIMD, OpenSSL for crypto, OpenH264 for system H.264). VP8 / VP9 / Opus are vendored — no system package needed.
+- **Linux**: `sudo apt-get install cmake clang yasm libssl-dev` (CMake + clang to build bundled libopus, yasm for libvpx's x86_64 SIMD, OpenSSL for crypto). VP8 / VP9 / Opus are vendored; OpenH264 is downloaded by the build hook on first run — no system codec packages needed.
 
 ## Scope of `flutter`
 

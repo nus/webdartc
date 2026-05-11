@@ -15,13 +15,13 @@ Supports data channels and media (audio/video) send/receive.
 - **Platform-native crypto**: CommonCrypto + Security.framework on macOS, OpenSSL on Linux, via FFI
 - **Data channels**: SCTP over DTLS with DCEP negotiation
 - **Media**: Transceivers, RTP/RTCP, audio/video frame APIs (W3C Media Capture & Streams, WebCodecs)
-- **Codecs**: VP8 + VP9 via vendored libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS/iOS) or OpenH264 (software, other platforms); Opus via vendored libopus. libvpx and libopus are statically linked into per-codec wrapper dylibs by the build hook — no system install needed.
+- **Codecs**: VP8 + VP9 via vendored libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS/iOS) or Cisco-prebuilt OpenH264 (software, Linux); Opus via vendored libopus. libvpx and libopus are statically linked into per-codec wrapper dylibs by the build hook; OpenH264 is downloaded from `ciscobinary.openh264.org` and bundled as-is — no system codec install needed.
 
 ## Requirements
 
 - Dart SDK >= 3.11.0, < 4.0.0
 - CMake (used by the build hook to compile the vendored libopus)
-- macOS (Xcode for VideoToolbox / CoreMedia / CoreVideo) or Linux (`clang yasm libssl-dev libopenh264-dev` — yasm is required by libvpx's x86_64 SIMD assembly; OpenH264 still consumed from system)
+- macOS (Xcode for VideoToolbox / CoreMedia / CoreVideo) or Linux (`clang yasm libssl-dev` — yasm is required by libvpx's x86_64 SIMD assembly; OpenH264 is auto-downloaded by the build hook on first run)
 - The `dart/third_party/opus/` and `dart/third_party/libvpx/` submodules must be checked out (`git clone --recurse-submodules` or `git submodule update --init --recursive`).
 
 ## Installation
@@ -107,7 +107,10 @@ lib/
 │   ├── vp9/                   # libvpx FFI encoder + decoder (bundled)
 │   ├── opus/                  # libopus FFI encoder + decoder (bundled)
 │   └── h264/
-│       ├── h264_encoder_backend.dart          # OpenH264 (SW)
+│       ├── _openh264.dart                     # @Native bindings to bundled OpenH264 dylib
+│       ├── openh264_bindings.g.dart           # ffigen structs/enums/vtables
+│       ├── h264_encoder_backend.dart          # OpenH264 SW encoder (Linux)
+│       ├── h264_decoder_backend.dart          # OpenH264 SW decoder (Linux)
 │       ├── videotoolbox/                      # @Native bindings to the C helper
 │       ├── videotoolbox_encoder_backend.dart  # VT encoder (macOS/iOS)
 │       └── videotoolbox_decoder_backend.dart  # VT decoder (macOS/iOS)
@@ -165,12 +168,14 @@ dart run example/video_call/bin/sender.dart --port=8080 --codec=h264 --bidir
 | Codec | Encoder | Decoder | Source |
 |-------|---------|---------|--------|
 | H.264 (macOS/iOS) | VideoToolbox (HW) | VideoToolbox (HW) | `dart/hook/build.dart` auto-compiles a C helper |
-| H.264 (Linux/Windows) | OpenH264 (SW) | — (roadmap) | `libopenh264-dev` |
+| H.264 (Linux) | OpenH264 (SW) | OpenH264 (SW) | Cisco prebuilt, downloaded by `dart/hook/build.dart` from `ciscobinary.openh264.org` (version + SHA-256 pinned) |
 | VP8 (macOS/Linux) | libvpx (SW) | libvpx (SW) | `dart/third_party/libvpx/` submodule, statically linked |
 | VP9 (macOS/Linux) | libvpx (SW) | libvpx (SW) | same archive as VP8 |
 | Opus (macOS/Linux) | libopus (SW) | libopus (SW) | `dart/third_party/opus/` submodule, statically linked |
 
 On macOS, `dart test` triggers `hook/build.dart` which compiles `src/wvt_callback.c` into a bundled dynamic library. The shim retains `CMSampleBuffer`s before the VT callback returns and pushes them onto a thread-safe queue that the Dart side drains (a problem Dart FFI's async `NativeCallable.listener` cannot solve alone).
+
+On Linux, the same hook downloads Cisco's royalty-free OpenH264 prebuilt (see `_openH264Version` / `_openH264Sha256` in `hook/build.dart`) into the shared build cache and registers it as a `DynamicLoadingBundled` code asset under `package:webdartc/codec/h264/_openh264.dart`. Building from OpenH264 source instead would shift H.264 patent royalties onto the binary distributor — Cisco assumes that obligation only for the binaries they themselves publish.
 
 On macOS and Linux the same hook also vendor-builds the codec libraries from their submodules and links each into a per-codec wrapper dylib:
 
