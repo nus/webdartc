@@ -267,6 +267,16 @@ Future<(Uri, String)> _configureMakeLibvpxOnce(BuildInput input) async {
         'libvpx submodule not initialised — run `git submodule update '
         '--init dart/third_party/libvpx`');
   }
+  // On macOS, pin the deployment target to match libopus
+  // (CMAKE_OSX_DEPLOYMENT_TARGET=10.15). Without this, libvpx's
+  // configure picks the host SDK version (e.g. 15.0 on a macOS 15
+  // CI runner), and ld64 emits "object file was built for newer
+  // 'macOS' version than being linked" for every .c.o on the way
+  // into the wrapper dylib.
+  final extraCflags = [
+    '-fvisibility=hidden',
+    if (targetOS == OS.macOS) '-mmacosx-version-min=10.15',
+  ];
   await _runChecked('bash', [
     configure.path,
     '--target=$target',
@@ -280,7 +290,7 @@ Future<(Uri, String)> _configureMakeLibvpxOnce(BuildInput input) async {
     '--disable-unit-tests',
     // Hidden visibility on every TU; webdartc_vp8.c / webdartc_vp9.c
     // re-export their own symbols via __attribute__((visibility("default"))).
-    '--extra-cflags=-fvisibility=hidden',
+    '--extra-cflags=${extraCflags.join(' ')}',
   ], desc: 'libvpx configure', workingDirectory: buildDir.path);
   await _runChecked('make', [
     '-C', buildDir.path,
