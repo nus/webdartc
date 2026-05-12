@@ -14,8 +14,12 @@ import 'bcrypt.dart';
 import 'chacha20_poly1305.dart' show AeadResult;
 import 'chacha20_poly1305_pure.dart' as cc20p1305;
 import 'crypto_backend.dart';
+import 'native_alloc.dart' show toNative, fromNative;
 import 'sha256.dart';
 import 'x509_der.dart';
+
+Pointer<Uint8> _toNativeOrNull(Uint8List src, Allocator alloc) =>
+    src.isEmpty ? nullptr : toNative(src, alloc);
 
 // ── AES-CM (AES-ECB single block) ──────────────────────────────────────────
 
@@ -25,18 +29,12 @@ final class WindowsAesCmBackend implements AesCmBackend {
     assert(block.length == 16);
     final api = bcrypt;
 
-    final keyPtr = calloc.allocate<Uint8>(key.length);
-    final inPtr = calloc.allocate<Uint8>(16);
-    final outPtr = calloc.allocate<Uint8>(16);
-    final cbPtr = calloc<Uint32>();
+    final keyPtr = toNative(key, malloc);
+    final inPtr = toNative(block, malloc);
+    final outPtr = malloc.allocate<Uint8>(16);
+    final cbPtr = malloc<Uint32>();
     BCryptKeyHandle? hKey;
     try {
-      for (var i = 0; i < key.length; i++) {
-        keyPtr[i] = key[i];
-      }
-      for (var i = 0; i < 16; i++) {
-        inPtr[i] = block[i];
-      }
       hKey = api.generateSymmetricKey(api.aesEcb, keyPtr, key.length);
       final s = api.encrypt(
           hKey, inPtr, 16, nullptr, nullptr, 0, outPtr, 16, cbPtr, 0);
@@ -44,146 +42,136 @@ final class WindowsAesCmBackend implements AesCmBackend {
         throw StateError(
             'BCryptEncrypt(AES-ECB) failed: 0x${s.toRadixString(16)}');
       }
-      final out = Uint8List(16);
-      for (var i = 0; i < 16; i++) {
-        out[i] = outPtr[i];
-      }
-      return out;
+      return fromNative(outPtr, 16);
     } finally {
       if (hKey != null) api.destroyKey(hKey);
-      calloc.free(keyPtr);
-      calloc.free(inPtr);
-      calloc.free(outPtr);
-      calloc.free(cbPtr);
+      malloc.free(keyPtr);
+      malloc.free(inPtr);
+      malloc.free(outPtr);
+      malloc.free(cbPtr);
     }
+  }
+}
+
+// ── AEAD (AES-GCM and ChaCha20-Poly1305) shared core ───────────────────────
+//
+// BCryptEncrypt/Decrypt use exactly the same call sequence for any cipher
+// configured with BCRYPT_CHAIN_MODE_GCM or for CNG's CHACHA20_POLY1305
+// algorithm — only the algorithm handle and the error label differ.
+
+const int _aeadTagLength = 16;
+
+({Uint8List ciphertext, Uint8List tag})? _aeadEncryptDecrypt({
+  required BCryptAlgHandle alg,
+  required Uint8List key,
+  required Uint8List nonce,
+  required Uint8List data,
+  required Uint8List aad,
+  required bool encrypt,
+  Uint8List? expectedTag,
+  required String label,
+}) {
+  final api = bcrypt;
+
+  final keyPtr = toNative(key, malloc);
+  final noncePtr = toNative(nonce, malloc);
+  final aadPtr = _toNativeOrNull(aad, malloc);
+  final inPtr = _toNativeOrNull(data, malloc);
+  final outPtr =
+      data.isEmpty ? nullptr : malloc.allocate<Uint8>(data.length);
+  // For encrypt: tagPtr is the output buffer.
+  // For decrypt: BCryptDecrypt verifies pbTag against the computed MAC, so it
+  // must contain the *expected* tag on entry.
+  final tagPtr = encrypt
+      ? malloc.allocate<Uint8>(_aeadTagLength)
+      : toNative(expectedTag!, malloc);
+  // Zero-init: dwFlags / cbAAD / cbData / cbMacContext stay 0 for single-shot.
+  final infoPtr = calloc<BCryptAuthCipherModeInfo>();
+  final cbPtr = malloc<Uint32>();
+  BCryptKeyHandle? hKey;
+  try {
+    final info = infoPtr.ref;
+    info.cbSize = sizeOf<BCryptAuthCipherModeInfo>();
+    info.dwInfoVersion = authModeInfoVersion;
+    info.pbNonce = noncePtr;
+    info.cbNonce = nonce.length;
+    info.pbAuthData = aadPtr;
+    info.cbAuthData = aad.length;
+    info.pbTag = tagPtr;
+    info.cbTag = _aeadTagLength;
+
+    hKey = api.generateSymmetricKey(alg, keyPtr, key.length);
+
+    final s = encrypt
+        ? api.encrypt(hKey, inPtr, data.length, infoPtr.cast(), nullptr, 0,
+            outPtr, data.length, cbPtr, 0)
+        : api.decrypt(hKey, inPtr, data.length, infoPtr.cast(), nullptr, 0,
+            outPtr, data.length, cbPtr, 0);
+    if (!ntSuccess(s)) {
+      // STATUS_AUTH_TAG_MISMATCH (0xC000A002) and other AEAD failures come
+      // back negative; treat as authentication failure on decrypt.
+      if (!encrypt) return null;
+      throw StateError('BCrypt $label failed: 0x${s.toRadixString(16)}');
+    }
+
+    return (
+      ciphertext: fromNative(outPtr, data.length),
+      tag: fromNative(tagPtr, _aeadTagLength),
+    );
+  } finally {
+    if (hKey != null) api.destroyKey(hKey);
+    malloc.free(keyPtr);
+    malloc.free(noncePtr);
+    malloc.free(aadPtr);
+    malloc.free(inPtr);
+    malloc.free(outPtr);
+    malloc.free(tagPtr);
+    calloc.free(infoPtr);
+    malloc.free(cbPtr);
   }
 }
 
 // ── AES-GCM ────────────────────────────────────────────────────────────────
 
 final class WindowsAesGcmBackend implements AesGcmBackend {
-  static const int _tagLength = 16;
-
   @override
   AesGcmResult encrypt(Uint8List key, Uint8List nonce, Uint8List plaintext,
       Uint8List aad) {
-    return _aesGcm(key, nonce, plaintext, aad, encrypt: true)!;
+    final r = _aeadEncryptDecrypt(
+      alg: bcrypt.aesGcm,
+      key: key,
+      nonce: nonce,
+      data: plaintext,
+      aad: aad,
+      encrypt: true,
+      label: 'AES-GCM',
+    )!;
+    return AesGcmResult(ciphertext: r.ciphertext, tag: r.tag);
   }
 
   @override
   Uint8List? decrypt(Uint8List key, Uint8List nonce, Uint8List ciphertext,
       Uint8List expectedTag, Uint8List aad) {
-    return _aesGcm(key, nonce, ciphertext, aad,
-        encrypt: false, expectedTag: expectedTag)?.ciphertext;
-  }
-
-  /// Combined GCM encrypt/decrypt. For decrypt the return type's
-  /// `ciphertext` field actually holds the recovered plaintext, and `tag`
-  /// is irrelevant. Returns null on auth failure.
-  AesGcmResult? _aesGcm(
-    Uint8List key,
-    Uint8List nonce,
-    Uint8List data,
-    Uint8List aad, {
-    required bool encrypt,
-    Uint8List? expectedTag,
-  }) {
-    final api = bcrypt;
-
-    final keyPtr = calloc.allocate<Uint8>(key.length);
-    final noncePtr = calloc.allocate<Uint8>(nonce.length);
-    final aadPtr = aad.isEmpty ? nullptr : calloc.allocate<Uint8>(aad.length);
-    final inPtr =
-        data.isEmpty ? nullptr : calloc.allocate<Uint8>(data.length);
-    final outPtr =
-        data.isEmpty ? nullptr : calloc.allocate<Uint8>(data.length);
-    final tagPtr = calloc.allocate<Uint8>(_tagLength);
-    final infoPtr = calloc<BCryptAuthCipherModeInfo>();
-    final cbPtr = calloc<Uint32>();
-    BCryptKeyHandle? hKey;
-    try {
-      for (var i = 0; i < key.length; i++) {
-        keyPtr[i] = key[i];
-      }
-      for (var i = 0; i < nonce.length; i++) {
-        noncePtr[i] = nonce[i];
-      }
-      for (var i = 0; i < aad.length; i++) {
-        aadPtr[i] = aad[i];
-      }
-      for (var i = 0; i < data.length; i++) {
-        inPtr[i] = data[i];
-      }
-      if (!encrypt) {
-        for (var i = 0; i < _tagLength; i++) {
-          tagPtr[i] = expectedTag![i];
-        }
-      }
-
-      final info = infoPtr.ref;
-      info.cbSize = sizeOf<BCryptAuthCipherModeInfo>();
-      info.dwInfoVersion = authModeInfoVersion;
-      info.pbNonce = noncePtr;
-      info.cbNonce = nonce.length;
-      info.pbAuthData = aadPtr;
-      info.cbAuthData = aad.length;
-      info.pbTag = tagPtr;
-      info.cbTag = _tagLength;
-      info.pbMacContext = nullptr;
-      info.cbMacContext = 0;
-      info.cbAAD = 0;
-      info.cbData = 0;
-      info.dwFlags = 0;
-
-      hKey = api.generateSymmetricKey(api.aesGcm, keyPtr, key.length);
-
-      final int s;
-      if (encrypt) {
-        s = api.encrypt(hKey, inPtr, data.length, infoPtr.cast(), nullptr, 0,
-            outPtr, data.length, cbPtr, 0);
-        if (!ntSuccess(s)) {
-          throw StateError(
-              'BCryptEncrypt(AES-GCM) failed: 0x${s.toRadixString(16)}');
-        }
-      } else {
-        s = api.decrypt(hKey, inPtr, data.length, infoPtr.cast(), nullptr, 0,
-            outPtr, data.length, cbPtr, 0);
-        // STATUS_AUTH_TAG_MISMATCH = 0xC000A002 (returned as negative int32).
-        if (!ntSuccess(s)) return null;
-      }
-
-      final outData = Uint8List(data.length);
-      for (var i = 0; i < data.length; i++) {
-        outData[i] = outPtr[i];
-      }
-      final outTag = Uint8List(_tagLength);
-      for (var i = 0; i < _tagLength; i++) {
-        outTag[i] = tagPtr[i];
-      }
-      return AesGcmResult(ciphertext: outData, tag: outTag);
-    } finally {
-      if (hKey != null) api.destroyKey(hKey);
-      calloc.free(keyPtr);
-      calloc.free(noncePtr);
-      if (aadPtr != nullptr) calloc.free(aadPtr);
-      if (inPtr != nullptr) calloc.free(inPtr);
-      if (outPtr != nullptr) calloc.free(outPtr);
-      calloc.free(tagPtr);
-      calloc.free(infoPtr);
-      calloc.free(cbPtr);
-    }
+    return _aeadEncryptDecrypt(
+      alg: bcrypt.aesGcm,
+      key: key,
+      nonce: nonce,
+      data: ciphertext,
+      aad: aad,
+      encrypt: false,
+      expectedTag: expectedTag,
+      label: 'AES-GCM',
+    )?.ciphertext;
   }
 }
 
 // ── ChaCha20-Poly1305 ──────────────────────────────────────────────────────
 //
-// Windows 10 1903+ exposes CHACHA20_POLY1305 via CNG. On older builds the
-// algorithm provider open fails; we then fall back to the pure-Dart
-// implementation that the macOS backend also uses.
+// CNG's CHACHA20_POLY1305 algorithm requires Windows 10 1903+. On older
+// builds the provider open returns null and we fall back to the pure-Dart
+// RFC 8439 implementation (same path the macOS backend uses).
 
 final class WindowsChaCha20Poly1305Backend implements ChaCha20Poly1305Backend {
-  static const int _tagLength = 16;
-
   @override
   AeadResult encrypt(Uint8List key, Uint8List nonce, Uint8List plaintext,
       Uint8List aad) {
@@ -192,7 +180,15 @@ final class WindowsChaCha20Poly1305Backend implements ChaCha20Poly1305Backend {
       final r = cc20p1305.aeadEncrypt(key, nonce, plaintext, aad);
       return AeadResult(ciphertext: r.ciphertext, tag: r.tag);
     }
-    final r = _cng(key, nonce, plaintext, aad, alg: alg, encrypt: true)!;
+    final r = _aeadEncryptDecrypt(
+      alg: alg,
+      key: key,
+      nonce: nonce,
+      data: plaintext,
+      aad: aad,
+      encrypt: true,
+      label: 'ChaCha20-Poly1305',
+    )!;
     return AeadResult(ciphertext: r.ciphertext, tag: r.tag);
   }
 
@@ -203,103 +199,16 @@ final class WindowsChaCha20Poly1305Backend implements ChaCha20Poly1305Backend {
     if (alg == null) {
       return cc20p1305.aeadDecrypt(key, nonce, ciphertext, expectedTag, aad);
     }
-    final r = _cng(key, nonce, ciphertext, aad,
-        alg: alg, encrypt: false, expectedTag: expectedTag);
-    return r?.ciphertext;
-  }
-
-  AesGcmResult? _cng(
-    Uint8List key,
-    Uint8List nonce,
-    Uint8List data,
-    Uint8List aad, {
-    required BCryptAlgHandle alg,
-    required bool encrypt,
-    Uint8List? expectedTag,
-  }) {
-    final api = bcrypt;
-
-    final keyPtr = calloc.allocate<Uint8>(key.length);
-    final noncePtr = calloc.allocate<Uint8>(nonce.length);
-    final aadPtr = aad.isEmpty ? nullptr : calloc.allocate<Uint8>(aad.length);
-    final inPtr =
-        data.isEmpty ? nullptr : calloc.allocate<Uint8>(data.length);
-    final outPtr =
-        data.isEmpty ? nullptr : calloc.allocate<Uint8>(data.length);
-    final tagPtr = calloc.allocate<Uint8>(_tagLength);
-    final infoPtr = calloc<BCryptAuthCipherModeInfo>();
-    final cbPtr = calloc<Uint32>();
-    BCryptKeyHandle? hKey;
-    try {
-      for (var i = 0; i < key.length; i++) {
-        keyPtr[i] = key[i];
-      }
-      for (var i = 0; i < nonce.length; i++) {
-        noncePtr[i] = nonce[i];
-      }
-      for (var i = 0; i < aad.length; i++) {
-        aadPtr[i] = aad[i];
-      }
-      for (var i = 0; i < data.length; i++) {
-        inPtr[i] = data[i];
-      }
-      if (!encrypt) {
-        for (var i = 0; i < _tagLength; i++) {
-          tagPtr[i] = expectedTag![i];
-        }
-      }
-
-      final info = infoPtr.ref;
-      info.cbSize = sizeOf<BCryptAuthCipherModeInfo>();
-      info.dwInfoVersion = authModeInfoVersion;
-      info.pbNonce = noncePtr;
-      info.cbNonce = nonce.length;
-      info.pbAuthData = aadPtr;
-      info.cbAuthData = aad.length;
-      info.pbTag = tagPtr;
-      info.cbTag = _tagLength;
-      info.pbMacContext = nullptr;
-      info.cbMacContext = 0;
-      info.cbAAD = 0;
-      info.cbData = 0;
-      info.dwFlags = 0;
-
-      hKey = api.generateSymmetricKey(alg, keyPtr, key.length);
-
-      final int s;
-      if (encrypt) {
-        s = api.encrypt(hKey, inPtr, data.length, infoPtr.cast(), nullptr, 0,
-            outPtr, data.length, cbPtr, 0);
-        if (!ntSuccess(s)) {
-          throw StateError(
-              'BCryptEncrypt(ChaCha20) failed: 0x${s.toRadixString(16)}');
-        }
-      } else {
-        s = api.decrypt(hKey, inPtr, data.length, infoPtr.cast(), nullptr, 0,
-            outPtr, data.length, cbPtr, 0);
-        if (!ntSuccess(s)) return null;
-      }
-
-      final outData = Uint8List(data.length);
-      for (var i = 0; i < data.length; i++) {
-        outData[i] = outPtr[i];
-      }
-      final outTag = Uint8List(_tagLength);
-      for (var i = 0; i < _tagLength; i++) {
-        outTag[i] = tagPtr[i];
-      }
-      return AesGcmResult(ciphertext: outData, tag: outTag);
-    } finally {
-      if (hKey != null) api.destroyKey(hKey);
-      calloc.free(keyPtr);
-      calloc.free(noncePtr);
-      if (aadPtr != nullptr) calloc.free(aadPtr);
-      if (inPtr != nullptr) calloc.free(inPtr);
-      if (outPtr != nullptr) calloc.free(outPtr);
-      calloc.free(tagPtr);
-      calloc.free(infoPtr);
-      calloc.free(cbPtr);
-    }
+    return _aeadEncryptDecrypt(
+      alg: alg,
+      key: key,
+      nonce: nonce,
+      data: ciphertext,
+      aad: aad,
+      encrypt: false,
+      expectedTag: expectedTag,
+      label: 'ChaCha20-Poly1305',
+    )?.ciphertext;
   }
 }
 
@@ -308,8 +217,6 @@ final class WindowsChaCha20Poly1305Backend implements ChaCha20Poly1305Backend {
 // BCRYPT_ECCKEY_BLOB header: dwMagic (4 bytes LE) + cbKey (4 bytes LE).
 // Public P-256 blob: header(8) + X(32) + Y(32) = 72 bytes total.
 
-/// Build an ECCPUBLICBLOB from a 65-byte uncompressed point (0x04 || X || Y).
-/// Returns null when input is invalid.
 Uint8List? _eccPublicBlobFromUncompressed(Uint8List point, int magic) {
   if (point.length != 65 || point[0] != 0x04) return null;
   final blob = Uint8List(72);
@@ -321,9 +228,7 @@ Uint8List? _eccPublicBlobFromUncompressed(Uint8List point, int magic) {
   return blob;
 }
 
-/// Extract the uncompressed point (0x04 || X || Y) from an ECCPUBLICBLOB.
 Uint8List _uncompressedFromEccPublicBlob(Uint8List blob) {
-  // blob: 8 header + 32 X + 32 Y
   final out = Uint8List(65);
   out[0] = 0x04;
   out.setRange(1, 33, blob, 8);
@@ -333,19 +238,23 @@ Uint8List _uncompressedFromEccPublicBlob(Uint8List blob) {
 
 // ── ECDH (P-256) ────────────────────────────────────────────────────────────
 
-final class WindowsEcdhBackend implements EcdhBackend {
+final class WindowsEcdhBackend implements EcdhBackend, Finalizable {
+  static final _finalizer = NativeFinalizer(BCryptApi.destroyKeyFinalizer);
+
   final BCryptKeyHandle _priv;
   @override
   final Uint8List publicKeyBytes;
-  bool _disposed = false;
 
-  WindowsEcdhBackend._({required BCryptKeyHandle priv, required this.publicKeyBytes})
-      : _priv = priv;
+  WindowsEcdhBackend._(
+      {required BCryptKeyHandle priv, required this.publicKeyBytes})
+      : _priv = priv {
+    _finalizer.attach(this, _priv, detach: this);
+  }
 
   factory WindowsEcdhBackend() {
     final api = bcrypt;
     final priv = api.generateKeyPair(api.ecdhP256, 256);
-    final pubBlob = api.exportKey(priv, 'ECCPUBLICBLOB');
+    final pubBlob = api.exportKey(priv, blobEccPublic);
     final pubPoint = _uncompressedFromEccPublicBlob(pubBlob);
     return WindowsEcdhBackend._(priv: priv, publicKeyBytes: pubPoint);
   }
@@ -357,13 +266,10 @@ final class WindowsEcdhBackend implements EcdhBackend {
         peerPublicKeyBytes, ecdhPublicP256Magic);
     if (blob == null) throw StateError('Invalid peer public key bytes');
 
-    final blobPtr = calloc.allocate<Uint8>(blob.length);
+    final blobPtr = toNative(blob, malloc);
     try {
-      for (var i = 0; i < blob.length; i++) {
-        blobPtr[i] = blob[i];
-      }
       final peerKey =
-          api.importKeyPair(api.ecdhP256, 'ECCPUBLICBLOB', blobPtr, blob.length);
+          api.importKeyPair(api.ecdhP256, blobEccPublic, blobPtr, blob.length);
       try {
         final secret = api.secretAgreement(_priv, peerKey);
         try {
@@ -375,14 +281,13 @@ final class WindowsEcdhBackend implements EcdhBackend {
         api.destroyKey(peerKey);
       }
     } finally {
-      calloc.free(blobPtr);
+      malloc.free(blobPtr);
     }
   }
 
   @override
   void dispose() {
-    if (_disposed) return;
-    _disposed = true;
+    _finalizer.detach(this);
     bcrypt.destroyKey(_priv);
   }
 }
@@ -390,15 +295,13 @@ final class WindowsEcdhBackend implements EcdhBackend {
 // ── ECDSA signature DER codec ──────────────────────────────────────────────
 //
 // BCryptSignHash returns r||s (each 32 bytes for P-256). The X.509 spec
-// wraps signatures as DER SEQUENCE { INTEGER r, INTEGER s } — same format
-// OpenSSL and Apple's CryptoKit emit, so we encode/decode here.
+// wraps signatures as DER SEQUENCE { INTEGER r, INTEGER s } — the format
+// OpenSSL and Apple's CryptoKit emit, so callers expect DER.
 
 Uint8List _rsToDer(Uint8List rs) {
   final n = rs.length ~/ 2;
-  final r = Uint8List.sublistView(rs, 0, n);
-  final s = Uint8List.sublistView(rs, n);
-  final rDer = _intToDer(r);
-  final sDer = _intToDer(s);
+  final rDer = _intToDer(Uint8List.sublistView(rs, 0, n));
+  final sDer = _intToDer(Uint8List.sublistView(rs, n));
   final body = Uint8List(rDer.length + sDer.length);
   body.setRange(0, rDer.length, rDer);
   body.setRange(rDer.length, body.length, sDer);
@@ -406,16 +309,15 @@ Uint8List _rsToDer(Uint8List rs) {
 }
 
 Uint8List _intToDer(Uint8List bigEndian) {
-  // Strip leading zeros, but keep one if the high bit of the first byte is
-  // set (DER INTEGER is signed).
   var start = 0;
   while (start < bigEndian.length - 1 && bigEndian[start] == 0) {
     start++;
   }
-  final body =
-      bigEndian[start] & 0x80 != 0 ? Uint8List(bigEndian.length - start + 1) : Uint8List(bigEndian.length - start);
-  if (bigEndian[start] & 0x80 != 0) {
-    body[0] = 0x00;
+  // DER INTEGER is signed: prepend 0x00 if the high bit of the leading byte
+  // would otherwise make the value negative.
+  final needSignByte = bigEndian[start] & 0x80 != 0;
+  final body = Uint8List(bigEndian.length - start + (needSignByte ? 1 : 0));
+  if (needSignByte) {
     body.setRange(1, body.length, bigEndian, start);
   } else {
     body.setRange(0, body.length, bigEndian, start);
@@ -439,7 +341,7 @@ Uint8List _derLen(int len) {
 }
 
 /// Parse DER `SEQUENCE { INTEGER r, INTEGER s }` into a 64-byte r||s buffer.
-/// Returns null on malformed input. Trims/zero-pads r and s to 32 bytes.
+/// Returns null on malformed input.
 Uint8List? _derToRs(Uint8List der) {
   var off = 0;
   if (off >= der.length || der[off++] != 0x30) return null;
@@ -491,7 +393,7 @@ _Len? _readLen(Uint8List buf, int off) {
 }
 
 void _copyPadded(Uint8List src, Uint8List dst, int dstStart, int size) {
-  // Strip leading zero added for sign bit (DER INTEGER may have one).
+  // DER INTEGER may carry a leading 0x00 for sign — strip it when present.
   var srcStart = 0;
   if (src.isNotEmpty && src[0] == 0x00 && src.length > size) {
     srcStart = 1;
@@ -499,9 +401,6 @@ void _copyPadded(Uint8List src, Uint8List dst, int dstStart, int size) {
   final actual = src.length - srcStart;
   if (actual > size) return; // malformed — leave zeros
   final pad = size - actual;
-  for (var i = 0; i < pad; i++) {
-    dst[dstStart + i] = 0;
-  }
   for (var i = 0; i < actual; i++) {
     dst[dstStart + pad + i] = src[srcStart + i];
   }
@@ -509,34 +408,34 @@ void _copyPadded(Uint8List src, Uint8List dst, int dstStart, int size) {
 
 // ── ECDSA (P-256) ──────────────────────────────────────────────────────────
 
-final class WindowsEcdsaBackend implements EcdsaBackend {
+final class WindowsEcdsaBackend implements EcdsaBackend, Finalizable {
+  static final _finalizer = NativeFinalizer(BCryptApi.destroyKeyFinalizer);
+
   @override
   final Uint8List derBytes;
   @override
   final String sha256Fingerprint;
   final BCryptKeyHandle _priv;
-  bool _disposed = false;
 
   WindowsEcdsaBackend._({
     required this.derBytes,
     required this.sha256Fingerprint,
     required BCryptKeyHandle priv,
-  }) : _priv = priv;
+  }) : _priv = priv {
+    _finalizer.attach(this, _priv, detach: this);
+  }
 
   factory WindowsEcdsaBackend() {
     final api = bcrypt;
     final priv = api.generateKeyPair(api.ecdsaP256, 256);
-    final pubBlob = api.exportKey(priv, 'ECCPUBLICBLOB');
+    final pubBlob = api.exportKey(priv, blobEccPublic);
     final pubPoint = _uncompressedFromEccPublicBlob(pubBlob);
 
     final tbs = X509Der.buildTbsCertificate(pubPoint);
-    final tbsHash = Sha256.hash(tbs);
-    final rs = api.signHash(priv, tbsHash);
-    final sigDer = _rsToDer(rs);
+    final sigDer = _rsToDer(api.signHash(priv, Sha256.hash(tbs)));
     final cert = X509Der.buildCertificate(tbs, sigDer);
 
-    final fpBytes = Sha256.hash(cert);
-    final fp = fpBytes
+    final fp = Sha256.hash(cert)
         .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
         .join(':');
     return WindowsEcdsaBackend._(
@@ -553,8 +452,7 @@ final class WindowsEcdsaBackend implements EcdsaBackend {
 
   @override
   void dispose() {
-    if (_disposed) return;
-    _disposed = true;
+    _finalizer.detach(this);
     bcrypt.destroyKey(_priv);
   }
 }
@@ -571,22 +469,18 @@ final class WindowsEcdsaVerifyBackend implements EcdsaVerifyBackend {
     if (publicKey.length != 65 || publicKey[0] != 0x04) return false;
     final rs = _derToRs(signature);
     if (rs == null) return false;
-    final digest = Sha256.hash(message);
-    final api = bcrypt;
-
     final blob =
         _eccPublicBlobFromUncompressed(publicKey, ecdsaPublicP256Magic);
     if (blob == null) return false;
 
-    final blobPtr = calloc.allocate<Uint8>(blob.length);
+    final api = bcrypt;
+    final digest = Sha256.hash(message);
+    final blobPtr = toNative(blob, malloc);
     try {
-      for (var i = 0; i < blob.length; i++) {
-        blobPtr[i] = blob[i];
-      }
       final BCryptKeyHandle pubKey;
       try {
-        pubKey = api.importKeyPair(
-            api.ecdsaP256, 'ECCPUBLICBLOB', blobPtr, blob.length);
+        pubKey =
+            api.importKeyPair(api.ecdsaP256, blobEccPublic, blobPtr, blob.length);
       } catch (_) {
         return false;
       }
@@ -596,7 +490,7 @@ final class WindowsEcdsaVerifyBackend implements EcdsaVerifyBackend {
         api.destroyKey(pubKey);
       }
     } finally {
-      calloc.free(blobPtr);
+      malloc.free(blobPtr);
     }
   }
 }

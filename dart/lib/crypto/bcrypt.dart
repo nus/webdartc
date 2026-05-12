@@ -200,6 +200,23 @@ const int ecdhPrivateP256Magic = 0x324B4345; // 'ECK2'
 const int ecdsaPublicP256Magic = 0x31534345; // 'ECS1'
 const int ecdsaPrivateP256Magic = 0x32534345; // 'ECS2'
 
+// Algorithm IDs (BCryptOpenAlgorithmProvider's pszAlgId).
+const String algAes = 'AES';
+const String algChacha20Poly1305 = 'CHACHA20_POLY1305';
+const String algEcdhP256 = 'ECDH_P256';
+const String algEcdsaP256 = 'ECDSA_P256';
+
+// Property names and values (BCryptSetProperty).
+const String propChainingMode = 'ChainingMode';
+const String chainModeEcb = 'ChainingModeECB';
+const String chainModeGcm = 'ChainingModeGCM';
+
+// Blob types (BCryptExportKey / BCryptImportKeyPair).
+const String blobEccPublic = 'ECCPUBLICBLOB';
+
+// KDFs (BCryptDeriveKey's pwszKDF).
+const String kdfRawSecret = 'TRUNCATE';
+
 // ── Wide-string helper ──────────────────────────────────────────────────────
 
 /// Allocate a null-terminated UTF-16LE string in native memory.
@@ -221,6 +238,14 @@ final class BCryptApi {
   BCryptApi._();
 
   static final DynamicLibrary _lib = DynamicLibrary.open('bcrypt.dll');
+
+  /// `BCryptDestroyKey` typed for `NativeFinalizer`. The Win32 signature
+  /// returns `NTSTATUS`, but `NativeFinalizer` requires a `Void` return —
+  /// the return value sits in EAX/RAX and is discarded, so the cast is
+  /// safe (the same trick `package:ffi`'s `calloc.free` uses for `HeapFree`).
+  static final Pointer<NativeFunction<Void Function(Pointer<Void>)>>
+      destroyKeyFinalizer = _lib
+          .lookup<NativeFunction<Void Function(Pointer<Void>)>>('BCryptDestroyKey');
 
   final _open = _lib.lookupFunction<_BCryptOpenAlgNative, _BCryptOpenAlgDart>(
       'BCryptOpenAlgorithmProvider');
@@ -263,11 +288,11 @@ final class BCryptApi {
   // For block ciphers we open one handle per chaining mode because the
   // chaining mode is a property of the algorithm handle, not the key.
 
-  late final BCryptAlgHandle _aesEcb = _openAlgWithMode('AES', 'ChainingModeECB');
-  late final BCryptAlgHandle _aesGcm = _openAlgWithMode('AES', 'ChainingModeGCM');
-  late final BCryptAlgHandle? _chacha20 = _tryOpenAlg('CHACHA20_POLY1305');
-  late final BCryptAlgHandle _ecdhP256 = _openAlg('ECDH_P256');
-  late final BCryptAlgHandle _ecdsaP256 = _openAlg('ECDSA_P256');
+  late final BCryptAlgHandle _aesEcb = _openAlgWithMode(algAes, chainModeEcb);
+  late final BCryptAlgHandle _aesGcm = _openAlgWithMode(algAes, chainModeGcm);
+  late final BCryptAlgHandle? _chacha20 = _tryOpenAlg(algChacha20Poly1305);
+  late final BCryptAlgHandle _ecdhP256 = _openAlg(algEcdhP256);
+  late final BCryptAlgHandle _ecdsaP256 = _openAlg(algEcdsaP256);
 
   BCryptAlgHandle get aesEcb => _aesEcb;
   BCryptAlgHandle get aesGcm => _aesGcm;
@@ -306,7 +331,7 @@ final class BCryptApi {
 
   BCryptAlgHandle _openAlgWithMode(String algId, String mode) {
     final h = _openAlg(algId);
-    final propPtr = wideString('ChainingMode');
+    final propPtr = wideString(propChainingMode);
     final modePtr = wideString(mode);
     final modeBytes = (mode.length + 1) * 2;
     try {
@@ -451,7 +476,7 @@ final class BCryptApi {
   int destroySecret(BCryptSecretHandle h) => _destroySecret(h);
 
   Uint8List deriveRawSecret(BCryptSecretHandle secret, int length) {
-    final kdfPtr = wideString('TRUNCATE');
+    final kdfPtr = wideString(kdfRawSecret);
     final cbPtr = calloc<Uint32>();
     final buf = calloc.allocate<Uint8>(length);
     try {
