@@ -1,10 +1,10 @@
 /// H.264 encoder → decoder round-trip.
 ///
-/// On macOS this exercises VideoToolbox both ways. On Linux it
+/// On macOS this exercises VideoToolbox both ways. On Linux/Windows it
 /// exercises the bundled Cisco-prebuilt OpenH264. The `registerH264Codec`
 /// call routes to whichever pair is appropriate for the host.
 @Tags(['native'])
-@TestOn('mac-os || linux')
+@TestOn('mac-os || linux || windows')
 library;
 
 import 'package:test/test.dart';

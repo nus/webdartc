@@ -8,6 +8,7 @@ environment:
 resolution: workspace
 
 dependencies:
+  archive: ^4.0.0
   code_assets: any
   crypto: ^3.0.0
   ffi: ^2.1.0

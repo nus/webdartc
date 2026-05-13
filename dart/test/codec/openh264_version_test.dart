@@ -11,9 +11,9 @@
 ///     install instead of the cached prebuilt download.
 ///
 /// macOS uses VideoToolbox so OpenH264 isn't shipped — the test gates
-/// itself to Linux.
+/// itself to platforms that bundle the Cisco prebuilt (Linux + Windows).
 @Tags(['native'])
-@TestOn('linux')
+@TestOn('linux || windows')
 library;
 
 import 'dart:ffi' as ffi;

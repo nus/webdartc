@@ -6,11 +6,11 @@
 /// would surface here as cross-stream PTS interleaving or frame
 /// corruption.
 ///
-/// macOS uses VideoToolbox so this test gates itself to Linux —
-/// VT-side multistream coverage lives in
-/// `videotoolbox_multistream_test.dart`.
+/// macOS uses VideoToolbox so this test gates itself to platforms that
+/// bundle Cisco's OpenH264 prebuilt (Linux + Windows) — VT-side
+/// multistream coverage lives in `videotoolbox_multistream_test.dart`.
 @Tags(['native'])
-@TestOn('linux')
+@TestOn('linux || windows')
 library;
 
 import 'package:test/test.dart';

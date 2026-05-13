@@ -28,13 +28,23 @@ final class FakeVideoSource {
 
   /// Emits frames at the configured framerate until the stream subscription
   /// is cancelled.
+  ///
+  /// Frame timestamps are derived from the frame index (`frameIndex *
+  /// periodUs`), not the wall clock — mirroring [FakeAudioSource.start] —
+  /// so that downstream encoders see strictly monotonic PTS even on hosts
+  /// whose `DateTime.now()` resolution is coarser than the frame period
+  /// (Windows ARM64's default clock granularity is ~16 ms, which at 60fps
+  /// would otherwise collapse two consecutive frames to the same wall-clock
+  /// timestamp).
   Stream<VideoFrame> start() async* {
     final periodUs = (1e6 / framerate).round();
     final startUs = DateTime.now().microsecondsSinceEpoch;
     var nextTickUs = startUs;
+    var frameIndex = 0;
     while (true) {
       final nowUs = DateTime.now().microsecondsSinceEpoch;
-      yield _generateFrame(nowUs ~/ 1000, nowUs - startUs);
+      yield _generateFrame(nowUs ~/ 1000, frameIndex * periodUs);
+      frameIndex++;
       nextTickUs += periodUs;
       final waitUs = nextTickUs - DateTime.now().microsecondsSinceEpoch;
       if (waitUs > 0) await Future<void>.delayed(Duration(microseconds: waitUs));

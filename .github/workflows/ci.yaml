@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
     defaults:
       # Force bash on every runner so the Detach-from-workspace step's
       # `rm`/`sed` works identically on Windows (via git-bash).
@@ -79,11 +79,22 @@ jobs:
       - if: runner.os == 'Windows'
         working-directory: dart
         # Windows uses CNG (bcrypt.dll) for the crypto backend — no build
-        # deps needed. The build hook in dart/hook/build.dart skips all
-        # codec work for Windows targets, so the bundled libopus / libvpx
-        # / OpenH264 are not available; codec tests carry the `native`
-        # tag and are excluded here.
+        # deps needed. libopus / libvpx aren't built for Windows yet, so
+        # their tests (tagged `native`) are excluded here; OpenH264 *is*
+        # bundled on Windows (Cisco's prebuilt DLL) and its tests run as
+        # an explicit follow-up step.
         run: dart test --exclude-tags e2e,native --timeout=60s
+      - if: runner.os == 'Windows'
+        working-directory: dart
+        # The build hook downloaded the prebuilt OpenH264 DLL during the
+        # step above; run the H.264 codec tests explicitly to exercise it.
+        run: |
+          dart test \
+            test/codec/openh264_version_test.dart \
+            test/codec/h264_encoder_test.dart \
+            test/codec/h264_roundtrip_test.dart \
+            test/codec/h264_openh264_multistream_test.dart \
+            --timeout=60s
 
   dart-test-e2e-linux:
     name: dart / E2E Tests (Linux)
