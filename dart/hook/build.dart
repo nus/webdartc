@@ -145,6 +145,7 @@ Future<(Uri, String)> _cmakeBuildOpus(BuildInput input) async {
 
   await buildDir.create(recursive: true);
   final src = input.packageRoot.resolve('third_party/opus/').toFilePath();
+  await _ensureOpusTags(src);
   await _runChecked('cmake', [
     '-S', src,
     '-B', buildDir.path,
@@ -183,6 +184,41 @@ Future<(Uri, String)> _cmakeBuildOpus(BuildInput input) async {
         '$_libopusArchiveCandidates under ${installDir.path}');
   }
   return (installDir.uri, installed);
+}
+
+/// libopus's CMake reads its version via `git describe --tags --match "v*"`
+/// against the submodule's git dir. `actions/checkout@v6 submodules:
+/// recursive` clones only the pinned commit without fetching tag refs,
+/// so without this the cmake configure falls back to building a "libopus
+/// unknown" copy. Skip the fetch if any v* tag is already cached locally
+/// — keeps offline rebuilds working and avoids a redundant network call.
+///
+/// Returns silently if the submodule isn't initialised (no `.git`) or if
+/// the fetch fails — cmake will then build "libopus unknown" but won't
+/// crash, matching the prior behaviour on offline / incomplete clones.
+/// A stderr warning is emitted on fetch failure so the regression is
+/// visible in CI logs instead of silent.
+Future<void> _ensureOpusTags(String src) async {
+  // Without this guard `git -C <src>` would walk up to the superproject's
+  // git dir on a fresh clone that skipped `--recurse-submodules`, and
+  // we'd tag-probe / fetch against webdartc itself.
+  if (!File('$src/.git').existsSync() &&
+      !Directory('$src/.git').existsSync()) {
+    return;
+  }
+  final tagsCheck = await Process.run('git', ['-C', src, 'tag', '-l', 'v*']);
+  if (tagsCheck.exitCode == 0 &&
+      (tagsCheck.stdout as String).trim().isNotEmpty) {
+    return;
+  }
+  final fetch =
+      await Process.run('git', ['-C', src, 'fetch', '--tags', '--quiet']);
+  if (fetch.exitCode != 0) {
+    stderr.writeln('warning: git fetch --tags for libopus submodule failed '
+        '(exit ${fetch.exitCode}); the resulting libopus dylib will report '
+        '"libopus unknown" instead of the pinned release tag.\n'
+        '${fetch.stderr}');
+  }
 }
 
 Future<void> _buildVp8Codec(
