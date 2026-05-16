@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "webdartc-libvpx-prebuilt",
+  "version-string": "1.16.0",
+  "description": "vcpkg manifest pinning libvpx + helpers. Consumed by the build-libvpx-prebuilt GitHub Actions workflow (release prebuilts) and by dart/hook/build.dart's Windows source-build opt-in path.",
+  "dependencies": [
+    {
+      "name": "libvpx",
+      "platform": "windows"
+    }
+  ],
+  "overrides": [
+    {
+      "name": "libvpx",
+      "version": "1.16.0#1"
+    }
+  ],
+  "builtin-baseline": "afe700a528316078d1ad6e7f7f41bbba15e1802b"
+}
