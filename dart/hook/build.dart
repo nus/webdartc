@@ -18,12 +18,13 @@
 // there.
 //
 // Windows is fully prebuilt by default — Cisco's OpenH264 plus our own
-// `webdartc_vp{8,9}.dll` bundle published from the
-// `Build libvpx prebuilt` GitHub Actions workflow. Setting the
-// `libvpx_source_build: true` pubspec define under
-// `hooks_user_defines.webdartc` flips libvpx to build-from-source
-// locally via `tool/build_libvpx_wrappers.dart` (requires vcpkg + MSVC
-// + ARM64/x64 cl in PATH).
+// `webdartc_vp{8,9}.dll` and `webdartc_opus.dll` bundles published from
+// the matching `Build *-prebuilt` GitHub Actions workflows. Setting
+// `libvpx_source_build: true` / `libopus_source_build: true` pubspec
+// defines under `hooks.user_defines.webdartc` flips the corresponding
+// codec to build-from-source locally via the matching
+// `tool/build_lib*_wrappers.dart` (requires vcpkg + MSVC + ARM64/x64
+// cl in PATH).
 
 import 'dart:io';
 
@@ -51,8 +52,10 @@ void main(List<String> args) async {
       ],
       if (targetOS == OS.linux || targetOS == OS.windows)
         _bundleOpenH264(input, output),
-      if (targetOS == OS.windows)
+      if (targetOS == OS.windows) ...[
         _libvpxOnWindows(input, output),
+        _libopusOnWindows(input, output),
+      ],
     ]);
   });
 }
@@ -62,15 +65,25 @@ void main(List<String> args) async {
 /// `tool/build_libvpx_wrappers.dart` (opt-in via
 /// `hooks.user_defines.webdartc.libvpx_source_build: true` in
 /// `pubspec.yaml`).
-Future<void> _libvpxOnWindows(BuildInput input, BuildOutputBuilder output) {
-  // Accept both the YAML boolean `true` and the string `'true'`, since
-  // a quoted value in pubspec.yaml would silently become a String.
-  final raw = input.userDefines['libvpx_source_build'];
-  final sourceBuild =
-      raw == true || (raw is String && raw.toLowerCase() == 'true');
-  return sourceBuild
-      ? _buildLibvpxFromSource(input, output)
-      : _bundleLibvpxPrebuilt(input, output);
+Future<void> _libvpxOnWindows(BuildInput input, BuildOutputBuilder output) =>
+    _windowsSourceBuildOpt(input, 'libvpx_source_build')
+        ? _buildLibvpxFromSource(input, output)
+        : _bundleLibvpxPrebuilt(input, output);
+
+/// Windows counterpart of [_libvpxOnWindows] for libopus — same
+/// download-or-source-build dispatch under
+/// `hooks.user_defines.webdartc.libopus_source_build`.
+Future<void> _libopusOnWindows(BuildInput input, BuildOutputBuilder output) =>
+    _windowsSourceBuildOpt(input, 'libopus_source_build')
+        ? _buildLibopusFromSource(input, output)
+        : _bundleLibopusPrebuilt(input, output);
+
+/// Reads a `lib*_source_build` user-define, accepting both YAML boolean
+/// `true` and the string `'true'` (a quoted value in pubspec.yaml would
+/// silently become a String).
+bool _windowsSourceBuildOpt(BuildInput input, String key) {
+  final raw = input.userDefines[key];
+  return raw == true || (raw is String && raw.toLowerCase() == 'true');
 }
 
 const _libvpxCodecs = ['vp8', 'vp9'];
@@ -86,6 +99,17 @@ void _registerLibvpxWrappers(BuildOutputBuilder output, Uri dllDir) {
       file: dllDir.resolve('webdartc_$codec.dll'),
     ));
   }
+}
+
+/// Emits the `CodeAsset` for `webdartc_opus.dll` sitting under [dllDir].
+/// Shared by the prebuilt-download and source-build paths.
+void _registerLibopusWrapper(BuildOutputBuilder output, Uri dllDir) {
+  output.assets.code.add(CodeAsset(
+    package: 'webdartc',
+    name: 'codec/opus/webdartc_opus.dart',
+    linkMode: DynamicLoadingBundled(),
+    file: dllDir.resolve('webdartc_opus.dll'),
+  ));
 }
 
 Future<void> _buildVtCallback(
@@ -728,22 +752,40 @@ Future<void> _bundleLibvpxPrebuilt(
 
 Future<void> _buildLibvpxFromSource(
     BuildInput input, BuildOutputBuilder output) async {
+  final outDir = await _windowsWrapperSourceBuild(
+    input: input,
+    label: 'libvpx',
+    scriptRelPath: 'tool/build_libvpx_wrappers.dart',
+    manifestRelPath: 'tool/libvpx_vcpkg',
+  );
+  _registerLibvpxWrappers(output, outDir);
+}
+
+/// Drives one of the `tool/build_lib*_wrappers.dart` scripts under an
+/// MSVC environment. Shared by `_buildLibvpxFromSource` and
+/// `_buildLibopusFromSource`; returns the directory URI containing the
+/// resulting wrapper DLL(s) for the caller to register as code assets.
+Future<Uri> _windowsWrapperSourceBuild({
+  required BuildInput input,
+  required String label,
+  required String scriptRelPath,
+  required String manifestRelPath,
+}) async {
   final arch = input.config.code.targetArchitecture;
   final triplet = switch (arch) {
     Architecture.x64 => 'x64-windows-static',
     Architecture.arm64 => 'arm64-windows-static',
     _ => throw UnsupportedError(
-        'libvpx source build: unsupported Windows arch $arch'),
+        '$label source build: unsupported Windows arch $arch'),
   };
 
   final outDir = Directory.fromUri(input.outputDirectoryShared
-      .resolve('libvpx-source-build-$triplet/'));
+      .resolve('$label-source-build-$triplet/'));
   await outDir.create(recursive: true);
 
   final pkg = input.packageRoot;
-  final scriptPath =
-      pkg.resolve('tool/build_libvpx_wrappers.dart').toFilePath();
-  final manifestDir = pkg.resolve('tool/libvpx_vcpkg').toFilePath();
+  final scriptPath = pkg.resolve(scriptRelPath).toFilePath();
+  final manifestDir = pkg.resolve(manifestRelPath).toFilePath();
   final srcDir = pkg.resolve('src').toFilePath();
   // Directory.path keeps the trailing `\`; trim it so the closing `"`
   // in `--out-dir="$outPath"` isn't escaped to a literal quote.
@@ -765,8 +807,9 @@ Future<void> _buildLibvpxFromSource(
   // Place the launcher .bat outside outDir so it survives the wrapper
   // script's post-run cleanup of non-DLL files — otherwise cmd loses
   // the file mid-execution and reports "batch file not found".
-  final batPath =
-      input.outputDirectory.resolve('source-build-$triplet.bat').toFilePath();
+  final batPath = input.outputDirectory
+      .resolve('$label-source-build-$triplet.bat')
+      .toFilePath();
   File(batPath).writeAsStringSync(
     '@echo off\r\n'
     'call "$vcvarsall" $vcvarsArch\r\n'
@@ -778,9 +821,9 @@ Future<void> _buildLibvpxFromSource(
     ' --out-dir="$outPath"\r\n',
   );
   await _runChecked('cmd', ['/c', batPath],
-      desc: 'libvpx wrapper source build ($triplet)');
+      desc: '$label wrapper source build ($triplet)');
 
-  _registerLibvpxWrappers(output, outDir.uri);
+  return outDir.uri;
 }
 
 /// Translates an asset target arch into the `vcvarsall.bat` first
@@ -802,4 +845,137 @@ Future<String> _sha256Hex(File f) async {
   if (!f.existsSync()) return '';
   final digest = await sha256.bind(f.openRead()).first;
   return digest.toString();
+}
+
+// ── libopus on Windows ─────────────────────────────────────────────────
+//
+// Same shape as the libvpx Windows section above: the default path
+// downloads `webdartc-libopus-prebuilt-v<ver>-r<rev>-<plat>.zip` from the
+// matching `opus-prebuilt-*` GitHub release on this repo, produced by
+// `.github/workflows/build-libopus-prebuilt.yaml` (which drives
+// `tool/build_libopus_wrappers.dart`). The `libopus_source_build: true`
+// user-define switches to a local source build of the same wrapper.
+//
+// Bumping the libopus pin:
+//   1. Edit `tool/libopus_vcpkg/vcpkg.json` (libopus version and
+//      `builtin-baseline`).
+//   2. Bump `WRAPPER_REVISION` in the workflow if wrapper sources also
+//      changed since the prior release.
+//   3. Land that change, then tag `opus-prebuilt-v<ver>-r<rev>` and let
+//      the workflow publish the zip assets.
+//   4. Read the published zip SHA-256 off the release (or
+//      `gh release view <tag> --json assets`) and update the matching
+//      `_libopusPrebuiltWin*` constant below + the version constants.
+
+const String _libopusVersion = '1.5.2';
+const String _libopusWrapperRev = 'r1';
+const String _libopusReleaseTag =
+    'opus-prebuilt-v$_libopusVersion-$_libopusWrapperRev';
+
+class _LibopusPrebuilt {
+  /// `win-x64` or `win-arm64`. Used in the cache directory, zip filename
+  /// and the published GitHub asset name.
+  final String platform;
+
+  /// SHA-256 of the published zip as a whole. The zip's individual
+  /// payloads (`webdartc_opus.dll`, `LICENSE`, `NOTICE.txt`) inherit
+  /// their integrity from the zip's SHA. Empty until the matching
+  /// `opus-prebuilt-*` tag is pushed and the workflow publishes the
+  /// assets — `_bundleLibopusPrebuilt` raises a clear error in that
+  /// case directing the user to either run the workflow or opt into
+  /// the source build.
+  final String zipSha256;
+
+  const _LibopusPrebuilt({required this.platform, required this.zipSha256});
+
+  String get zipName =>
+      'webdartc-libopus-prebuilt-v$_libopusVersion-$_libopusWrapperRev-$platform.zip';
+
+  String get downloadUrl =>
+      'https://github.com/nus/webdartc/releases/download/$_libopusReleaseTag/$zipName';
+}
+
+const _libopusPrebuiltWinX64 = _LibopusPrebuilt(
+  platform: 'win-x64',
+  // TODO(release): fill after `opus-prebuilt-v1.5.2-r1` publishes.
+  zipSha256: '',
+);
+
+const _libopusPrebuiltWinArm64 = _LibopusPrebuilt(
+  platform: 'win-arm64',
+  // TODO(release): fill after `opus-prebuilt-v1.5.2-r1` publishes.
+  zipSha256: '',
+);
+
+_LibopusPrebuilt _resolveLibopusPrebuilt(Architecture arch) => switch (arch) {
+      Architecture.x64 => _libopusPrebuiltWinX64,
+      Architecture.arm64 => _libopusPrebuiltWinArm64,
+      _ => throw UnsupportedError(
+          'libopus prebuilt: unsupported Windows arch $arch'),
+    };
+
+Future<void> _bundleLibopusPrebuilt(
+    BuildInput input, BuildOutputBuilder output) async {
+  final prebuilt =
+      _resolveLibopusPrebuilt(input.config.code.targetArchitecture);
+
+  if (prebuilt.zipSha256.isEmpty) {
+    throw StateError(
+        'libopus prebuilt for ${prebuilt.platform} has no published zip yet '
+        '— tag `$_libopusReleaseTag` first to trigger '
+        'build-libopus-prebuilt.yaml, then read the asset SHA-256 and '
+        'update the matching _libopusPrebuiltWin* constant. To build '
+        'locally instead, set '
+        '`hooks.user_defines.webdartc.libopus_source_build: true` '
+        'in pubspec.yaml (requires vcpkg + MSVC).');
+  }
+
+  final cacheDir = Directory.fromUri(input.outputDirectoryShared.resolve(
+      'libopus-prebuilt-$_libopusReleaseTag-${prebuilt.platform}/'));
+  final dll = File.fromUri(cacheDir.uri.resolve('webdartc_opus.dll'));
+  // Marker so we can re-verify the cache hit against the expected SHA
+  // without keeping the original zip around.
+  final marker = File.fromUri(cacheDir.uri.resolve('zip.sha256'));
+
+  final cached = dll.existsSync() &&
+      marker.existsSync() &&
+      (await marker.readAsString()).trim() == prebuilt.zipSha256;
+
+  if (!cached) {
+    await cacheDir.create(recursive: true);
+    final zipFile = File.fromUri(cacheDir.uri.resolve(prebuilt.zipName));
+    await _downloadFile(prebuilt.downloadUrl, zipFile);
+    final actualSha = await _sha256Hex(zipFile);
+    if (actualSha != prebuilt.zipSha256) {
+      throw StateError(
+          'libopus prebuilt SHA-256 mismatch for ${prebuilt.platform}:\n'
+          '  expected: ${prebuilt.zipSha256}\n'
+          '  actual:   $actualSha\n'
+          'Either the release asset was re-uploaded (verify and update '
+          'the matching _libopusPrebuiltWin* constant) or the download '
+          'was corrupted.');
+    }
+    final archive = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
+    for (final entry in archive.files) {
+      if (!entry.isFile) continue;
+      final out = File.fromUri(cacheDir.uri.resolve(entry.name));
+      await out.create(recursive: true);
+      await out.writeAsBytes(entry.content as List<int>);
+    }
+    await zipFile.delete();
+    await marker.writeAsString(prebuilt.zipSha256);
+  }
+
+  _registerLibopusWrapper(output, cacheDir.uri);
+}
+
+Future<void> _buildLibopusFromSource(
+    BuildInput input, BuildOutputBuilder output) async {
+  final outDir = await _windowsWrapperSourceBuild(
+    input: input,
+    label: 'libopus',
+    scriptRelPath: 'tool/build_libopus_wrappers.dart',
+    manifestRelPath: 'tool/libopus_vcpkg',
+  );
+  _registerLibopusWrapper(output, outDir);
 }
