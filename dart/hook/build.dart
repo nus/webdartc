@@ -879,11 +879,7 @@ class _LibopusPrebuilt {
 
   /// SHA-256 of the published zip as a whole. The zip's individual
   /// payloads (`webdartc_opus.dll`, `LICENSE`, `NOTICE.txt`) inherit
-  /// their integrity from the zip's SHA. Empty until the matching
-  /// `opus-prebuilt-*` tag is pushed and the workflow publishes the
-  /// assets — `_bundleLibopusPrebuilt` raises a clear error in that
-  /// case directing the user to either run the workflow or opt into
-  /// the source build.
+  /// their integrity from the zip's SHA.
   final String zipSha256;
 
   const _LibopusPrebuilt({required this.platform, required this.zipSha256});
@@ -897,14 +893,12 @@ class _LibopusPrebuilt {
 
 const _libopusPrebuiltWinX64 = _LibopusPrebuilt(
   platform: 'win-x64',
-  // TODO(release): fill after `opus-prebuilt-v1.5.2-r1` publishes.
-  zipSha256: '',
+  zipSha256: 'fcbc655462b793f56e79255fb4a7ca72af9348cc150a6d1c2e630f3777853c93',
 );
 
 const _libopusPrebuiltWinArm64 = _LibopusPrebuilt(
   platform: 'win-arm64',
-  // TODO(release): fill after `opus-prebuilt-v1.5.2-r1` publishes.
-  zipSha256: '',
+  zipSha256: '60a0c57ab4fd98e20abaa4ef1f03716fc073e4d90073bdcb768994618c72a483',
 );
 
 _LibopusPrebuilt _resolveLibopusPrebuilt(Architecture arch) => switch (arch) {
