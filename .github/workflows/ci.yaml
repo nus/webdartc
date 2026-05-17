@@ -79,22 +79,37 @@ jobs:
       - if: runner.os == 'Windows'
         working-directory: dart
         # Windows uses CNG (bcrypt.dll) for the crypto backend — no build
-        # deps needed. libopus / libvpx aren't built for Windows yet, so
-        # their tests (tagged `native`) are excluded here; OpenH264 *is*
-        # bundled on Windows (Cisco's prebuilt DLL) and its tests run as
-        # an explicit follow-up step.
+        # deps needed. libopus isn't built for Windows yet so its tests
+        # (tagged `native`) stay excluded here; OpenH264 and VP8/VP9 are
+        # bundled via prebuilt downloads and exercised in the follow-up
+        # step.
         run: dart test --exclude-tags e2e,native --timeout=60s
       - if: runner.os == 'Windows'
         working-directory: dart
-        # The build hook downloaded the prebuilt OpenH264 DLL during the
-        # step above; run the H.264 codec tests explicitly to exercise it.
+        # Codec tests for everything we *do* bundle on Windows:
+        #   - OpenH264 (Cisco prebuilt DLL, fetched by the build hook).
+        #   - VP8 / VP9 (our own prebuilt zip from the
+        #     `vpx-prebuilt-*` GitHub release, fetched by
+        #     `_bundleLibvpxPrebuilt` in dart/hook/build.dart).
+        # opus_* tests stay out — libopus prebuilt for Windows is the
+        # next codec on the list.
         run: |
           dart test \
             test/codec/openh264_version_test.dart \
             test/codec/h264_encoder_test.dart \
             test/codec/h264_roundtrip_test.dart \
             test/codec/h264_openh264_multistream_test.dart \
-            --timeout=60s
+            test/codec/vp8_encoder_test.dart \
+            test/codec/vp8_encoder_multiframe_test.dart \
+            test/codec/vp8_decoder_test.dart \
+            test/codec/vp8_multistream_test.dart \
+            test/codec/vp8_roundtrip_test.dart \
+            test/codec/vp8_version_test.dart \
+            test/codec/vp8_wire_format_test.dart \
+            test/codec/vp9_multistream_test.dart \
+            test/codec/vp9_roundtrip_test.dart \
+            test/codec/vp9_version_test.dart \
+            --timeout=120s
 
   dart-test-e2e-linux:
     name: dart / E2E Tests (Linux)

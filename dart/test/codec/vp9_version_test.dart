@@ -3,7 +3,6 @@
 /// libvpx, so the two reported strings should always agree — that's
 /// also asserted here).
 @Tags(['native'])
-@TestOn('mac-os || linux')
 library;
 
 import 'dart:ffi' as ffi;

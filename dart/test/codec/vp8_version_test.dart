@@ -9,7 +9,6 @@
 ///   - the `webdartc_vp8_get_version_string` binding silently breaking
 ///     (returns garbage / crashes on a future libvpx layout change).
 @Tags(['native'])
-@TestOn('mac-os || linux')
 library;
 
 import 'dart:ffi' as ffi;

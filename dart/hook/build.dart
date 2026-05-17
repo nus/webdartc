@@ -16,6 +16,14 @@
 // Linux also bundles Cisco's prebuilt OpenH264 dylib (downloaded by
 // [_bundleOpenH264]). macOS uses VideoToolbox so OpenH264 isn't shipped
 // there.
+//
+// Windows is fully prebuilt by default — Cisco's OpenH264 plus our own
+// `webdartc_vp{8,9}.dll` bundle published from the
+// `Build libvpx prebuilt` GitHub Actions workflow. Setting the
+// `libvpx_source_build: true` pubspec define under
+// `hooks_user_defines.webdartc` flips libvpx to build-from-source
+// locally via `tool/build_libvpx_wrappers.dart` (requires vcpkg + MSVC
+// + ARM64/x64 cl in PATH).
 
 import 'dart:io';
 
@@ -43,8 +51,40 @@ void main(List<String> args) async {
       ],
       if (targetOS == OS.linux || targetOS == OS.windows)
         _bundleOpenH264(input, output),
+      if (targetOS == OS.windows)
+        _libvpxOnWindows(input, output),
     ]);
   });
+}
+
+/// Windows: bundled `webdartc_vp{8,9}.dll` via either the published
+/// prebuilt zip (default) or a local source build through
+/// `tool/build_libvpx_wrappers.dart` (opt-in via
+/// `hooks_user_defines.webdartc.libvpx_source_build: true`).
+Future<void> _libvpxOnWindows(BuildInput input, BuildOutputBuilder output) {
+  // Accept both the YAML boolean `true` and the string `'true'`, since
+  // a quoted value in pubspec.yaml would silently become a String.
+  final raw = input.userDefines['libvpx_source_build'];
+  final sourceBuild =
+      raw == true || (raw is String && raw.toLowerCase() == 'true');
+  return sourceBuild
+      ? _buildLibvpxFromSource(input, output)
+      : _bundleLibvpxPrebuilt(input, output);
+}
+
+const _libvpxCodecs = ['vp8', 'vp9'];
+
+/// Emits `CodeAsset`s for each `webdartc_vp{8,9}.dll` sitting under [dllDir].
+/// Shared by the prebuilt-download and source-build paths.
+void _registerLibvpxWrappers(BuildOutputBuilder output, Uri dllDir) {
+  for (final codec in _libvpxCodecs) {
+    output.assets.code.add(CodeAsset(
+      package: 'webdartc',
+      name: 'codec/$codec/webdartc_$codec.dart',
+      linkMode: DynamicLoadingBundled(),
+      file: dllDir.resolve('webdartc_$codec.dll'),
+    ));
+  }
 }
 
 Future<void> _buildVtCallback(
@@ -577,6 +617,146 @@ Future<void> _downloadFile(String url, File dest) async {
   } finally {
     client.close(force: true);
   }
+}
+
+// ── libvpx on Windows ──────────────────────────────────────────────────
+//
+// Default path downloads webdartc-libvpx-prebuilt-<ver>-r<rev>-<plat>.zip
+// from the matching `vpx-prebuilt-*` GitHub release on this repo and
+// hands the two DLLs to the asset registry. The release contents are
+// produced by `.github/workflows/build-libvpx-prebuilt.yaml`, which in
+// turn drives `tool/build_libvpx_wrappers.dart`.
+//
+// Bumping the libvpx pin:
+//   1. Edit `tool/libvpx_vcpkg/vcpkg.json` (libvpx version and
+//      `builtin-baseline`).
+//   2. Bump `WRAPPER_REVISION` in the workflow if wrapper sources also
+//      changed since the prior release.
+//   3. Land that change, then tag `vpx-prebuilt-v<ver>-r<rev>` and let
+//      the workflow publish the zip assets.
+//   4. Read the published zip SHA-256 off the release (or
+//      `gh release view <tag> --json assets`) and update the matching
+//      `_libvpxPrebuiltWin*` constant below + the version constants.
+
+const String _libvpxVersion = '1.16.0';
+const String _libvpxWrapperRev = 'r1';
+const String _libvpxReleaseTag =
+    'vpx-prebuilt-v$_libvpxVersion-$_libvpxWrapperRev';
+
+class _LibvpxPrebuilt {
+  /// `win-x64` or `win-arm64`. Used in the cache directory, zip filename
+  /// and the published GitHub asset name.
+  final String platform;
+
+  /// SHA-256 of the published zip as a whole. The zip's individual
+  /// payloads (`webdartc_vp{8,9}.dll`, `LICENSE`, `NOTICE.txt`) inherit
+  /// their integrity from the zip's SHA.
+  final String zipSha256;
+
+  const _LibvpxPrebuilt({required this.platform, required this.zipSha256});
+
+  String get zipName =>
+      'webdartc-libvpx-prebuilt-v$_libvpxVersion-$_libvpxWrapperRev-$platform.zip';
+
+  String get downloadUrl =>
+      'https://github.com/nus/webdartc/releases/download/$_libvpxReleaseTag/$zipName';
+}
+
+const _libvpxPrebuiltWinX64 = _LibvpxPrebuilt(
+  platform: 'win-x64',
+  zipSha256: '26fb097ae4786ef7d354df84263a132eb5c1e61b394da5a812d0775e0068112d',
+);
+
+const _libvpxPrebuiltWinArm64 = _LibvpxPrebuilt(
+  platform: 'win-arm64',
+  zipSha256: '487d5c8c5d850135c04f5cbbcc931ece33a09aec6239846ca2158806267015db',
+);
+
+_LibvpxPrebuilt _resolveLibvpxPrebuilt(Architecture arch) => switch (arch) {
+      Architecture.x64 => _libvpxPrebuiltWinX64,
+      Architecture.arm64 => _libvpxPrebuiltWinArm64,
+      _ => throw UnsupportedError(
+          'libvpx prebuilt: unsupported Windows arch $arch'),
+    };
+
+Future<void> _bundleLibvpxPrebuilt(
+    BuildInput input, BuildOutputBuilder output) async {
+  final prebuilt =
+      _resolveLibvpxPrebuilt(input.config.code.targetArchitecture);
+
+  final cacheDir = Directory.fromUri(input.outputDirectoryShared.resolve(
+      'libvpx-prebuilt-$_libvpxReleaseTag-${prebuilt.platform}/'));
+  final vp8 = File.fromUri(cacheDir.uri.resolve('webdartc_vp8.dll'));
+  final vp9 = File.fromUri(cacheDir.uri.resolve('webdartc_vp9.dll'));
+  // Marker so we can re-verify the cache hit against the expected SHA
+  // without keeping the original zip around.
+  final marker = File.fromUri(cacheDir.uri.resolve('zip.sha256'));
+
+  final cached = vp8.existsSync() &&
+      vp9.existsSync() &&
+      marker.existsSync() &&
+      (await marker.readAsString()).trim() == prebuilt.zipSha256;
+
+  if (!cached) {
+    await cacheDir.create(recursive: true);
+    final zipFile = File.fromUri(cacheDir.uri.resolve(prebuilt.zipName));
+    await _downloadFile(prebuilt.downloadUrl, zipFile);
+    final actualSha = await _sha256Hex(zipFile);
+    if (actualSha != prebuilt.zipSha256) {
+      throw StateError(
+          'libvpx prebuilt SHA-256 mismatch for ${prebuilt.platform}:\n'
+          '  expected: ${prebuilt.zipSha256}\n'
+          '  actual:   $actualSha\n'
+          'Either the release asset was re-uploaded (verify and update '
+          'the matching _libvpxPrebuiltWin* constant) or the download '
+          'was corrupted.');
+    }
+    final archive = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
+    for (final entry in archive.files) {
+      if (!entry.isFile) continue;
+      final out = File.fromUri(cacheDir.uri.resolve(entry.name));
+      await out.create(recursive: true);
+      await out.writeAsBytes(entry.content as List<int>);
+    }
+    await zipFile.delete();
+    await marker.writeAsString(prebuilt.zipSha256);
+  }
+
+  _registerLibvpxWrappers(output, cacheDir.uri);
+}
+
+Future<void> _buildLibvpxFromSource(
+    BuildInput input, BuildOutputBuilder output) async {
+  final arch = input.config.code.targetArchitecture;
+  final triplet = switch (arch) {
+    Architecture.x64 => 'x64-windows-static',
+    Architecture.arm64 => 'arm64-windows-static',
+    _ => throw UnsupportedError(
+        'libvpx source build: unsupported Windows arch $arch'),
+  };
+
+  final outDir = Directory.fromUri(input.outputDirectoryShared
+      .resolve('libvpx-source-build-$triplet/'));
+  await outDir.create(recursive: true);
+
+  final pkg = input.packageRoot;
+  // `dart run` the shared script that CI also drives — same vcpkg port,
+  // same compile flags, same wrapper-source list, so the resulting DLLs
+  // are bit-compatible with the published prebuilt zip.
+  await _runChecked(
+    Platform.resolvedExecutable,
+    [
+      'run',
+      pkg.resolve('tool/build_libvpx_wrappers.dart').toFilePath(),
+      '--triplet=$triplet',
+      '--manifest-dir=${pkg.resolve('tool/libvpx_vcpkg/').toFilePath()}',
+      '--src-dir=${pkg.resolve('src/').toFilePath()}',
+      '--out-dir=${outDir.path}',
+    ],
+    desc: 'libvpx wrapper source build ($triplet)',
+  );
+
+  _registerLibvpxWrappers(output, outDir.uri);
 }
 
 Future<String> _sha256Hex(File f) async {
