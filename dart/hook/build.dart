@@ -60,7 +60,8 @@ void main(List<String> args) async {
 /// Windows: bundled `webdartc_vp{8,9}.dll` via either the published
 /// prebuilt zip (default) or a local source build through
 /// `tool/build_libvpx_wrappers.dart` (opt-in via
-/// `hooks_user_defines.webdartc.libvpx_source_build: true`).
+/// `hooks.user_defines.webdartc.libvpx_source_build: true` in
+/// `pubspec.yaml`).
 Future<void> _libvpxOnWindows(BuildInput input, BuildOutputBuilder output) {
   // Accept both the YAML boolean `true` and the string `'true'`, since
   // a quoted value in pubspec.yaml would silently become a String.
@@ -740,23 +741,61 @@ Future<void> _buildLibvpxFromSource(
   await outDir.create(recursive: true);
 
   final pkg = input.packageRoot;
-  // `dart run` the shared script that CI also drives — same vcpkg port,
-  // same compile flags, same wrapper-source list, so the resulting DLLs
-  // are bit-compatible with the published prebuilt zip.
-  await _runChecked(
-    Platform.resolvedExecutable,
-    [
-      'run',
-      pkg.resolve('tool/build_libvpx_wrappers.dart').toFilePath(),
-      '--triplet=$triplet',
-      '--manifest-dir=${pkg.resolve('tool/libvpx_vcpkg/').toFilePath()}',
-      '--src-dir=${pkg.resolve('src/').toFilePath()}',
-      '--out-dir=${outDir.path}',
-    ],
-    desc: 'libvpx wrapper source build ($triplet)',
+  final scriptPath =
+      pkg.resolve('tool/build_libvpx_wrappers.dart').toFilePath();
+  final manifestDir = pkg.resolve('tool/libvpx_vcpkg').toFilePath();
+  final srcDir = pkg.resolve('src').toFilePath();
+  // Directory.path keeps the trailing `\`; trim it so the closing `"`
+  // in `--out-dir="$outPath"` isn't escaped to a literal quote.
+  final outPath = outDir.path.endsWith(r'\')
+      ? outDir.path.substring(0, outDir.path.length - 1)
+      : outDir.path;
+
+  // hooks_runner runs the build hook with a scrubbed environment, so
+  // MSVC's INCLUDE / LIB / PATH from a Developer Command Prompt is gone
+  // by the time we reach here. Source vcvarsall.bat into a wrapper batch
+  // before invoking `dart <script>`.
+  //
+  // `dart <script>` (no `run`) executes the script directly — `dart run`
+  // would recursively re-enter `package:hooks_runner` and deadlock on
+  // the same `.lock` file this hook is already holding.
+  final vcvarsall =
+      r'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat';
+  final vcvarsArch = _vcvarsArchArg(arch);
+  // Place the launcher .bat outside outDir so it survives the wrapper
+  // script's post-run cleanup of non-DLL files — otherwise cmd loses
+  // the file mid-execution and reports "batch file not found".
+  final batPath =
+      input.outputDirectory.resolve('source-build-$triplet.bat').toFilePath();
+  File(batPath).writeAsStringSync(
+    '@echo off\r\n'
+    'call "$vcvarsall" $vcvarsArch\r\n'
+    'if errorlevel 1 exit /b 1\r\n'
+    '"${Platform.resolvedExecutable}" "$scriptPath"'
+    ' --triplet=$triplet'
+    ' --manifest-dir="$manifestDir"'
+    ' --src-dir="$srcDir"'
+    ' --out-dir="$outPath"\r\n',
   );
+  await _runChecked('cmd', ['/c', batPath],
+      desc: 'libvpx wrapper source build ($triplet)');
 
   _registerLibvpxWrappers(output, outDir.uri);
+}
+
+/// Translates an asset target arch into the `vcvarsall.bat` first
+/// argument, picking the cross-compile combination based on the host
+/// arch (`PROCESSOR_ARCHITECTURE`).
+String _vcvarsArchArg(Architecture target) {
+  final host =
+      (Platform.environment['PROCESSOR_ARCHITECTURE'] ?? 'AMD64').toUpperCase();
+  final hostTok = host == 'ARM64' ? 'arm64' : 'amd64';
+  final targetTok = switch (target) {
+    Architecture.x64 => 'amd64',
+    Architecture.arm64 => 'arm64',
+    _ => throw UnsupportedError('vcvarsall: unsupported target $target'),
+  };
+  return hostTok == targetTok ? targetTok : '${hostTok}_$targetTok';
 }
 
 Future<String> _sha256Hex(File f) async {

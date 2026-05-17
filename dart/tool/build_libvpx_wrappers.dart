@@ -48,24 +48,24 @@ Future<void> main(List<String> args) async {
   //    keeps the CRT static (no msvcr*.dll runtime dep alongside the
   //    shipped DLL); -utf-8 silences the codepage warning on UTF-8 sources;
   //    -O2 is release optimisation.
-  for (final codec in const ['vp8', 'vp9']) {
-    final wrapperSrc =
-        File.fromUri(srcDir.uri.resolve('webdartc_$codec.c')).path;
-    final outDll =
-        File.fromUri(outDir.uri.resolve('webdartc_$codec.dll')).path;
-    await _run('cl', [
-      '-nologo',
-      '-LD',
-      '-MT',
-      '-O2',
-      '-utf-8',
-      '-I${srcDir.path}',
-      '-I$vpxInclude',
-      '-Fe:$outDll',
-      wrapperSrc,
-      vpxLib,
-    ], workingDirectory: outDir.path, desc: 'cl -LD webdartc_$codec.dll');
-  }
+  // vp8 and vp9 share read-only inputs (vpx.lib, headers) and write
+  // disjoint outputs (webdartc_vp{8,9}.{dll,obj,exp,lib}) — run them in
+  // parallel.
+  await Future.wait([
+    for (final codec in const ['vp8', 'vp9'])
+      _run('cl', [
+        '-nologo',
+        '-LD',
+        '-MT',
+        '-O2',
+        '-utf-8',
+        '-I${srcDir.path}',
+        '-I$vpxInclude',
+        '-Fe:${File.fromUri(outDir.uri.resolve('webdartc_$codec.dll')).path}',
+        File.fromUri(srcDir.uri.resolve('webdartc_$codec.c')).path,
+        vpxLib,
+      ], workingDirectory: outDir.path, desc: 'cl -LD webdartc_$codec.dll'),
+  ]);
 
   // 3. cl -LD writes its .obj / .exp / import .lib alongside the .dll in
   //    CWD. We only ship the DLL.
@@ -115,7 +115,9 @@ Future<void> _run(String exe, List<String> args,
   stdout.writeln('[run] $desc');
   stdout.writeln('+ $exe ${args.join(' ')}');
   final proc = await Process.start(exe, args,
-      workingDirectory: workingDirectory, runInShell: false);
+      workingDirectory: workingDirectory,
+      runInShell: false,
+      environment: _childEnv);
   final stdoutDone = proc.stdout.listen(stdout.add).asFuture<void>();
   final stderrDone = proc.stderr.listen(stderr.add).asFuture<void>();
   final exitCode = await proc.exitCode;
@@ -123,4 +125,26 @@ Future<void> _run(String exe, List<String> args,
   if (exitCode != 0) {
     throw StateError('$desc failed (exit $exitCode)');
   }
+}
+
+/// package:hooks_runner scrubs many Windows env vars from the build-hook
+/// environment for reproducibility, but vcpkg needs them: APPDATA /
+/// LOCALAPPDATA for its state directory, ProgramFiles / ProgramFiles(x86)
+/// for vswhere-based VS detection. We synthesise the missing ones from
+/// USERPROFILE / SystemDrive which the runner does pass through.
+final Map<String, String> _childEnv = _buildChildEnv();
+
+Map<String, String> _buildChildEnv() {
+  final env = Map<String, String>.from(Platform.environment);
+  if (!Platform.isWindows) return env;
+  final userProfile = env['USERPROFILE'] ?? r'C:\Users\Default';
+  final systemDrive =
+      env['SystemDrive'] ?? userProfile.substring(0, 2); // e.g. "C:"
+  env.putIfAbsent('APPDATA', () => '$userProfile\\AppData\\Roaming');
+  env.putIfAbsent('LOCALAPPDATA', () => '$userProfile\\AppData\\Local');
+  env.putIfAbsent('ProgramFiles', () => '$systemDrive\\Program Files');
+  env.putIfAbsent('ProgramW6432', () => '$systemDrive\\Program Files');
+  env.putIfAbsent(
+      'ProgramFiles(x86)', () => '$systemDrive\\Program Files (x86)');
+  return env;
 }
