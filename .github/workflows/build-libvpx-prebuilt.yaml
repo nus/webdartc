@@ -71,12 +71,15 @@ jobs:
           sdk: '3.11.0'
 
       - name: Set up MSVC dev environment (${{ matrix.msvc_arch }})
-        # TheMrMilchmann's fork of ilammy/msvc-dev-cmd; upstream is still
-        # on Node 20 (no v2 release), which the GitHub runner stops
-        # supporting after 2026-06-02. Same `arch` input shape.
-        uses: TheMrMilchmann/setup-msvc-dev@v4
-        with:
-          arch: ${{ matrix.msvc_arch }}
+        # Source vcvarsall.bat for the chosen target and export the
+        # resulting PATH / INCLUDE / LIB / etc. to subsequent steps via
+        # $GITHUB_ENV. `vswhere.exe` locates the installed VS
+        # regardless of edition (Enterprise / Community / BuildTools).
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS_PATH=%%i"
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.msvc_arch }}
+          set >> "%GITHUB_ENV%"
 
       - name: Set up vcpkg
         # Full (non-shallow) clone — `builtin-baseline` in the manifest
