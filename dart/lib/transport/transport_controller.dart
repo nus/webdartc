@@ -24,6 +24,13 @@ final class TransportController {
   /// `0.0.0.0` as the key; per-interface bind uses the interface IPs.
   final Map<IpAddress, RawDatagramSocket> _sockets = {};
 
+  /// Last local IP a DTLS record arrived on. DTLS state-machine output
+  /// packets don't carry a localIp, but Windows refuses to bounce UDP
+  /// across non-loopback interfaces — so when no other localIp signal
+  /// is available, sending the reply from the same socket that just
+  /// received a record is the most reliable choice.
+  IpAddress? _lastInboundLocalIp;
+
   IceStateMachine? _ice;
   DtlsStateMachine? _dtls;
   SrtpContext? _srtp;
@@ -73,7 +80,10 @@ final class TransportController {
       final socket =
           await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
       final bindIp = IpAddress.fromBytes(socket.address.rawAddress);
-      socket.listen((event) => _onEvent(socket, bindIp, event));
+      socket.listen(
+        (event) => _onEvent(socket, bindIp, event),
+        onError: _onSocketError,
+      );
       _sockets[bindIp] = socket;
       _bindings = [(ip: await _findLocalIpv4(), port: socket.port)];
       return;
@@ -87,7 +97,10 @@ final class TransportController {
     for (var i = 0; i < bindIps.length; i++) {
       final ip = bindIps[i];
       final socket = sockets[i];
-      socket.listen((event) => _onEvent(socket, ip, event));
+      socket.listen(
+        (event) => _onEvent(socket, ip, event),
+        onError: _onSocketError,
+      );
       _sockets[ip] = socket;
       bindings.add((ip: ip, port: socket.port));
     }
@@ -237,6 +250,17 @@ final class TransportController {
   // Debug logging — set WEBDARTC_DEBUG=1 env var to trace packet flow.
   static final bool _debug = Platform.environment['WEBDARTC_DEBUG'] == '1';
 
+  /// UDP errors that surface asynchronously on the socket stream — most
+  /// commonly send failures the OS reports after the synchronous
+  /// `send()` already returned (e.g. on Windows, sending UDP from a
+  /// host-IP socket back to the same host IP raises errno 1214
+  /// ERROR_BAD_NET_NAME on a later tick). Network errors are non-fatal
+  /// in UDP — ICE pair probing tolerates per-pair failure — so we
+  /// swallow them rather than letting them tear down the isolate.
+  void _onSocketError(Object error, StackTrace stack) {
+    if (_debug) stderr.writeln('[transport] socket error: $error');
+  }
+
   void _onEvent(
       RawDatagramSocket socket, IpAddress bindIp, RawSocketEvent event) {
     if (event != RawSocketEvent.read) return;
@@ -270,7 +294,11 @@ final class TransportController {
     if (StunParser.isStun(data)) {
       _processIce(data, remoteIp, remotePort, localIp);
     } else if (firstByte >= 20 && firstByte <= 63) {
-      // DTLS record layer
+      // DTLS record layer. Remember which local socket received it so
+      // outgoing DTLS records (which don't carry a localIp in their
+      // OutputPackets) reply on the same interface — important on
+      // Windows where cross-interface UDP sends can fail.
+      _lastInboundLocalIp = localIp;
       _processDtls(data, remoteIp, remotePort);
     } else if (firstByte >= 128 && firstByte <= 191) {
       // RTP or RTCP
@@ -373,13 +401,32 @@ final class TransportController {
     return null;
   }
 
-  /// Pick a socket for sending. Prefers the one bound to [localIp]; falls
-  /// back to any socket when [localIp] is null (gather-path STUN) or when
+  /// Pick a socket for sending. Prefers the one bound to [localIp]; if
+  /// that's null, prefers the socket bound to the ICE-selected pair's
+  /// local IP (DTLS / SCTP OutputPackets don't carry localIp, but we
+  /// still want them to leave on the nominated interface — important on
+  /// Windows where cross-interface UDP sends can fail with errno 1214
+  /// even between local IPs). Final fallback is any socket — used for
   /// the lookup misses (wildcard bind: socket key is `0.0.0.0`, candidate
   /// IP is auto-detected).
   RawDatagramSocket? _selectSocket(IpAddress? localIp) {
     if (localIp != null) {
       final s = _sockets[localIp];
+      if (s != null) return s;
+    }
+    // Prefer the interface a DTLS record most recently arrived on
+    // (set in `_dispatch`): DTLS state-machine outputs carry no
+    // localIp and ICE may have selected a pair that doesn't actually
+    // route on Windows even though its connectivity check raced ahead
+    // of the loopback pair's. The receive interface is the most
+    // authoritative signal of "the peer can reach us here".
+    if (_lastInboundLocalIp != null) {
+      final s = _sockets[_lastInboundLocalIp!];
+      if (s != null) return s;
+    }
+    final selected = _ice?.selectedPair?.local.ip;
+    if (selected != null) {
+      final s = _sockets[selected];
       if (s != null) return s;
     }
     return _sockets.values.firstOrNull;

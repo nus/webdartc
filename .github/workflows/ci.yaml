@@ -138,6 +138,70 @@ jobs:
         # bidirectional test is @TestOn('mac-os') so skipped.
         run: dart test test/e2e/ --timeout=180s
 
+  dart-test-e2e-windows:
+    name: dart / E2E Tests (Windows)
+    runs-on: windows-latest
+    defaults:
+      # Same as dart-test-unit — the Detach-from-workspace step uses
+      # `rm`/`sed` which need bash on Windows (git-bash).
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.11.0'
+      - name: Detach from workspace
+        run: |
+          rm -f pubspec.yaml
+          sed -i '' -e '/^resolution: workspace$/d' dart/pubspec.yaml 2>/dev/null \
+            || sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
+      - working-directory: dart
+        run: dart pub get
+      - working-directory: dart
+        # Stable subset for Windows E2E. The "webdartc as answerer"
+        # scenarios (Chrome drives ICE pair selection) and the
+        # unidirectional VP8 sample converge reliably on Windows; the
+        # "webdartc as offerer with bidirectional receive" scenarios —
+        # Scenario 1 (data channel), Scenario 2 (recvonly media),
+        # Scenario 3 (Trickle ICE), the packet-loss group, and the
+        # H.264 sample — are flaky because Chrome's chosen ICE pair
+        # on its side doesn't always line up with the pair Dart picks,
+        # and the ensuing DTLS direction gets dropped. Linux/macOS run
+        # the full matrix and catch any cross-OS regression there.
+        #
+        # Firefox is skipped entirely — firefox_for_testing.dart
+        # treats the upstream `.exe` installer as a zip and fails to
+        # extract it; a future change can 7z-extract the NSIS
+        # installer so we don't pollute HKLM.
+        #
+        # Even the "stable" subset hits a transient failure roughly
+        # once every several CI runs (Chrome launch race, GCM
+        # registration timeout, etc.) so we retry the whole command
+        # up to three times before declaring failure.
+        # `--concurrency=1` serialises the test files so the shared
+        # Chrome for Testing download cache doesn't race.
+        run: |
+          for attempt in 1 2 3; do
+            echo "::group::Attempt $attempt"
+            if dart test \
+                 test/e2e/e2e_test.dart \
+                 test/e2e/video_call_sample_test.dart \
+                 -n "Scenario 1b|Scenario 4|Scenario 5|vp8 video frames" \
+                 --concurrency=1 \
+                 --timeout=180s
+            then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "::warning::Windows E2E attempt $attempt failed; retrying"
+          done
+          echo "::error::Windows E2E failed after 3 attempts"
+          exit 1
+
   dart-test-e2e-macos:
     name: dart / E2E Tests (macOS)
     runs-on: macos-latest

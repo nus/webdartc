@@ -11,6 +11,7 @@
 ///   Playwright CDN:     https://playwright.azureedge.net/builds/chromium/<revision>/chromium-linux-arm64.zip
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -156,6 +157,11 @@ class ChromeForTesting {
   }
 
   String _resolveChromeBinary(String versionDir, String platform) {
+    // Return absolute paths — Windows `Process.start` doesn't reliably
+    // resolve forward-slash relative paths the way Unix shells do (the
+    // download cache is `.local/...`).
+    String resolved(String p) => File(p).absolute.path;
+
     // macOS: .app bundle
     if (platform.startsWith('mac')) {
       final candidates = [
@@ -163,17 +169,17 @@ class ChromeForTesting {
             'Contents/MacOS/Google Chrome for Testing',
       ];
       for (final c in candidates) {
-        if (File(c).existsSync()) return c;
+        if (File(c).existsSync()) return resolved(c);
       }
     }
     // Linux/Windows: flat binary
     if (platform.startsWith('linux')) {
       final c = '$versionDir/chrome-$platform/chrome';
-      if (File(c).existsSync()) return c;
+      if (File(c).existsSync()) return resolved(c);
     }
     if (platform.startsWith('win')) {
       final c = '$versionDir/chrome-$platform/chrome.exe';
-      if (File(c).existsSync()) return c;
+      if (File(c).existsSync()) return resolved(c);
     }
     // Fallback: search recursively
     return _findExecutable(versionDir, platform.startsWith('win') ? 'chrome.exe' : 'chrome');
@@ -227,12 +233,21 @@ class ChromeForTesting {
 
   /// Launch Chrome directly with --remote-debugging-port and return the CDP
   /// debugging port. No chromedriver required.
+  ///
+  /// stdout/stderr are subscribed here (so a launch failure can include
+  /// captured output in its error). [onStderrLine], if given, also
+  /// receives each decoded stderr line — useful for the caller to log
+  /// Chrome-side messages without re-listening to `proc.stderr` (which
+  /// would throw "Stream has already been listened to").
   Future<(Process, int)> launchChrome({
     List<String> extraArgs = const [],
+    void Function(String line)? onStderrLine,
   }) async {
     final userDataDir = await Directory.systemTemp.createTemp('chrome_e2e_');
 
-    await Process.run('chmod', ['+x', chromeBinaryPath]);
+    if (!Platform.isWindows) {
+      await Process.run('chmod', ['+x', chromeBinaryPath]);
+    }
 
     final proc = await Process.start(
       chromeBinaryPath,
@@ -248,22 +263,84 @@ class ChromeForTesting {
       mode: ProcessStartMode.normal,
     );
 
+    // Drain stdout/stderr here so the streams are flowing while we wait
+    // for DevToolsActivePort. The caller can't re-listen to these
+    // (single-subscription), so we forward stderr lines via the
+    // optional callback and buffer the tail for the failure message.
+    final stderrTail = _RingTail(capacity: 4096);
+    final stdoutTail = _RingTail(capacity: 1024);
+    proc.stdout.transform(utf8.decoder).listen(stdoutTail.write);
+    proc.stderr.transform(utf8.decoder).listen((chunk) {
+      stderrTail.write(chunk);
+      if (onStderrLine != null) {
+        for (final line in chunk.split('\n')) {
+          if (line.isNotEmpty) onStderrLine(line);
+        }
+      }
+    });
+
     // Read the debugging port from the DevToolsActivePort file.
     final portFile = File('${userDataDir.path}/DevToolsActivePort');
+    int? earlyExit;
+    unawaited(proc.exitCode.then((code) => earlyExit = code));
     for (var i = 0; i < 100; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       if (portFile.existsSync()) {
-        final content = portFile.readAsStringSync().trim();
-        final lines = content.split('\n');
-        if (lines.isNotEmpty) {
-          final port = int.tryParse(lines[0]);
-          if (port != null) return (proc, port);
+        // On Windows, `existsSync` flips to true the moment Chrome
+        // creates the file, but the write often hasn't finished yet
+        // and the file is still held exclusively — `readAsStringSync`
+        // then throws PathAccessException (errno 32, sharing
+        // violation). Swallow and retry on the next tick.
+        try {
+          final content = portFile.readAsStringSync().trim();
+          final lines = content.split('\n');
+          if (lines.isNotEmpty) {
+            final port = int.tryParse(lines[0]);
+            if (port != null) return (proc, port);
+          }
+        } on FileSystemException {
+          // Chrome is mid-write; retry next iteration.
         }
       }
+      if (earlyExit != null) break;
     }
 
     proc.kill();
+    final exitCode = earlyExit ??
+        await proc.exitCode
+            .timeout(const Duration(seconds: 2), onTimeout: () => -1);
     throw StateError(
-        'Chrome did not write DevToolsActivePort within 10 seconds');
+      'Chrome did not write DevToolsActivePort within 10 seconds.\n'
+      '  chrome:        $chromeBinaryPath\n'
+      '  exit:          $exitCode\n'
+      '  user-data-dir: ${userDataDir.path}\n'
+      '  stderr (tail): ${stderrTail.snapshot().trim()}\n'
+      '  stdout (tail): ${stdoutTail.snapshot().trim()}',
+    );
+  }
+}
+
+/// Rolling tail buffer — keeps at most [capacity] chars of recent
+/// stream output. Used to surface Chrome's last stderr/stdout in
+/// launchChrome's failure message without holding unbounded memory.
+class _RingTail {
+  _RingTail({required this.capacity});
+
+  final int capacity;
+  final StringBuffer _buf = StringBuffer();
+
+  void write(String chunk) {
+    _buf.write(chunk);
+    if (_buf.length > capacity * 2) {
+      final s = _buf.toString();
+      _buf
+        ..clear()
+        ..write(s.substring(s.length - capacity));
+    }
+  }
+
+  String snapshot() {
+    final s = _buf.toString();
+    return s.length <= capacity ? s : s.substring(s.length - capacity);
   }
 }

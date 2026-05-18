@@ -38,7 +38,11 @@ final class SignalingServer {
 
   Future<void> close() async {
     _closed = true;
-    for (final ws in _clients) {
+    // ws.close() triggers the connection's `onDone` which removes the
+    // entry from `_clients` synchronously on the next event-loop tick
+    // — iterate a snapshot to avoid ConcurrentModificationError when
+    // the close happens fast enough (typical on Windows loopback).
+    for (final ws in _clients.toList()) {
       await ws.close();
     }
     await _server.close();

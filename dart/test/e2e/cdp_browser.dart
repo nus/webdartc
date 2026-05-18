@@ -48,23 +48,19 @@ final class CdpBrowser {
     List<String> extraArgs = const [],
     void Function(String line)? onStderrLine,
   }) async {
-    final (proc, debugPort) = await cft.launchChrome(extraArgs: [
-      '--headless=new',
-      '--no-sandbox',
-      '--allow-loopback-in-peer-connection',
-      '--network-service-in-process',
-      ...extraArgs,
-    ]);
-
-    proc.stdout.listen((_) {});
-    if (onStderrLine != null) {
-      proc.stderr
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())
-          .listen(onStderrLine);
-    } else {
-      proc.stderr.listen((_) {});
-    }
+    final (proc, debugPort) = await cft.launchChrome(
+      extraArgs: [
+        '--headless=new',
+        '--no-sandbox',
+        '--allow-loopback-in-peer-connection',
+        '--network-service-in-process',
+        ...extraArgs,
+      ],
+      // launchChrome already subscribes to stdout/stderr (single-sub
+      // streams), so we forward our onStderrLine callback rather than
+      // re-listening on proc.stderr here.
+      onStderrLine: onStderrLine,
+    );
 
     // Discover the page target WebSocket URL.
     String wsUrl;

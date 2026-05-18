@@ -15,6 +15,9 @@ import 'dart:typed_data';
 
 import 'package:webdartc/webdartc.dart';
 
+// See webdartc_offerer_helper.dart for the loopback-only rationale.
+const _kE2ESettings = SettingEngine(includeLoopbackCandidate: true);
+
 // ── Minimal WebSocket client (same as webdartc_offerer_helper.dart) ──────────
 
 final class _WsClient {
@@ -169,7 +172,10 @@ Future<int> _run(int sigPort) async {
   // Register as answerer — wait for Chrome's offer.
   ws.sendJson({'type': 'register', 'role': 'answerer'});
 
-  final pc = PeerConnection(configuration: const PeerConnectionConfiguration());
+  final pc = PeerConnection(
+    configuration: const PeerConnectionConfiguration(),
+    settingEngine: _kE2ESettings,
+  );
   pc.onIceConnectionStateChange.listen((state) {
     stderr.writeln('[answerer] ICE state: $state');
   });

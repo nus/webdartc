@@ -112,9 +112,16 @@ final class IceStateMachine implements ProtocolStateMachine {
 
     for (final host in hosts) {
       final foundation = Csprng.randomHex(4);
+      // Loopback candidates only form usable pairs when the peer is on
+      // the same host — common in E2E tests. When they do, prefer
+      // them: same-host loopback is cheaper and more reliable than
+      // forcing UDP across non-loopback adapters (notably on Windows,
+      // which can refuse the latter with errno 1214). On real networks
+      // the loopback pair simply doesn't form, so non-loopback still
+      // wins by default.
       final priority = IceCandidate.computePriority(
         typePreference: IceCandidate.typePreferenceHost,
-        localPreference: 65535,
+        localPreference: host.ip.isLoopback ? 65535 : 32767,
         componentId: 1,
       );
       final hostCandidate = IceCandidate(
@@ -295,8 +302,15 @@ final class IceStateMachine implements ProtocolStateMachine {
   ) {
     final remoteParams = _remoteParams;
     if (remoteParams == null) {
-      // Not ready yet — respond with error 400
-      return _buildErrorResponse(msg.transactionId, 400, 'Bad Request', remoteAddr, remotePort, localIp);
+      // Connectivity check from the peer arrived before
+      // setRemoteDescription processed their ICE credentials — RFC 8445
+      // §7.3.1 leaves the response to implementation discretion. Replying
+      // with `400 Bad Request` causes some peers (notably Chrome on
+      // Windows) to fail the candidate pair and stop retrying, killing
+      // the only working ICE path before the answer is parsed. Silently
+      // drop instead so the peer's normal STUN retransmit eventually
+      // catches us with credentials in hand.
+      return const Ok(ProcessResult.empty);
     }
 
     // Validate USERNAME
@@ -320,7 +334,8 @@ final class IceStateMachine implements ProtocolStateMachine {
     final nominated = msg.attribute<UseCandidateAttr>() != null;
 
     // Find or create matching pair; may return triggered-check packets (RFC 8445 §7.3.1.4).
-    final triggeredPackets = _updatePairFromRequest(remoteAddr, remotePort, nominated);
+    final triggeredPackets =
+        _updatePairFromRequest(remoteAddr, remotePort, nominated, localIp);
 
     // Build success response
     final successResult = _buildSuccessResponse(
@@ -478,11 +493,21 @@ final class IceStateMachine implements ProtocolStateMachine {
   /// binding request arrives from [remoteAddr]:[remotePort].
   ///
   /// Returns triggered-check packets per RFC 8445 §7.3.1.4.
-  List<OutputPacket> _updatePairFromRequest(
-      IpAddress remoteAddr, int remotePort, bool nominated) {
-    final matchingPair = _pairs
-        .where((p) => p.remote.ip == remoteAddr && p.remote.port == remotePort)
-        .firstOrNull;
+  List<OutputPacket> _updatePairFromRequest(IpAddress remoteAddr, int remotePort,
+      bool nominated, IpAddress? localIp) {
+    // When the controlled agent receives a USE-CANDIDATE binding request
+    // on a specific local socket, that's the pair the peer is trying to
+    // nominate — match on (local, remote) so we don't accidentally mark
+    // a different (non-routable) local pair as nominated just because
+    // it shares the same remote candidate. Falls back to remote-only
+    // match when the receive path didn't provide a local IP.
+    Iterable<CandidatePair> candidates = _pairs
+        .where((p) => p.remote.ip == remoteAddr && p.remote.port == remotePort);
+    if (localIp != null) {
+      final localMatches = candidates.where((p) => p.local.ip == localIp);
+      if (localMatches.isNotEmpty) candidates = localMatches;
+    }
+    final matchingPair = candidates.firstOrNull;
 
     if (matchingPair != null) {
       if (nominated && !controlling) {
