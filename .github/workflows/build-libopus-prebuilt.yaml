@@ -129,6 +129,7 @@ jobs:
           )
           findstr /R " opus_[a-zA-Z]" exports.txt >nul && (
             echo ::error::libopus symbols leaked into %dll%
+            type exports.txt
             exit /b 1
           )
           echo %dll% exports look clean.
