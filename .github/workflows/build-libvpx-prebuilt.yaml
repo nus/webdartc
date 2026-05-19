@@ -129,7 +129,10 @@ jobs:
               type exports.txt
               exit /b 1
             )
-            findstr /R " vpx_[a-zA-Z]" exports.txt >nul && (
+            :: `\<` anchors at a word boundary — keeps the bare-`vpx_`
+            :: check defensive against any future wrapper rename that
+            :: might happen to contain `vpx_` as a substring.
+            findstr /R "\<vpx_[a-zA-Z]" exports.txt >nul && (
               echo ::error::libvpx symbols leaked into !dll!
               exit /b 1
             )

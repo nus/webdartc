@@ -127,7 +127,11 @@ jobs:
             type exports.txt
             exit /b 1
           )
-          findstr /R " opus_[a-zA-Z]" exports.txt >nul && (
+          :: `\<` anchors at a word boundary so the bare-`opus_` check
+          :: doesn't trip on the `opus_` substring inside `webdartc_opus_*`
+          :: (findstr's `_` is a word char, so `\<opus_` only matches when
+          :: preceded by a non-word char or start of line).
+          findstr /R "\<opus_[a-zA-Z]" exports.txt >nul && (
             echo ::error::libopus symbols leaked into %dll%
             type exports.txt
             exit /b 1
