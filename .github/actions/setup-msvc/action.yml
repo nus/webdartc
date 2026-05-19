@@ -1,8 +1,8 @@
 name: 'Set up MSVC dev environment'
 description: >-
-  Source vcvarsall.bat for the given target architecture and export the
-  resulting PATH / INCLUDE / LIB / etc. to subsequent steps via
-  $GITHUB_ENV. vswhere.exe locates the installed Visual Studio
+  Source vcvarsall.bat for the given target architecture and export
+  only the env vars vcvarsall actually changes to subsequent steps
+  via $GITHUB_ENV. vswhere.exe locates the installed Visual Studio
   regardless of edition (Enterprise / Community / BuildTools).
 inputs:
   arch:
@@ -11,8 +11,32 @@ inputs:
 runs:
   using: composite
   steps:
-    - shell: cmd
+    - shell: pwsh
+      # A naive `set >> $GITHUB_ENV` re-emits every pre-existing var.
+      # The runner already has e.g. `ProgramW6432` set, cmd.exe's `set`
+      # output writes it back as `PROGRAMW6432=...`, and the resulting
+      # process env ends up with both case variants — MSBuild rejects
+      # the duplicate ("Item has already been added. Key in
+      # dictionary: 'PROGRAMW6432' Key being added: 'ProgramW6432'")
+      # and CL.exe fails. Snapshot before / after vcvarsall.bat and
+      # forward only the changed entries, matching how
+      # ilammy/msvc-dev-cmd handles this internally.
       run: |
-        for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS_PATH=%%i"
-        call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" ${{ inputs.arch }}
-        set >> "%GITHUB_ENV%"
+        $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+        $vcvars = "$vsPath\VC\Auxiliary\Build\vcvarsall.bat"
+
+        $before = @{}
+        foreach ($e in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+          $before[$e.Key.ToUpperInvariant()] = $e.Value
+        }
+
+        $output = & cmd /c "`"$vcvars`" ${{ inputs.arch }} >NUL && set"
+        foreach ($line in $output) {
+          if ($line -match '^([^=]+)=(.*)$') {
+            $key = $matches[1]
+            $val = $matches[2]
+            if ($before[$key.ToUpperInvariant()] -ne $val) {
+              "$key=$val" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+        }
