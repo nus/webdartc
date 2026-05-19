@@ -28,9 +28,11 @@ runs:
         $changed = [System.Collections.Generic.List[string]]::new()
         foreach ($line in & cmd /c "`"$vcvars`" ${{ inputs.arch }} >NUL && set") {
           if ($line -match '^([^=]+)=(.*)$') {
+            # Cache the value before the next `-match` clobbers $matches.
             $key = $matches[1]
+            $val = $matches[2]
             if ($key -match $vcEnvPattern) {
-              $changed.Add("$key=$($matches[2])")
+              $changed.Add("$key=$val")
             }
           }
         }
