@@ -135,16 +135,39 @@ Future<void> _run(String exe, List<String> args,
 final Map<String, String> _childEnv = _buildChildEnv();
 
 Map<String, String> _buildChildEnv() {
-  final env = Map<String, String>.from(Platform.environment);
-  if (!Platform.isWindows) return env;
-  final userProfile = env['USERPROFILE'] ?? r'C:\Users\Default';
-  final systemDrive =
-      env['SystemDrive'] ?? userProfile.substring(0, 2); // e.g. "C:"
-  env.putIfAbsent('APPDATA', () => '$userProfile\\AppData\\Roaming');
-  env.putIfAbsent('LOCALAPPDATA', () => '$userProfile\\AppData\\Local');
-  env.putIfAbsent('ProgramFiles', () => '$systemDrive\\Program Files');
-  env.putIfAbsent('ProgramW6432', () => '$systemDrive\\Program Files');
-  env.putIfAbsent(
-      'ProgramFiles(x86)', () => '$systemDrive\\Program Files (x86)');
+  if (!Platform.isWindows) {
+    return Map<String, String>.from(Platform.environment);
+  }
+  // Windows env names are case-insensitive, but the GitHub Actions
+  // Windows runner image's env block carries `ProgramW6432` and
+  // `PROGRAMW6432` as separate entries. Forwarding both via Process.start
+  // crashes MSBuild's case-sensitive .NET StringDictionary with
+  // "Item has already been added. Key in dictionary: 'PROGRAMW6432'".
+  // Collapse case-duplicates here, keeping the first-seen original case.
+  final byLower = <String, String>{}; // lower-cased name → original case
+  final env = <String, String>{};
+  for (final e in Platform.environment.entries) {
+    final lk = e.key.toLowerCase();
+    if (byLower.containsKey(lk)) continue;
+    byLower[lk] = e.key;
+    env[e.key] = e.value;
+  }
+  String? getCi(String k) {
+    final orig = byLower[k.toLowerCase()];
+    return orig == null ? null : env[orig];
+  }
+  void putIfMissingCi(String k, String v) {
+    final lk = k.toLowerCase();
+    if (byLower.containsKey(lk)) return;
+    byLower[lk] = k;
+    env[k] = v;
+  }
+  final userProfile = getCi('USERPROFILE') ?? r'C:\Users\Default';
+  final systemDrive = getCi('SystemDrive') ?? userProfile.substring(0, 2);
+  putIfMissingCi('APPDATA', '$userProfile\\AppData\\Roaming');
+  putIfMissingCi('LOCALAPPDATA', '$userProfile\\AppData\\Local');
+  putIfMissingCi('ProgramFiles', '$systemDrive\\Program Files');
+  putIfMissingCi('ProgramW6432', '$systemDrive\\Program Files');
+  putIfMissingCi('ProgramFiles(x86)', '$systemDrive\\Program Files (x86)');
   return env;
 }
