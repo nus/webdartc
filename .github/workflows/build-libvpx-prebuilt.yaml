@@ -70,6 +70,15 @@ jobs:
         with:
           sdk: '3.11.0'
 
+      - name: Set up MSVC environment
+        # Must run BEFORE "Set up vcpkg" so the later step's
+        # VCPKG_ROOT=$RUNNER_TEMP/vcpkg write to $GITHUB_ENV wins over
+        # the VS-bundled VCPKG_ROOT vcvarsall introduces (otherwise vcpkg
+        # warns "ignoring mismatched VCPKG_ROOT environment value …").
+        uses: ./.github/actions/setup-msvc
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
       - name: Set up vcpkg
         # Full (non-shallow) clone — `builtin-baseline` in the manifest
         # checks out a historical commit (`versions/baseline.json` at that
@@ -79,11 +88,6 @@ jobs:
           "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
           echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/vcpkg" >> "$GITHUB_PATH"
-
-      - name: Set up MSVC environment
-        uses: ./.github/actions/setup-msvc
-        with:
-          arch: ${{ matrix.msvc_arch }}
 
       - name: Build webdartc_vp{8,9}.dll
         # Single source of truth for "install libvpx + compile wrappers" —
