@@ -70,11 +70,6 @@ jobs:
         with:
           sdk: '3.11.0'
 
-      - name: Set up MSVC dev environment (${{ matrix.msvc_arch }})
-        uses: ./.github/actions/setup-msvc
-        with:
-          arch: ${{ matrix.msvc_arch }}
-
       - name: Set up vcpkg
         # Full (non-shallow) clone — `builtin-baseline` in the manifest
         # checks out a historical commit (`versions/baseline.json` at that
@@ -90,11 +85,16 @@ jobs:
         # `dart/tool/build_libvpx_wrappers.dart` runs the same logic from
         # the end-user source-build path in `dart/hook/build.dart`, so
         # the prebuilt and source-build outputs stay bit-compatible.
+        # vcvarsall.bat is sourced inline so cl / link land in PATH for
+        # this step only — no env leakage into the next step.
+        shell: cmd
         run: |
-          dart run dart/tool/build_libvpx_wrappers.dart \
-            --triplet=${{ matrix.triplet }} \
-            --manifest-dir=dart/tool/libvpx_vcpkg \
-            --src-dir=dart/src \
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS_PATH=%%i"
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.msvc_arch }} >nul || exit /b 1
+          dart run dart/tool/build_libvpx_wrappers.dart ^
+            --triplet=${{ matrix.triplet }} ^
+            --manifest-dir=dart/tool/libvpx_vcpkg ^
+            --src-dir=dart/src ^
             --out-dir=staging
 
       - name: Assemble LICENSE + NOTICE
@@ -115,23 +115,27 @@ jobs:
       - name: Verify exports (no libvpx symbol leak)
         # Wrapper TUs tag only `webdartc_*` symbols with __declspec(dllexport);
         # libvpx is statically linked but its symbols stay internal.
+        # dumpbin lives in VC Tools; source vcvarsall to find it.
+        shell: cmd
         run: |
-          set -eu
-          for codec in vp8 vp9; do
-            dll="staging/webdartc_${codec}.dll"
-            dumpbin -nologo -exports "$dll" > exports.txt
-            if ! grep -q "webdartc_${codec}_" exports.txt; then
-              echo "::error::No webdartc_${codec}_* exports found in $dll"
-              cat exports.txt
-              exit 1
-            fi
-            if grep -E '[[:space:]]vpx_[a-zA-Z]' exports.txt; then
-              echo "::error::libvpx symbols leaked into $dll"
-              exit 1
-            fi
-            echo "$dll exports look clean."
-          done
-          rm exports.txt
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS_PATH=%%i"
+          call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.msvc_arch }} >nul || exit /b 1
+          setlocal EnableDelayedExpansion
+          for %%c in (vp8 vp9) do (
+            set "dll=staging\webdartc_%%c.dll"
+            dumpbin -nologo -exports "!dll!" > exports.txt
+            findstr /C:"webdartc_%%c_" exports.txt >nul || (
+              echo ::error::No webdartc_%%c_* exports found in !dll!
+              type exports.txt
+              exit /b 1
+            )
+            findstr /R " vpx_[a-zA-Z]" exports.txt >nul && (
+              echo ::error::libvpx symbols leaked into !dll!
+              exit /b 1
+            )
+            echo !dll! exports look clean.
+          )
+          del exports.txt
 
       - name: Package zip
         id: pkg
