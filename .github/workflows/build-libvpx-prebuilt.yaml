@@ -119,7 +119,6 @@ jobs:
       - name: Verify exports (no libvpx symbol leak)
         # Wrapper TUs tag only `webdartc_*` symbols with __declspec(dllexport);
         # libvpx is statically linked but its symbols stay internal.
-        # dumpbin from VC Tools is on PATH thanks to the setup-msvc action.
         shell: cmd
         run: |
           setlocal EnableDelayedExpansion
@@ -131,9 +130,6 @@ jobs:
               type exports.txt
               exit /b 1
             )
-            :: `\<` anchors at a word boundary — keeps the bare-`vpx_`
-            :: check defensive against any future wrapper rename that
-            :: might happen to contain `vpx_` as a substring.
             findstr /R "\<vpx_[a-zA-Z]" exports.txt >nul && (
               echo ::error::libvpx symbols leaked into !dll!
               exit /b 1

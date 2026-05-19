@@ -11,8 +11,8 @@
 //   - MSVC cl + link in PATH (vcvarsall.bat or ilammy/msvc-dev-cmd).
 //   - vcpkg in PATH (or pass --vcpkg=<path>).
 //
-// Self-contained (only dart:io / dart:async) so `dart run` works without
-// `dart pub get`.
+// No `package:` imports (only `dart:io` and the sibling `wrapper_build_env.dart`)
+// so `dart run` works without `dart pub get`.
 //
 // Usage:
 //   dart run dart/tool/build_libopus_wrappers.dart \
@@ -22,6 +22,8 @@
 //     --out-dir=staging
 
 import 'dart:io';
+
+import 'wrapper_build_env.dart';
 
 Future<void> main(List<String> args) async {
   final opts = _parseArgs(args);
@@ -126,47 +128,4 @@ Future<void> _run(String exe, List<String> args,
   }
 }
 
-/// package:hooks_runner scrubs many Windows env vars from the build-hook
-/// environment for reproducibility, but vcpkg needs them: APPDATA /
-/// LOCALAPPDATA for its state directory, ProgramFiles / ProgramFiles(x86)
-/// for vswhere-based VS detection. We synthesise the missing ones from
-/// USERPROFILE / SystemDrive which the runner does pass through.
-final Map<String, String> _childEnv = _buildChildEnv();
-
-Map<String, String> _buildChildEnv() {
-  if (!Platform.isWindows) {
-    return Map<String, String>.from(Platform.environment);
-  }
-  // Windows env names are case-insensitive, but the GitHub Actions
-  // Windows runner image's env block carries `ProgramW6432` and
-  // `PROGRAMW6432` as separate entries. Forwarding both via Process.start
-  // crashes MSBuild's case-sensitive .NET StringDictionary with
-  // "Item has already been added. Key in dictionary: 'PROGRAMW6432'".
-  // Collapse case-duplicates here, keeping the first-seen original case.
-  final byLower = <String, String>{}; // lower-cased name → original case
-  final env = <String, String>{};
-  for (final e in Platform.environment.entries) {
-    final lk = e.key.toLowerCase();
-    if (byLower.containsKey(lk)) continue;
-    byLower[lk] = e.key;
-    env[e.key] = e.value;
-  }
-  String? getCi(String k) {
-    final orig = byLower[k.toLowerCase()];
-    return orig == null ? null : env[orig];
-  }
-  void putIfMissingCi(String k, String v) {
-    final lk = k.toLowerCase();
-    if (byLower.containsKey(lk)) return;
-    byLower[lk] = k;
-    env[k] = v;
-  }
-  final userProfile = getCi('USERPROFILE') ?? r'C:\Users\Default';
-  final systemDrive = getCi('SystemDrive') ?? userProfile.substring(0, 2);
-  putIfMissingCi('APPDATA', '$userProfile\\AppData\\Roaming');
-  putIfMissingCi('LOCALAPPDATA', '$userProfile\\AppData\\Local');
-  putIfMissingCi('ProgramFiles', '$systemDrive\\Program Files');
-  putIfMissingCi('ProgramW6432', '$systemDrive\\Program Files');
-  putIfMissingCi('ProgramFiles(x86)', '$systemDrive\\Program Files (x86)');
-  return env;
-}
+final Map<String, String> _childEnv = buildWrapperChildEnv();

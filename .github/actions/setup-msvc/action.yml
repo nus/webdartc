@@ -34,22 +34,22 @@ runs:
         if (-not $vsPath) { throw 'vswhere could not locate Visual Studio.' }
         $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvarsall.bat'
 
-        # Source vcvarsall in cmd and dump the resulting env to a tmp file.
         $dump = Join-Path $env:RUNNER_TEMP 'msvc_env.txt'
-        & cmd /c "call `"$vcvars`" $env:ARCH >nul && set > `"$dump`""
-        if ($LASTEXITCODE -ne 0) {
-          throw "vcvarsall.bat $env:ARCH exited $LASTEXITCODE."
+        try {
+          & cmd /c "call `"$vcvars`" $env:ARCH >nul && set > `"$dump`""
+          if ($LASTEXITCODE -ne 0) {
+            throw "vcvarsall.bat $env:ARCH exited $LASTEXITCODE."
+          }
+          # cmd writes the dump in the active code page (typically OEM);
+          # ASCII would mangle 8-bit chars in localized paths.
+          foreach ($line in Get-Content -LiteralPath $dump -Encoding OEM) {
+            $eq = $line.IndexOf('=')
+            if ($eq -lt 1) { continue }
+            $name  = $line.Substring(0, $eq)
+            $value = $line.Substring($eq + 1)
+            if ($before.ContainsKey($name) -and $before[$name] -eq $value) { continue }
+            Add-Content -LiteralPath $env:GITHUB_ENV -Value "${name}=${value}"
+          }
+        } finally {
+          Remove-Item -LiteralPath $dump -ErrorAction SilentlyContinue
         }
-
-        # Forward only the entries that vcvarsall added or changed.
-        # PATH is just another var here — vcvarsall prepends, so the
-        # runner's original PATH entries remain at the tail.
-        foreach ($line in Get-Content -LiteralPath $dump -Encoding ASCII) {
-          $eq = $line.IndexOf('=')
-          if ($eq -lt 1) { continue }
-          $name  = $line.Substring(0, $eq)
-          $value = $line.Substring($eq + 1)
-          if ($before.ContainsKey($name) -and $before[$name] -eq $value) { continue }
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "${name}=${value}"
-        }
-        Remove-Item -LiteralPath $dump

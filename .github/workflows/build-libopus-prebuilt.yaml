@@ -119,7 +119,6 @@ jobs:
       - name: Verify exports (no libopus symbol leak)
         # Wrapper TU tags only `webdartc_*` symbols with __declspec(dllexport);
         # libopus is statically linked but its symbols stay internal.
-        # dumpbin from VC Tools is on PATH thanks to the setup-msvc action.
         shell: cmd
         run: |
           set "dll=staging\webdartc_opus.dll"
@@ -129,10 +128,8 @@ jobs:
             type exports.txt
             exit /b 1
           )
-          :: `\<` anchors at a word boundary so the bare-`opus_` check
-          :: doesn't trip on the `opus_` substring inside `webdartc_opus_*`
-          :: (findstr's `_` is a word char, so `\<opus_` only matches when
-          :: preceded by a non-word char or start of line).
+          :: `\<` (word boundary) keeps bare-`opus_` from matching the
+          :: `opus_` substring inside `webdartc_opus_*`.
           findstr /R "\<opus_[a-zA-Z]" exports.txt >nul && (
             echo ::error::libopus symbols leaked into %dll%
             type exports.txt
