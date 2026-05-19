@@ -80,21 +80,21 @@ jobs:
           echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/vcpkg" >> "$GITHUB_PATH"
 
+      - name: Set up MSVC environment
+        uses: ./.github/actions/setup-msvc
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
       - name: Build webdartc_vp{8,9}.dll
         # Single source of truth for "install libvpx + compile wrappers" —
         # `dart/tool/build_libvpx_wrappers.dart` runs the same logic from
         # the end-user source-build path in `dart/hook/build.dart`, so
         # the prebuilt and source-build outputs stay bit-compatible.
-        # vcvarsall.bat is sourced inline so cl / link land in PATH for
-        # this step only — no env leakage into the next step.
-        shell: cmd
         run: |
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS_PATH=%%i"
-          call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.msvc_arch }} >nul || exit /b 1
-          dart run dart/tool/build_libvpx_wrappers.dart ^
-            --triplet=${{ matrix.triplet }} ^
-            --manifest-dir=dart/tool/libvpx_vcpkg ^
-            --src-dir=dart/src ^
+          dart run dart/tool/build_libvpx_wrappers.dart \
+            --triplet=${{ matrix.triplet }} \
+            --manifest-dir=dart/tool/libvpx_vcpkg \
+            --src-dir=dart/src \
             --out-dir=staging
 
       - name: Assemble LICENSE + NOTICE
@@ -115,11 +115,9 @@ jobs:
       - name: Verify exports (no libvpx symbol leak)
         # Wrapper TUs tag only `webdartc_*` symbols with __declspec(dllexport);
         # libvpx is statically linked but its symbols stay internal.
-        # dumpbin lives in VC Tools; source vcvarsall to find it.
+        # dumpbin from VC Tools is on PATH thanks to the setup-msvc action.
         shell: cmd
         run: |
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS_PATH=%%i"
-          call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.msvc_arch }} >nul || exit /b 1
           setlocal EnableDelayedExpansion
           for %%c in (vp8 vp9) do (
             set "dll=staging\webdartc_%%c.dll"

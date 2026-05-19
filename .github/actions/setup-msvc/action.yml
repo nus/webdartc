@@ -1,0 +1,55 @@
+name: 'Setup MSVC environment'
+description: |
+  Source vcvarsall.bat for the requested arch and propagate the
+  resulting MSVC env (PATH, INCLUDE, LIB, ...) to subsequent steps
+  in the same job, so later steps can invoke `cl`, `link`, `dumpbin`
+  directly. vswhere locates Visual Studio so the path survives
+  runner-image edition / year bumps; we diff env-before-vcvarsall
+  against env-after-vcvarsall and forward only the delta via
+  $GITHUB_ENV (full env dumps blow up against GHA's 50 KB env-file
+  limit and risk overwriting runner-managed vars).
+
+inputs:
+  arch:
+    description: 'MSVC arch token passed to vcvarsall.bat (x64 | arm64 | x86 | ...).'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - shell: pwsh
+      env:
+        ARCH: ${{ inputs.arch }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        # .NET's GetEnvironmentVariables() returns a case-insensitive
+        # Hashtable on Windows, so `ContainsKey('PROGRAMW6432')` matches
+        # an existing `ProgramW6432` and we don't re-export the pre-
+        # existing entry under a second case.
+        $before = [Environment]::GetEnvironmentVariables('Process')
+
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vsPath  = & $vswhere -latest -property installationPath
+        if (-not $vsPath) { throw 'vswhere could not locate Visual Studio.' }
+        $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvarsall.bat'
+
+        # Source vcvarsall in cmd and dump the resulting env to a tmp file.
+        $dump = Join-Path $env:RUNNER_TEMP 'msvc_env.txt'
+        & cmd /c "call `"$vcvars`" $env:ARCH >nul && set > `"$dump`""
+        if ($LASTEXITCODE -ne 0) {
+          throw "vcvarsall.bat $env:ARCH exited $LASTEXITCODE."
+        }
+
+        # Forward only the entries that vcvarsall added or changed.
+        # PATH is just another var here — vcvarsall prepends, so the
+        # runner's original PATH entries remain at the tail.
+        foreach ($line in Get-Content -LiteralPath $dump -Encoding ASCII) {
+          $eq = $line.IndexOf('=')
+          if ($eq -lt 1) { continue }
+          $name  = $line.Substring(0, $eq)
+          $value = $line.Substring($eq + 1)
+          if ($before.ContainsKey($name) -and $before[$name] -eq $value) { continue }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "${name}=${value}"
+        }
+        Remove-Item -LiteralPath $dump
