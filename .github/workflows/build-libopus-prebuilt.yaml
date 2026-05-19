@@ -91,6 +91,16 @@ jobs:
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS_PATH=%%i"
           call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.msvc_arch }} >nul || exit /b 1
+          :: The runner's env carries both `ProgramW6432` and `PROGRAMW6432`;
+          :: MSBuild's .NET StringDictionary is case-sensitive and aborts the
+          :: vcpkg → msbuild path with "Item has already been added. Key in
+          :: dictionary: 'PROGRAMW6432' Key being added: 'ProgramW6432'".
+          :: Clear and re-set so only a single canonical entry remains.
+          set "_PW=%ProgramW6432%"
+          set "ProgramW6432="
+          set "PROGRAMW6432="
+          set "ProgramW6432=%_PW%"
+          set "_PW="
           dart run dart/tool/build_libopus_wrappers.dart ^
             --triplet=${{ matrix.triplet }} ^
             --manifest-dir=dart/tool/libopus_vcpkg ^
