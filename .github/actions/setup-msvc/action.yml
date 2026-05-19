@@ -12,27 +12,25 @@ runs:
   using: composite
   steps:
     - shell: pwsh
-      # Dumping the full `set` output re-emits pre-existing vars under
-      # cmd.exe's upper-case keys, while the runner keeps the originals
-      # in their mixed case — MSBuild then sees both `PROGRAMW6432` and
-      # `ProgramW6432` and rejects the duplicate. Snapshot the env
-      # before vcvarsall.bat and forward only the entries it changed.
+      # Forwarding every `set`-line into $GITHUB_ENV re-exports
+      # runner-managed vars under cmd's casing (e.g. PROGRAMW6432
+      # alongside the runner's ProgramW6432), and MSBuild then
+      # rejects the duplicate ("Item has already been added.") when
+      # spawning CL. Restrict the forwarded set to keys vcvarsall
+      # actually owns: the compile-search vars plus the VS / SDK
+      # introspection prefixes.
       run: |
         $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
         $vcvars = "$vsPath\VC\Auxiliary\Build\vcvarsall.bat"
 
-        $before = @{}
-        foreach ($e in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
-          $before[$e.Key.ToUpperInvariant()] = $e.Value
-        }
+        $vcEnvPattern = '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir|VCToolsRedistDir|VCToolsVersion|VCIDEInstallDir|DevEnvDir|VSINSTALLDIR|VisualStudioVersion|CommandPromptType|Platform|WindowsSdk[^=]*|WindowsSDK[^=]*|WindowsLibPath|UCRTVersion|UniversalCRTSdkDir|VSCMD_[^=]*|Framework[^=]*|NETFXSDKDir|ExtensionSdkDir)$'
 
         $changed = [System.Collections.Generic.List[string]]::new()
         foreach ($line in & cmd /c "`"$vcvars`" ${{ inputs.arch }} >NUL && set") {
           if ($line -match '^([^=]+)=(.*)$') {
             $key = $matches[1]
-            $val = $matches[2]
-            if ($before[$key.ToUpperInvariant()] -ne $val) {
-              $changed.Add("$key=$val")
+            if ($key -match $vcEnvPattern) {
+              $changed.Add("$key=$($matches[2])")
             }
           }
         }
