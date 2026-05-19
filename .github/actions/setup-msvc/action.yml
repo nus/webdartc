@@ -1,0 +1,18 @@
+name: 'Set up MSVC dev environment'
+description: >-
+  Source vcvarsall.bat for the given target architecture and export the
+  resulting PATH / INCLUDE / LIB / etc. to subsequent steps via
+  $GITHUB_ENV. vswhere.exe locates the installed Visual Studio
+  regardless of edition (Enterprise / Community / BuildTools).
+inputs:
+  arch:
+    description: 'MSVC target architecture (x64, arm64, x86_amd64, etc.)'
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: cmd
+      run: |
+        for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VS_PATH=%%i"
+        call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" ${{ inputs.arch }}
+        set >> "%GITHUB_ENV%"
