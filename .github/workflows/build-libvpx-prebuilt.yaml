@@ -70,8 +70,12 @@ jobs:
         with:
           sdk: '3.11.0'
 
-      - name: Set up MSVC dev environment (${{ matrix.msvc_arch }})
-        uses: ilammy/msvc-dev-cmd@v1
+      - name: Set up MSVC environment
+        # Must run BEFORE "Set up vcpkg" so the later step's
+        # VCPKG_ROOT=$RUNNER_TEMP/vcpkg write to $GITHUB_ENV wins over
+        # the VS-bundled VCPKG_ROOT vcvarsall introduces (otherwise vcpkg
+        # warns "ignoring mismatched VCPKG_ROOT environment value …").
+        uses: ./.github/actions/setup-msvc
         with:
           arch: ${{ matrix.msvc_arch }}
 
@@ -115,23 +119,24 @@ jobs:
       - name: Verify exports (no libvpx symbol leak)
         # Wrapper TUs tag only `webdartc_*` symbols with __declspec(dllexport);
         # libvpx is statically linked but its symbols stay internal.
+        shell: cmd
         run: |
-          set -eu
-          for codec in vp8 vp9; do
-            dll="staging/webdartc_${codec}.dll"
-            dumpbin -nologo -exports "$dll" > exports.txt
-            if ! grep -q "webdartc_${codec}_" exports.txt; then
-              echo "::error::No webdartc_${codec}_* exports found in $dll"
-              cat exports.txt
-              exit 1
-            fi
-            if grep -E '[[:space:]]vpx_[a-zA-Z]' exports.txt; then
-              echo "::error::libvpx symbols leaked into $dll"
-              exit 1
-            fi
-            echo "$dll exports look clean."
-          done
-          rm exports.txt
+          setlocal EnableDelayedExpansion
+          for %%c in (vp8 vp9) do (
+            set "dll=staging\webdartc_%%c.dll"
+            dumpbin -nologo -exports "!dll!" > exports.txt
+            findstr /C:"webdartc_%%c_" exports.txt >nul || (
+              echo ::error::No webdartc_%%c_* exports found in !dll!
+              type exports.txt
+              exit /b 1
+            )
+            findstr /R "\<vpx_[a-zA-Z]" exports.txt >nul && (
+              echo ::error::libvpx symbols leaked into !dll!
+              exit /b 1
+            )
+            echo !dll! exports look clean.
+          )
+          del exports.txt
 
       - name: Package zip
         id: pkg
@@ -142,7 +147,7 @@ jobs:
           sha256sum "$name.zip" > "$name.zip.sha256"
           echo "zip_name=$name" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: prebuilt-${{ matrix.arch }}
           path: |
@@ -157,7 +162,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true

@@ -11,8 +11,8 @@
 //   - MSVC cl + link in PATH (vcvarsall.bat or ilammy/msvc-dev-cmd).
 //   - vcpkg in PATH (or pass --vcpkg=<path>).
 //
-// Self-contained (only dart:io / dart:async) so `dart run` works without
-// `dart pub get`.
+// No `package:` imports (only `dart:io` and the sibling `wrapper_build_env.dart`)
+// so `dart run` works without `dart pub get`.
 //
 // Usage:
 //   dart run dart/tool/build_libopus_wrappers.dart \
@@ -22,6 +22,8 @@
 //     --out-dir=staging
 
 import 'dart:io';
+
+import 'wrapper_build_env.dart';
 
 Future<void> main(List<String> args) async {
   final opts = _parseArgs(args);
@@ -126,24 +128,4 @@ Future<void> _run(String exe, List<String> args,
   }
 }
 
-/// package:hooks_runner scrubs many Windows env vars from the build-hook
-/// environment for reproducibility, but vcpkg needs them: APPDATA /
-/// LOCALAPPDATA for its state directory, ProgramFiles / ProgramFiles(x86)
-/// for vswhere-based VS detection. We synthesise the missing ones from
-/// USERPROFILE / SystemDrive which the runner does pass through.
-final Map<String, String> _childEnv = _buildChildEnv();
-
-Map<String, String> _buildChildEnv() {
-  final env = Map<String, String>.from(Platform.environment);
-  if (!Platform.isWindows) return env;
-  final userProfile = env['USERPROFILE'] ?? r'C:\Users\Default';
-  final systemDrive =
-      env['SystemDrive'] ?? userProfile.substring(0, 2); // e.g. "C:"
-  env.putIfAbsent('APPDATA', () => '$userProfile\\AppData\\Roaming');
-  env.putIfAbsent('LOCALAPPDATA', () => '$userProfile\\AppData\\Local');
-  env.putIfAbsent('ProgramFiles', () => '$systemDrive\\Program Files');
-  env.putIfAbsent('ProgramW6432', () => '$systemDrive\\Program Files');
-  env.putIfAbsent(
-      'ProgramFiles(x86)', () => '$systemDrive\\Program Files (x86)');
-  return env;
-}
+final Map<String, String> _childEnv = buildWrapperChildEnv();
