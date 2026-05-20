@@ -124,6 +124,53 @@ void main() {
         _expectMatch(SdpParser.parse(answer.sdp).value, video, audio,
             which: 'answer');
       });
+
+      // Offer carries every codec; the answerer registers only the
+      // subset. The answer's m= lines for kinds the answerer supports
+      // should drop everything outside the subset.
+      test('Answer filters codecs not in the answerer registration',
+          () async {
+        final offerer = PeerConnection(
+          configuration: const PeerConnectionConfiguration(),
+          mediaEngine: MediaEngine(
+            videoCodecs: _videoCatalog,
+            audioCodecs: _audioCatalog,
+          ),
+        );
+        addTearDown(offerer.close);
+        offerer.addTransceiver('audio');
+        offerer.addTransceiver('video');
+        final offer = await offerer.createOffer();
+        await offerer.setLocalDescription(offer);
+
+        final answerer = PeerConnection(
+          configuration: const PeerConnectionConfiguration(),
+          mediaEngine: engine,
+        );
+        addTearDown(answerer.close);
+        if (audio.isNotEmpty) {
+          answerer.addTransceiver('audio', direction: 'sendrecv');
+        }
+        if (video.isNotEmpty) {
+          answerer.addTransceiver('video', direction: 'sendrecv');
+        }
+        await answerer.setRemoteDescription(offer);
+        final answer = await answerer.createAnswer();
+        final parsed = SdpParser.parse(answer.sdp).value;
+
+        // Only assert on kinds the answerer registered. The offer
+        // carries every kind so the answer also has every m= section,
+        // but kinds outside the subset may be rejected / left empty
+        // (webdartc's choice; not under test here).
+        for (final (kind, codecs) in [('video', video), ('audio', audio)]) {
+          if (codecs.isEmpty) continue;
+          final expected = [for (final c in codecs) c.name];
+          final m = parsed.media.firstWhere((m) => m.type == kind);
+          expect(_codecOrderOf(m), equals(expected),
+              reason: '$kind m= line in the filtered answer should expose '
+                  'exactly the subset, in registration order');
+        }
+      });
     });
   }
 }
