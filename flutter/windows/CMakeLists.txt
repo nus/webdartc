@@ -79,7 +79,14 @@ if (${include_${PROJECT_NAME}_tests})
   )
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   set(INSTALL_GTEST OFF CACHE BOOL "Disable installation of googletest" FORCE)
+  # googletest 1.11.0's own CMakeLists declares `cmake_minimum_required` at
+  # < 3.10, which CMake 3.27+ flags as a deprecation. Mute the deprecation
+  # warning around the populate step — we don't own the upstream file.
+  set(_gtest_prev_warn_deprecated ${CMAKE_WARN_DEPRECATED})
+  set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
+  set(CMAKE_WARN_DEPRECATED ${_gtest_prev_warn_deprecated} CACHE BOOL "" FORCE)
+  unset(_gtest_prev_warn_deprecated)
 
   add_executable(${TEST_RUNNER}
     test/convert_i420_to_bgra8_test.cpp
