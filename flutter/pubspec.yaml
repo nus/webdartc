@@ -25,3 +25,5 @@ flutter:
     platforms:
       macos:
         pluginClass: WebdartcFlutterPlugin
+      windows:
+        pluginClass: WebdartcFlutterPluginCApi
