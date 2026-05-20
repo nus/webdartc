@@ -295,3 +295,23 @@ jobs:
         # in), so dart test can resolve via the same root that just built
         # the Flutter app.
         run: dart test test/e2e/flutter_video_call_bidir_test.dart --timeout=180s
+
+  # Build the Windows example app and run the plugin's C++ unit tests.
+  # The unit-test exe is produced as a side effect of the example build
+  # via the `include_${PROJECT_NAME}_tests` hook in
+  # flutter/windows/CMakeLists.txt.
+  flutter-example-windows:
+    name: flutter / Plugin unit tests + example build (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - working-directory: flutter/example
+        run: flutter build windows --debug
+      - working-directory: flutter/example
+        run: ./build/windows/x64/plugins/webdartc_flutter/Debug/webdartc_flutter_test.exe
