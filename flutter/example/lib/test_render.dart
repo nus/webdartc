@@ -1,18 +1,10 @@
-/// Standalone Flutter app that exercises only the
-/// `ShaderVideoRenderer` -> `webdartc_flutter/render` -> native plugin
-/// path: a `FakeVideoSource` streams I420 frames into the renderer and
-/// the plugin draws them via a Flutter `Texture`. No networking, no
-/// codecs — used to operationally verify the Windows (and macOS) plugin
-/// rendering pipeline in isolation.
+/// Renders a `FakeVideoSource` through `ShaderVideoRenderer` without any
+/// networking or codecs — operational check for the native plugin path.
 ///
-/// Run:
 /// ```
 /// cd flutter/example
 /// flutter run -d windows -t lib/test_render.dart
 /// ```
-///
-/// You should see a 320x240 dark-gray panel with a millisecond counter
-/// rendered as text, ticking at ~30 fps.
 library;
 
 import 'dart:async';

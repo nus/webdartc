@@ -52,10 +52,6 @@ void ConvertI420ToBgra8(const uint8_t* i420, int width, int height,
   }
 }
 
-// One video track's worth of CPU-side texture state. Owns the BGRA8
-// scratch buffer that the I420 -> BGRA8 conversion writes into and
-// hands a stable `FlutterDesktopPixelBuffer*` back to Flutter's
-// raster thread.
 class VideoTexture {
  public:
   explicit VideoTexture(flutter::TextureRegistrar* textures)
@@ -79,8 +75,6 @@ class VideoTexture {
   void UpdateI420(const uint8_t* data, size_t data_size, int width,
                   int height) {
     if (width <= 0 || height <= 0) return;
-    // I420 byte layout: Y plane (w·h), then U plane ((w/2)·(h/2)), then
-    // V plane ((w/2)·(h/2)).
     const size_t y_size = static_cast<size_t>(width) * height;
     const size_t uv_size =
         static_cast<size_t>(width / 2) * (height / 2);
@@ -124,12 +118,30 @@ class VideoTexture {
 
 namespace {
 
-// Helpers to pull a typed value out of `flutter::EncodableMap`.
 template <typename T>
 const T* Get(const flutter::EncodableMap& args, const char* key) {
   auto it = args.find(flutter::EncodableValue(key));
   if (it == args.end()) return nullptr;
   return std::get_if<T>(&it->second);
+}
+
+// Dart's `StandardMessageCodec` packs ints into the smallest signed
+// representation, so a small `textureId` arrives as `int32_t` and a
+// larger one as `int64_t`. `std::get_if<int64_t>` doesn't widen on its
+// own, so accept either and let the caller pick the destination width.
+template <typename T>
+bool GetInt(const flutter::EncodableMap& args, const char* key, T* out) {
+  auto it = args.find(flutter::EncodableValue(key));
+  if (it == args.end()) return false;
+  if (const auto* p = std::get_if<int64_t>(&it->second)) {
+    *out = static_cast<T>(*p);
+    return true;
+  }
+  if (const auto* p = std::get_if<int32_t>(&it->second)) {
+    *out = static_cast<T>(*p);
+    return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -181,11 +193,13 @@ void WebdartcFlutterPlugin::HandleMethodCall(
       result->Error("BAD_ARGS", "render requires a map argument");
       return;
     }
-    const auto* id_p = Get<int64_t>(*args, "textureId");
-    const auto* width_p = Get<int32_t>(*args, "width");
-    const auto* height_p = Get<int32_t>(*args, "height");
+    int64_t id;
+    int32_t width;
+    int32_t height;
     const auto* data_p = Get<std::vector<uint8_t>>(*args, "data");
-    if (!id_p || !width_p || !height_p || !data_p) {
+    if (!GetInt(*args, "textureId", &id) ||
+        !GetInt(*args, "width", &width) ||
+        !GetInt(*args, "height", &height) || !data_p) {
       result->Error("BAD_ARGS",
                     "render requires {textureId, width, height, data}");
       return;
@@ -193,14 +207,14 @@ void WebdartcFlutterPlugin::HandleMethodCall(
     VideoTexture* tex = nullptr;
     {
       std::lock_guard<std::mutex> lk(map_mutex_);
-      auto it = textures_by_id_.find(*id_p);
+      auto it = textures_by_id_.find(id);
       if (it != textures_by_id_.end()) tex = it->second.get();
     }
     if (!tex) {
       result->Error("NO_TEXTURE", "unknown textureId");
       return;
     }
-    tex->UpdateI420(data_p->data(), data_p->size(), *width_p, *height_p);
+    tex->UpdateI420(data_p->data(), data_p->size(), width, height);
     result->Success();
     return;
   }
@@ -211,14 +225,14 @@ void WebdartcFlutterPlugin::HandleMethodCall(
       result->Error("BAD_ARGS", "dispose requires a map argument");
       return;
     }
-    const auto* id_p = Get<int64_t>(*args, "textureId");
-    if (!id_p) {
+    int64_t id;
+    if (!GetInt(*args, "textureId", &id)) {
       result->Error("BAD_ARGS", "dispose requires {textureId}");
       return;
     }
     {
       std::lock_guard<std::mutex> lk(map_mutex_);
-      textures_by_id_.erase(*id_p);
+      textures_by_id_.erase(id);
     }
     result->Success();
     return;

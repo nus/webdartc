@@ -14,8 +14,7 @@ namespace webdartc_flutter {
 
 // BT.601 full-range I420 (planar Y, U, V) -> BGRA8 packed pixels.
 // `i420` is `width*height + 2*(width/2)*(height/2)` bytes long; `bgra`
-// is `width*height*4` bytes long. Exposed for unit testing — the
-// conversion is the only piece of meaningful logic in the plugin.
+// is `width*height*4` bytes long.
 void ConvertI420ToBgra8(const uint8_t* i420, int width, int height,
                         uint8_t* bgra);
 
