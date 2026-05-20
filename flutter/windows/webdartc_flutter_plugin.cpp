@@ -18,6 +18,40 @@
 
 namespace webdartc_flutter {
 
+// BT.601 full-range YUV -> BGRA8, 8.8 fixed-point integer math.
+// FakeVideoSource / VT encoder on the macOS side feeds full-range
+// I420 (kCVPixelFormatType_420YpCbCr8BiPlanarFullRange), so this
+// matches the macOS plugin's color space.
+void ConvertI420ToBgra8(const uint8_t* i420, int width, int height,
+                        uint8_t* bgra) {
+  const uint8_t* y_plane = i420;
+  const uint8_t* u_plane = i420 + static_cast<size_t>(width) * height;
+  const uint8_t* v_plane =
+      u_plane + static_cast<size_t>(width / 2) * (height / 2);
+  const int uv_stride = width / 2;
+  for (int row = 0; row < height; ++row) {
+    const uint8_t* y_row = y_plane + static_cast<size_t>(row) * width;
+    const uint8_t* u_row =
+        u_plane + static_cast<size_t>(row / 2) * uv_stride;
+    const uint8_t* v_row =
+        v_plane + static_cast<size_t>(row / 2) * uv_stride;
+    uint8_t* dst = bgra + static_cast<size_t>(row) * width * 4;
+    for (int col = 0; col < width; ++col) {
+      const int y = y_row[col];
+      const int u = u_row[col / 2] - 128;
+      const int v = v_row[col / 2] - 128;
+      // r = y + 1.402*v, g = y - 0.344*u - 0.714*v, b = y + 1.772*u
+      const int r = y + ((359 * v) >> 8);
+      const int g = y - ((88 * u + 183 * v) >> 8);
+      const int b = y + ((454 * u) >> 8);
+      dst[col * 4 + 0] = static_cast<uint8_t>(std::clamp(b, 0, 255));
+      dst[col * 4 + 1] = static_cast<uint8_t>(std::clamp(g, 0, 255));
+      dst[col * 4 + 2] = static_cast<uint8_t>(std::clamp(r, 0, 255));
+      dst[col * 4 + 3] = 0xFF;
+    }
+  }
+}
+
 // One video track's worth of CPU-side texture state. Owns the BGRA8
 // scratch buffer that the I420 -> BGRA8 conversion writes into and
 // hands a stable `FlutterDesktopPixelBuffer*` back to Flutter's
@@ -76,40 +110,6 @@ class VideoTexture {
     pixel_buffer_.release_context = nullptr;
     pixel_buffer_.release_callback = nullptr;
     return &pixel_buffer_;
-  }
-
-  // BT.601 full-range YUV → BGRA8, 8.8 fixed-point integer math.
-  // FakeVideoSource / VT encoder on the macOS side feeds full-range
-  // I420 (kCVPixelFormatType_420YpCbCr8BiPlanarFullRange), so this
-  // matches the macOS plugin's color space.
-  static void ConvertI420ToBgra8(const uint8_t* i420, int width, int height,
-                                 uint8_t* bgra) {
-    const uint8_t* y_plane = i420;
-    const uint8_t* u_plane = i420 + static_cast<size_t>(width) * height;
-    const uint8_t* v_plane =
-        u_plane + static_cast<size_t>(width / 2) * (height / 2);
-    const int uv_stride = width / 2;
-    for (int row = 0; row < height; ++row) {
-      const uint8_t* y_row = y_plane + static_cast<size_t>(row) * width;
-      const uint8_t* u_row =
-          u_plane + static_cast<size_t>(row / 2) * uv_stride;
-      const uint8_t* v_row =
-          v_plane + static_cast<size_t>(row / 2) * uv_stride;
-      uint8_t* dst = bgra + static_cast<size_t>(row) * width * 4;
-      for (int col = 0; col < width; ++col) {
-        const int y = y_row[col];
-        const int u = u_row[col / 2] - 128;
-        const int v = v_row[col / 2] - 128;
-        // r = y + 1.402·v, g = y - 0.344·u - 0.714·v, b = y + 1.772·u
-        const int r = y + ((359 * v) >> 8);
-        const int g = y - ((88 * u + 183 * v) >> 8);
-        const int b = y + ((454 * u) >> 8);
-        dst[col * 4 + 0] = static_cast<uint8_t>(std::clamp(b, 0, 255));
-        dst[col * 4 + 1] = static_cast<uint8_t>(std::clamp(g, 0, 255));
-        dst[col * 4 + 2] = static_cast<uint8_t>(std::clamp(r, 0, 255));
-        dst[col * 4 + 3] = 0xFF;
-      }
-    }
   }
 
   flutter::TextureRegistrar* textures_;

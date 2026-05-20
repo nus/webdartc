@@ -64,3 +64,40 @@ set(webdartc_flutter_bundled_libraries
   PARENT_SCOPE
 )
 
+# === Tests ===
+# `include_${PROJECT_NAME}_tests` is set by the example app's build so unit
+# tests only run when building from the example, not when end-user apps
+# consume the plugin.
+if (${include_${PROJECT_NAME}_tests})
+  set(TEST_RUNNER "${PROJECT_NAME}_test")
+  enable_testing()
+
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/release-1.11.0.zip
+  )
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  set(INSTALL_GTEST OFF CACHE BOOL "Disable installation of googletest" FORCE)
+  FetchContent_MakeAvailable(googletest)
+
+  add_executable(${TEST_RUNNER}
+    test/convert_i420_to_bgra8_test.cpp
+    ${PLUGIN_SOURCES}
+  )
+  apply_standard_settings(${TEST_RUNNER})
+  target_include_directories(${TEST_RUNNER} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(${TEST_RUNNER} PRIVATE flutter_wrapper_plugin)
+  target_link_libraries(${TEST_RUNNER} PRIVATE gtest_main)
+  if (MSVC)
+    target_compile_options(${TEST_RUNNER} PRIVATE /utf-8)
+  endif()
+  add_custom_command(TARGET ${TEST_RUNNER} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${FLUTTER_LIBRARY}" $<TARGET_FILE_DIR:${TEST_RUNNER}>
+  )
+
+  include(GoogleTest)
+  gtest_discover_tests(${TEST_RUNNER})
+endif()
+
