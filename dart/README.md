@@ -12,17 +12,16 @@ Supports data channels and media (audio/video) send/receive.
 
 - **RFC-compliant protocols**: STUN (RFC 5389), ICE (RFC 8445), Trickle ICE (RFC 8840), DTLS 1.2 (RFC 6347), SRTP (RFC 3711), SCTP (RFC 4960), DCEP (RFC 8832), RTP/RTCP (RFC 3550), SDP (RFC 4566/8866), H.264 RTP (RFC 6184, STAP-A + FU-A), VP8 RTP (RFC 7741), Opus RTP (RFC 7587)
 - **Pure state machines**: All protocol modules produce deterministic outputs from inputs — no hidden I/O
-- **Platform-native crypto**: CommonCrypto + Security.framework on macOS, OpenSSL on Linux, via FFI
+- **Platform-native crypto**: CommonCrypto + Security.framework on macOS, OpenSSL on Linux, CNG (`bcrypt.dll`) on Windows, via FFI
 - **Data channels**: SCTP over DTLS with DCEP negotiation
 - **Media**: Transceivers, RTP/RTCP, audio/video frame APIs (W3C Media Capture & Streams, WebCodecs)
-- **Codecs**: VP8 + VP9 via vendored libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS/iOS) or Cisco-prebuilt OpenH264 (software, Linux); Opus via vendored libopus. libvpx and libopus are statically linked into per-codec wrapper dylibs by the build hook; OpenH264 is downloaded from `ciscobinary.openh264.org` and bundled as-is — no system codec install needed.
+- **Codecs**: VP8 + VP9 via libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS) or Cisco-prebuilt OpenH264 (software, Linux + Windows); Opus via libopus. See [Codec backends](#codec-backends) below for the build-hook details and the per-OS source-vs-prebuilt split.
 
 ## Requirements
 
 - Dart SDK >= 3.11.0, < 4.0.0
-- CMake (used by the build hook to compile the vendored libopus)
-- macOS (Xcode for VideoToolbox / CoreMedia / CoreVideo) or Linux (`clang yasm libssl-dev` — yasm is required by libvpx's x86_64 SIMD assembly; OpenH264 is auto-downloaded by the build hook on first run)
-- The `dart/third_party/opus/` and `dart/third_party/libvpx/` submodules must be checked out (`git clone --recurse-submodules` or `git submodule update --init --recursive`).
+- macOS (Xcode for VideoToolbox / CoreMedia / CoreVideo + CMake to build the bundled libopus / libvpx), Linux (`cmake clang yasm libssl-dev` — yasm is required by libvpx's x86_64 SIMD assembly; OpenH264 is auto-downloaded by the build hook on first run), or Windows (no additional tools for the default prebuilt path — `dart pub get` downloads the wrapper DLLs + the Cisco OpenH264 binary; the MSVC source-build opt-in needs Visual Studio + vcpkg).
+- On macOS and Linux the `dart/third_party/opus/` and `dart/third_party/libvpx/` submodules must be checked out (`git clone --recurse-submodules` or `git submodule update --init --recursive`). The Windows default path does not need the submodules — they are only required when opting in to the source build.
 
 ## Installation
 
@@ -103,17 +102,19 @@ lib/
 │   ├── codec_registry.dart
 │   ├── video_codec.dart       # W3C VideoEncoder / VideoDecoder
 │   ├── audio_codec.dart       # W3C AudioEncoder / AudioDecoder
-│   ├── vp8/                   # libvpx FFI encoder + decoder (bundled)
-│   ├── vp9/                   # libvpx FFI encoder + decoder (bundled)
-│   ├── opus/                  # libopus FFI encoder + decoder (bundled)
+│   ├── vp8/                   # libvpx FFI encoder + decoder (source-built on
+│   │                          # macOS / Linux, prebuilt DLL on Windows)
+│   ├── vp9/                   # libvpx FFI encoder + decoder (same as vp8)
+│   ├── opus/                  # libopus FFI encoder + decoder (source-built on
+│   │                          # macOS / Linux, prebuilt DLL on Windows)
 │   └── h264/
-│       ├── _openh264.dart                     # @Native bindings to bundled OpenH264 dylib
+│       ├── _openh264.dart                     # @Native bindings to bundled OpenH264 dylib / DLL
 │       ├── openh264_bindings.g.dart           # ffigen structs/enums/vtables
-│       ├── h264_encoder_backend.dart          # OpenH264 SW encoder (Linux)
-│       ├── h264_decoder_backend.dart          # OpenH264 SW decoder (Linux)
+│       ├── h264_encoder_backend.dart          # OpenH264 SW encoder (Linux + Windows)
+│       ├── h264_decoder_backend.dart          # OpenH264 SW decoder (Linux + Windows)
 │       ├── videotoolbox/                      # @Native bindings to the C helper
-│       ├── videotoolbox_encoder_backend.dart  # VT encoder (macOS/iOS)
-│       └── videotoolbox_decoder_backend.dart  # VT decoder (macOS/iOS)
+│       ├── videotoolbox_encoder_backend.dart  # VT encoder (macOS)
+│       └── videotoolbox_decoder_backend.dart  # VT decoder (macOS)
 └── core/                      # State machine base, Result<T,E>, types
 
 test/
@@ -165,24 +166,23 @@ dart run example/video_call/bin/sender.dart --port=8080 --codec=h264 --bidir
 
 ## Codec backends
 
-| Codec | Encoder | Decoder | Source |
-|-------|---------|---------|--------|
-| H.264 (macOS/iOS) | VideoToolbox (HW) | VideoToolbox (HW) | `dart/hook/build.dart` auto-compiles a C helper |
-| H.264 (Linux) | OpenH264 (SW) | OpenH264 (SW) | Cisco prebuilt, downloaded by `dart/hook/build.dart` from `ciscobinary.openh264.org` (version + SHA-256 pinned) |
-| VP8 (macOS/Linux) | libvpx (SW) | libvpx (SW) | `dart/third_party/libvpx/` submodule, statically linked |
-| VP9 (macOS/Linux) | libvpx (SW) | libvpx (SW) | same archive as VP8 |
-| Opus (macOS/Linux) | libopus (SW) | libopus (SW) | `dart/third_party/opus/` submodule, statically linked |
+All backends are software (SW) except VideoToolbox on macOS, which is hardware-accelerated.
 
-On macOS, `dart test` triggers `hook/build.dart` which compiles `src/wvt_callback.c` into a bundled dynamic library. The shim retains `CMSampleBuffer`s before the VT callback returns and pushes them onto a thread-safe queue that the Dart side drains (a problem Dart FFI's async `NativeCallable.listener` cannot solve alone).
+| Codec | macOS | Linux | Windows |
+|-------|-------|-------|---------|
+| H.264 | VideoToolbox (HW) — `hook/build.dart` auto-compiles `src/wvt_callback.c` | OpenH264, downloaded from `ciscobinary.openh264.org` (version + SHA-256 pinned) | OpenH264, same Cisco prebuilt path as Linux |
+| VP8   | libvpx submodule, source-built and statically linked | (same as macOS) | `webdartc_vp8.dll` (CI-built wrapper, libvpx statically linked); source-build opt-in |
+| VP9   | (same as VP8) | (same as VP8) | `webdartc_vp9.dll` (same archive as `vp8.dll`); source-build opt-in |
+| Opus  | libopus submodule, source-built and statically linked | (same as macOS) | `webdartc_opus.dll` (CI-built wrapper, libopus statically linked); source-build opt-in |
 
-On Linux, the same hook downloads Cisco's prebuilt OpenH264 binary from `ciscobinary.openh264.org` (see `_openH264Version` / `_openH264Sha256` in `hook/build.dart`) into the shared build cache and registers it as a `DynamicLoadingBundled` code asset under `package:webdartc/codec/h264/_openh264.dart`. See https://www.openh264.org/ for the upstream project's distribution terms.
+`hook/build.dart` runs on every supported platform and selects the right path:
 
-On macOS and Linux the same hook also vendor-builds the codec libraries from their submodules and links each into a per-codec wrapper dylib:
+- **VideoToolbox shim (macOS)** — compiles `src/wvt_callback.c` into a bundled dynamic library. The shim retains `CMSampleBuffer`s before the VT callback returns and pushes them onto a thread-safe queue the Dart side drains (a problem Dart FFI's async `NativeCallable.listener` cannot solve alone).
+- **OpenH264 (Linux + Windows)** — downloads the Cisco prebuilt binary from `ciscobinary.openh264.org` (see `_openH264Version` / `_openH264Sha256` in `hook/build.dart`) into the shared build cache and registers it as a `DynamicLoadingBundled` code asset under `package:webdartc/codec/h264/_openh264.dart`. See https://www.openh264.org/ for the upstream project's distribution terms.
+- **libopus / libvpx source build (macOS / Linux)** — CMake / libvpx's own `configure` produce `libopus.a` / `libvpx.a`, then `webdartc_{opus,vp8,vp9}.c` are linked in to produce `libwebdartc_codecs.{dylib,so}` (exports `webdartc_opus_*`) and `libwebdartc_vp{8,9}.{dylib,so}` (exports `webdartc_vp{8,9}_*`). The libvpx archive is built once per arch and reused for VP8 + VP9.
+- **libopus / libvpx prebuilt download (Windows)** — wrapper DLLs are pre-built by the matching `.github/workflows/build-lib{opus,vpx}-prebuilt.yaml` workflow on each release of the `webdartc-libvpx-prebuilt-*` / `webdartc-libopus-prebuilt-*` GitHub release tags. The consumer machine does not need MSVC / vcpkg. Opt in to a local MSVC + vcpkg source build by setting `hooks.user_defines.webdartc.libvpx_source_build` / `libopus_source_build` to true in the workspace-root `pubspec.yaml` — the hook then runs `dart/tool/build_libvpx_wrappers.dart` / `build_libopus_wrappers.dart` instead of the download.
 
-- **libopus** → CMake → `libopus.a` → linked with `webdartc_opus.c` into `libwebdartc_codecs.dylib` (exports `webdartc_opus_*`).
-- **libvpx** (VP8 + VP9 enabled) → libvpx's own configure + make → `libvpx.a` → linked with `webdartc_vp8.c` into `libwebdartc_vp8.dylib` (exports `webdartc_vp8_*`) AND with `webdartc_vp9.c` into `libwebdartc_vp9.dylib` (exports `webdartc_vp9_*`). The libvpx archive is built once per arch and reused.
-
-Every codec symbol is hidden by `-fvisibility=hidden`; only the explicitly-tagged `webdartc_*` wrapper functions are exported, so the bundled copies can't collide with another libopus / libvpx loaded into the same process. For libopus we additionally pre-define `OPUS_EXPORT=` to neutralize its own `visibility("default")` attribute.
+Every codec symbol is hidden via `-fvisibility=hidden` on macOS / Linux, and on Windows by exporting only `webdartc_*` symbols with `__declspec(dllexport)`. The bundled copies can't collide with another libopus / libvpx loaded into the same process; for libopus we additionally pre-define `OPUS_EXPORT=` to neutralize its own `visibility("default")` attribute.
 
 ## Crypto backends
 
