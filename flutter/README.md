@@ -4,11 +4,11 @@ Flutter integration for [webdartc](../dart) — renders decoded video frames, br
 
 ## Status
 
-| Surface | macOS | Linux | Windows | Android |
-|---------|-------|-------|---------|---------|
-| Video renderer | ✅ Metal (`ShaderVideoRenderer`) | roadmap (GLES) | ✅ PixelBufferTexture (CPU I420 → BGRA8) | roadmap |
-| Camera capture | roadmap | roadmap | roadmap | roadmap |
-| Mic / speaker | roadmap | roadmap | roadmap | roadmap |
+| Surface | macOS | iOS | Linux | Windows | Android |
+|---------|-------|-----|-------|---------|---------|
+| Video renderer | ✅ Metal (`ShaderVideoRenderer`) | roadmap | roadmap (GLES) | ✅ PixelBufferTexture (CPU I420 → BGRA8) | roadmap |
+| Camera capture | roadmap | roadmap | roadmap | roadmap | roadmap |
+| Mic / speaker | roadmap | roadmap | roadmap | roadmap | roadmap |
 
 ## Renderer
 
