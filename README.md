@@ -57,7 +57,7 @@ Once resolved, each package is worked on from its own directory:
 ```bash
 # Protocol library
 cd dart
-dart test                      # unit tests (runs the macOS build hook if applicable)
+dart test                      # unit tests (runs the build hook on macOS / Linux / Windows)
 dart test test/e2e/            # e2e (Chrome / Firefox auto-downloaded)
 dart analyze
 
@@ -75,14 +75,15 @@ The `flutter` package depends on `dart` via a local `path:` reference, so change
 
 ## Codec matrix
 
+All backends are software (SW) except VideoToolbox on macOS, which is hardware-accelerated.
+
 | Codec | macOS | Linux | Windows |
 |-------|-------|-------|---------|
-| H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt, bundled, SW) | OpenH264 (Cisco prebuilt, bundled, SW) |
-| VP8   | libvpx (source-built from submodule, SW) | libvpx (source-built from submodule, SW) | libvpx (wrapper DLL downloaded, SW; source-build opt-in) |
-| VP9   | libvpx (source-built from submodule, SW) | libvpx (source-built from submodule, SW) | libvpx (wrapper DLL downloaded, SW; source-build opt-in) |
-| Opus  | libopus (source-built from submodule, SW) | libopus (source-built from submodule, SW) | libopus (wrapper DLL downloaded, SW; source-build opt-in) |
+| H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt) | OpenH264 (Cisco prebuilt) |
+| VP8 / VP9 | libvpx (submodule source-built) | libvpx (submodule source-built) | libvpx (prebuilt wrapper DLL; source-build opt-in) |
+| Opus | libopus (submodule source-built) | libopus (submodule source-built) | libopus (prebuilt wrapper DLL; source-build opt-in) |
 
-`registerH264Codec()` / `registerVp8Codec()` / `registerVp9Codec()` / `registerOpusCodec()` each pick the right backend for the current platform automatically. The VideoToolbox helper is a small C shim compiled by `dart/hook/build.dart` — no manual build step required. On **macOS and Linux**, libopus + libvpx are vendored as submodules and statically linked into per-codec wrapper shared libraries (`webdartc_codecs` for opus, `webdartc_vp8` and `webdartc_vp9` for VP8/VP9) by the same hook. On **Windows**, the default path downloads the same wrapper DLLs prebuilt on GitHub Actions (`webdartc-libvpx-prebuilt-*` and `webdartc-libopus-prebuilt-*` release assets) and registers them as code assets — no MSVC / vcpkg required on the consumer machine. The source-build opt-in is reachable per package via `hooks.user_defines.webdartc.libvpx_source_build` / `libopus_source_build` in the workspace-root `pubspec.yaml`. The same hidden-symbol pattern applies regardless of source vs prebuilt: only the `webdartc_*` wrapper functions are exported, so the bundled copies can't collide with another libopus / libvpx loaded into the same process. On **Linux and Windows**, `dart/hook/build.dart` additionally downloads Cisco's prebuilt OpenH264 binary from `ciscobinary.openh264.org` (pinned by version + SHA-256) and registers it as a code asset — no system H.264 install needed. See https://www.openh264.org/ for the upstream project's distribution terms.
+`registerH264Codec()` / `registerVp8Codec()` / `registerVp9Codec()` / `registerOpusCodec()` each pick the right backend for the current platform automatically. `dart/hook/build.dart` drives every native asset: it compiles the VideoToolbox C shim on macOS, source-builds libopus + libvpx from submodules on macOS / Linux, downloads our prebuilt wrapper DLLs on Windows (`webdartc-lib{vpx,opus}-prebuilt-*` release assets — set `hooks.user_defines.webdartc.lib{vpx,opus}_source_build=true` in the workspace-root `pubspec.yaml` to opt into a local MSVC + vcpkg build), and downloads Cisco's OpenH264 binary from `ciscobinary.openh264.org` (version + SHA-256 pinned) on Linux + Windows. See [`dart/README.md#codec-backends`](dart/README.md#codec-backends) for the full per-OS breakdown and the symbol-hiding rationale, and https://www.openh264.org/ for OpenH264's upstream distribution terms.
 
 ### Native library requirements
 
