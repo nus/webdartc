@@ -7,7 +7,7 @@ A Dart-native WebRTC stack. This monorepo contains the protocol library and its 
 | Package | Purpose | Status |
 |---|---|---|
 | [`dart/`](dart) | Pure-Dart WebRTC library. RFC-compliant protocol state machines (ICE / DTLS / SRTP / SCTP / RTP / SDP) with all network I/O isolated to a single `TransportController`. Codec backends via FFI (H.264 via VideoToolbox on Apple / Cisco-prebuilt OpenH264 on Linux + Windows, VP8 + VP9 + Opus via vendored libvpx + libopus — source-built on macOS / Linux, downloaded as wrapper DLLs on Windows). Platform-native crypto (CommonCrypto + Security.framework on macOS, OpenSSL on Linux, CNG / `bcrypt.dll` on Windows). | Implemented |
-| [`flutter/`](flutter) | Flutter integration on top of `dart`. Provides a Metal-backed video-rendering `Widget` (macOS), with Linux GLES and iOS support on the roadmap. Depends on `dart` via path. | macOS renderer working; other platforms in progress |
+| [`flutter/`](flutter) | Flutter integration on top of `dart`. Provides a Metal-backed video-rendering `Widget` on macOS and a `PixelBufferTexture`-backed renderer on Windows, with Linux GLES support on the roadmap. Depends on `dart` via path. | macOS + Windows renderers working; other platforms in progress |
 
 ## Layout
 
@@ -75,8 +75,8 @@ The `flutter` package depends on `dart` via a local `path:` reference, so change
 
 ## Codec matrix
 
-| Codec | macOS / iOS | Linux | Windows |
-|-------|-------------|-------|---------|
+| Codec | macOS | Linux | Windows |
+|-------|-------|-------|---------|
 | H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt, bundled, SW) | OpenH264 (Cisco prebuilt, bundled, SW) |
 | VP8   | libvpx (source-built from submodule, SW) | libvpx (source-built from submodule, SW) | libvpx (wrapper DLL downloaded, SW; source-build opt-in) |
 | VP9   | libvpx (source-built from submodule, SW) | libvpx (source-built from submodule, SW) | libvpx (wrapper DLL downloaded, SW; source-build opt-in) |
@@ -86,7 +86,7 @@ The `flutter` package depends on `dart` via a local `path:` reference, so change
 
 ### Native library requirements
 
-- **macOS / iOS**: Xcode (for CoreMedia / VideoToolbox frameworks) and CMake (`brew install cmake`). `dart pub get` + `dart test` handle the rest.
+- **macOS**: Xcode (for CoreMedia / VideoToolbox frameworks) and CMake (`brew install cmake`). `dart pub get` + `dart test` handle the rest.
 - **Linux**: `sudo apt-get install cmake clang yasm libssl-dev` (CMake + clang to build bundled libopus, yasm for libvpx's x86_64 SIMD, OpenSSL for crypto). VP8 / VP9 / Opus are vendored; OpenH264 is downloaded by the build hook on first run — no system codec packages needed.
 - **Windows**: nothing to install for the default path — `dart pub get` downloads the prebuilt wrapper DLLs for VP8 / VP9 / Opus + the Cisco OpenH264 binary, and the OS-built-in CNG (`bcrypt.dll`) provides the crypto primitives. The source-build opt-in requires MSVC + vcpkg.
 

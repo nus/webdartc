@@ -15,7 +15,7 @@ Supports data channels and media (audio/video) send/receive.
 - **Platform-native crypto**: CommonCrypto + Security.framework on macOS, OpenSSL on Linux, CNG (`bcrypt.dll`) on Windows, via FFI
 - **Data channels**: SCTP over DTLS with DCEP negotiation
 - **Media**: Transceivers, RTP/RTCP, audio/video frame APIs (W3C Media Capture & Streams, WebCodecs)
-- **Codecs**: VP8 + VP9 via libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS/iOS) or Cisco-prebuilt OpenH264 (software, Linux + Windows); Opus via libopus. On macOS / Linux libvpx + libopus are source-built from the bundled submodules and statically linked into per-codec wrapper dylibs by the build hook; on Windows the build hook downloads our prebuilt wrapper DLLs from the matching `Build *-prebuilt` GitHub release (`webdartc-libvpx-prebuilt-*` / `webdartc-libopus-prebuilt-*`, MSVC source-build opt-in available via `hooks.user_defines`). OpenH264 is downloaded from `ciscobinary.openh264.org` and bundled as-is on Linux and Windows — no system codec install needed.
+- **Codecs**: VP8 + VP9 via libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS) or Cisco-prebuilt OpenH264 (software, Linux + Windows); Opus via libopus. On macOS / Linux libvpx + libopus are source-built from the bundled submodules and statically linked into per-codec wrapper dylibs by the build hook; on Windows the build hook downloads our prebuilt wrapper DLLs from the matching `Build *-prebuilt` GitHub release (`webdartc-libvpx-prebuilt-*` / `webdartc-libopus-prebuilt-*`, MSVC source-build opt-in available via `hooks.user_defines`). OpenH264 is downloaded from `ciscobinary.openh264.org` and bundled as-is on Linux and Windows — no system codec install needed.
 
 ## Requirements
 
@@ -113,8 +113,8 @@ lib/
 │       ├── h264_encoder_backend.dart          # OpenH264 SW encoder (Linux + Windows)
 │       ├── h264_decoder_backend.dart          # OpenH264 SW decoder (Linux + Windows)
 │       ├── videotoolbox/                      # @Native bindings to the C helper
-│       ├── videotoolbox_encoder_backend.dart  # VT encoder (macOS/iOS)
-│       └── videotoolbox_decoder_backend.dart  # VT decoder (macOS/iOS)
+│       ├── videotoolbox_encoder_backend.dart  # VT encoder (macOS)
+│       └── videotoolbox_decoder_backend.dart  # VT decoder (macOS)
 └── core/                      # State machine base, Result<T,E>, types
 
 test/
@@ -168,7 +168,7 @@ dart run example/video_call/bin/sender.dart --port=8080 --codec=h264 --bidir
 
 | Codec | Encoder | Decoder | Source |
 |-------|---------|---------|--------|
-| H.264 (macOS/iOS) | VideoToolbox (HW) | VideoToolbox (HW) | `dart/hook/build.dart` auto-compiles a C helper |
+| H.264 (macOS) | VideoToolbox (HW) | VideoToolbox (HW) | `dart/hook/build.dart` auto-compiles a C helper |
 | H.264 (Linux + Windows) | OpenH264 (SW) | OpenH264 (SW) | Cisco prebuilt, downloaded by `dart/hook/build.dart` from `ciscobinary.openh264.org` (version + SHA-256 pinned) |
 | VP8 (macOS / Linux) | libvpx (SW) | libvpx (SW) | `dart/third_party/libvpx/` submodule, source-built and statically linked |
 | VP9 (macOS / Linux) | libvpx (SW) | libvpx (SW) | same archive as VP8 |
