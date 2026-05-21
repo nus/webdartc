@@ -6,13 +6,13 @@ Flutter integration for [webdartc](../dart) — renders decoded video frames, br
 
 | Surface | macOS | iOS | Linux | Windows | Android |
 |---------|-------|-----|-------|---------|---------|
-| Video renderer | ✅ Metal (`ShaderVideoRenderer`) | roadmap | roadmap (GLES) | roadmap | roadmap |
+| Video renderer | ✅ Metal (`ShaderVideoRenderer`) | roadmap | roadmap (GLES) | ✅ PixelBufferTexture (CPU I420 → BGRA8) | roadmap |
 | Camera capture | roadmap | roadmap | roadmap | roadmap | roadmap |
 | Mic / speaker | roadmap | roadmap | roadmap | roadmap | roadmap |
 
 ## Renderer
 
-`ShaderVideoRenderer` takes CPU I420 frames (produced by `webdartc`'s `VideoDecoder`) and presents them through a Flutter `Texture`. On macOS the plugin wraps each frame as an **NV12 `CVPixelBuffer`** — Flutter's Metal compositor samples it with its built-in YUV→RGB shader, so no custom shader code lives in this package.
+`ShaderVideoRenderer` takes CPU I420 frames (produced by `webdartc`'s `VideoDecoder`) and presents them through a Flutter `Texture`. On **macOS** the plugin wraps each frame as an **NV12 `CVPixelBuffer`** — Flutter's Metal compositor samples it with its built-in YUV→RGB shader, so no custom shader code lives in this package. On **Windows**, `flutter::PixelBufferTexture` is BGRA8-only, so the plugin runs a small BT.601 full-range integer I420 → BGRA8 conversion in C++ before handing the buffer back to Flutter. A GPU `GpuSurfaceTexture` path (HLSL shader) is filed in the backlog as a follow-up.
 
 ```dart
 import 'package:webdartc/webdartc.dart';
