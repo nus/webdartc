@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>webdartc getusermedia_call</title>
+  <style>
+    body { font-family: system-ui; background: #111; color: #eee; margin: 2rem; max-width: 800px; }
+    h1 { font-size: 1.4rem; }
+    button { padding: 0.5rem 1.5rem; font-size: 1rem; cursor: pointer; border-radius: 4px; border: none; background: #2a6; color: #fff; }
+    button:disabled { background: #555; cursor: default; }
+    .status { margin: 1rem 0; font-size: 0.9rem; }
+    .status span.tag { padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.85rem; }
+    .ok { background: #2a6; }
+    .pending { background: #a82; }
+    .bad { background: #a22; }
+    video { background: #000; width: 100%; max-width: 640px; aspect-ratio: 4/3; }
+    #vu { width: 100%; height: 18px; background: #222; border-radius: 4px; overflow: hidden; }
+    #vu > div { height: 100%; background: #2a6; transition: width 80ms linear; width: 0%; }
+    #log { font-size: 0.8rem; color: #888; white-space: pre-wrap; margin-top: 1rem; max-height: 240px; overflow-y: auto; border-top: 1px solid #333; padding-top: 0.5rem; }
+  </style>
+</head>
+<body>
+<h1>webdartc — pure-Dart getUserMedia → PeerConnection</h1>
+<p>The Dart server captures the system camera + microphone via AVFoundation
+(pure-Dart FFI, no Flutter plugin) and streams them to this page as RTP.</p>
+<button id="startBtn" onclick="start()">Start</button>
+<div class="status">
+  ICE: <span class="tag" id="iceStatus">-</span>
+  &nbsp;|&nbsp; video: <span id="vpkts">0</span> pkts /
+  <span id="vfd">0</span> frames decoded
+  &nbsp;|&nbsp; audio: <span id="apkts">0</span> pkts
+</div>
+<video id="remoteVideo" autoplay playsinline muted></video>
+<p>Audio level (received):</p>
+<div id="vu"><div></div></div>
+<audio id="remoteAudio" autoplay></audio>
+<pre id="log"></pre>
+
+<script>
+'use strict';
+
+const params = new URLSearchParams(location.search);
+const wsPort = params.get('port') || '8080';
+
+const log = (m) => {
+  console.log(m);
+  const el = document.getElementById('log');
+  el.textContent += m + '\n';
+  el.scrollTop = el.scrollHeight;
+};
+
+async function start() {
+  document.getElementById('startBtn').disabled = true;
+
+  const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' });
+
+  pc.addTransceiver('audio', { direction: 'recvonly' });
+  pc.addTransceiver('video', { direction: 'recvonly' });
+
+  pc.oniceconnectionstatechange = () => {
+    const s = pc.iceConnectionState;
+    log('ICE: ' + s);
+    const el = document.getElementById('iceStatus');
+    el.textContent = s;
+    el.className = 'tag ' + (
+      s === 'connected' || s === 'completed' ? 'ok'
+        : s === 'checking' ? 'pending' : 'bad');
+  };
+
+  let remoteStream = null;
+  pc.ontrack = (evt) => {
+    log('ontrack kind=' + evt.track.kind);
+    remoteStream = evt.streams[0] || new MediaStream([evt.track]);
+    document.getElementById('remoteVideo').srcObject = remoteStream;
+    document.getElementById('remoteAudio').srcObject = remoteStream;
+    if (evt.track.kind === 'audio') setupVu(remoteStream);
+  };
+
+  const ws = new WebSocket('ws://127.0.0.1:' + wsPort);
+  pc.onicecandidate = (evt) => {
+    if (evt.candidate) {
+      ws.send(JSON.stringify({ type: 'candidate', candidate: evt.candidate.toJSON() }));
+    }
+  };
+
+  ws.onopen = async () => {
+    log('WS connected');
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+    log('Offer sent');
+  };
+
+  ws.onmessage = async (evt) => {
+    const msg = JSON.parse(evt.data);
+    if (msg.type === 'answer') {
+      await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      log('Answer received');
+    } else if (msg.type === 'candidate' && msg.candidate) {
+      try { await pc.addIceCandidate(msg.candidate); } catch (e) { log('addIceCandidate: ' + e); }
+    }
+  };
+
+  ws.onerror = () => log('WS error');
+  ws.onclose = () => log('WS closed');
+
+  setInterval(async () => {
+    try {
+      const report = await pc.getStats();
+      let vpkts = 0, vfd = 0, apkts = 0;
+      for (const [, s] of report) {
+        if (s.type === 'inbound-rtp' && s.kind === 'video') {
+          vpkts = s.packetsReceived || 0;
+          vfd = s.framesDecoded || 0;
+        }
+        if (s.type === 'inbound-rtp' && s.kind === 'audio') {
+          apkts = s.packetsReceived || 0;
+        }
+      }
+      document.getElementById('vpkts').textContent = vpkts;
+      document.getElementById('vfd').textContent = vfd;
+      document.getElementById('apkts').textContent = apkts;
+    } catch (_) {}
+  }, 500);
+}
+
+// Volume meter on the received audio stream so the user can tell audio is
+// flowing even if speakers are muted by autoplay policy.
+function setupVu(stream) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const source = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  source.connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+  const bar = document.querySelector('#vu > div');
+  function tick() {
+    analyser.getFloatTimeDomainData(buf);
+    let peak = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = Math.abs(buf[i]);
+      if (v > peak) peak = v;
+    }
+    bar.style.width = Math.min(100, peak * 100 * 1.5) + '%';
+    requestAnimationFrame(tick);
+  }
+  tick();
+}
+</script>
+</body>
+</html>

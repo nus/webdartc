@@ -43,8 +43,10 @@ void main(List<String> args) async {
     // running them concurrently overlaps the cmake configure with the VT
     // shim compile.
     await Future.wait<void>([
-      if (targetOS == OS.macOS || targetOS == OS.iOS)
+      if (targetOS == OS.macOS || targetOS == OS.iOS) ...[
         _buildVtCallback(input, output),
+        _buildWmdCapture(input, output),
+      ],
       if (targetOS == OS.macOS || targetOS == OS.linux) ...[
         _buildOpusCodecs(input, output),
         _buildVp8Codec(input, output),
@@ -112,21 +114,50 @@ void _registerLibopusWrapper(BuildOutputBuilder output, Uri dllDir) {
   ));
 }
 
-Future<void> _buildVtCallback(
-    BuildInput input, BuildOutputBuilder output) async {
-  // CBuilder only emits `-framework X` when language is Objective-C, so we
-  // pass framework flags directly for a plain-C shim.
-  const frameworks = [
-    'CoreFoundation',
-    'CoreVideo',
-    'CoreMedia',
-    'VideoToolbox',
-  ];
+Future<void> _buildVtCallback(BuildInput input, BuildOutputBuilder output) =>
+    _buildAppleShim(
+      input: input,
+      output: output,
+      name: 'wvt_callback',
+      assetName: 'codec/h264/videotoolbox/wvt_callback.dart',
+      source: 'src/wvt_callback.c',
+      frameworks: const ['CoreFoundation', 'CoreVideo', 'CoreMedia', 'VideoToolbox'],
+    );
+
+Future<void> _buildWmdCapture(BuildInput input, BuildOutputBuilder output) =>
+    _buildAppleShim(
+      input: input,
+      output: output,
+      name: 'wmd_capture',
+      assetName: 'media/macos/avf_capture.dart',
+      source: 'src/wmd_capture.m',
+      frameworks: const [
+        'Foundation', 'AVFoundation', 'CoreMedia', 'CoreVideo', 'CoreAudio',
+      ],
+      objc: true,
+    );
+
+/// Compile a single-TU Apple-only shim into a dylib code asset. `-framework`
+/// flags are passed directly because `CBuilder` only emits them when language
+/// is Objective-C, and we want both plain-C and ObjC shims handled the same.
+Future<void> _buildAppleShim({
+  required BuildInput input,
+  required BuildOutputBuilder output,
+  required String name,
+  required String assetName,
+  required String source,
+  required List<String> frameworks,
+  bool objc = false,
+}) async {
   final builder = CBuilder.library(
-    name: 'wvt_callback',
-    assetName: 'codec/h264/videotoolbox/wvt_callback.dart',
-    sources: ['src/wvt_callback.c'],
-    flags: [for (final f in frameworks) ...['-framework', f]],
+    name: name,
+    assetName: assetName,
+    sources: [source],
+    language: objc ? Language.objectiveC : Language.c,
+    flags: [
+      if (objc) '-fobjc-arc',
+      for (final f in frameworks) ...['-framework', f],
+    ],
   );
   await builder.run(input: input, output: output);
 }
