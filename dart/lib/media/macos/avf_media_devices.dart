@@ -5,7 +5,7 @@ import 'dart:io' show Platform;
 
 import '../media_devices.dart';
 import '../media_stream.dart';
-import 'avf_capture.dart';
+import 'avf_media.dart';
 import 'avf_capture_track.dart';
 
 final class AvfMediaDevicesBackend implements MediaDevicesBackend {
@@ -20,11 +20,14 @@ final class AvfMediaDevicesBackend implements MediaDevicesBackend {
   Future<List<MediaDeviceInfo>> enumerateDevices() async {
     final video = enumerateDevicesNative(WmdDeviceKind.video);
     final audio = enumerateDevicesNative(WmdDeviceKind.audio);
+    final output = enumerateDevicesNative(WmdDeviceKind.audioOutput);
     return [
       for (final d in video)
         MediaDeviceInfo(deviceId: d.id, kind: 'videoinput', label: d.label),
       for (final d in audio)
         MediaDeviceInfo(deviceId: d.id, kind: 'audioinput', label: d.label),
+      for (final d in output)
+        MediaDeviceInfo(deviceId: d.id, kind: 'audiooutput', label: d.label),
     ];
   }
 

@@ -13,7 +13,7 @@ import '../../crypto/csprng.dart';
 import '../audio_data.dart';
 import '../media_stream_track.dart';
 import '../video_frame.dart';
-import 'avf_capture.dart';
+import 'avf_media.dart';
 
 abstract base class _AvfCaptureTrack<TEvent> extends MediaStreamTrack {
   final String _id;
