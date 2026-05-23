@@ -1,12 +1,13 @@
-/// Pure-Dart bindings to the AVFoundation capture shim in
-/// `src/wmd_capture.m`.
+/// Pure-Dart bindings to the AVFoundation / CoreAudio / AudioToolbox
+/// media I/O shim in `src/wmd_media.m`.
 ///
-/// AVCaptureSession delegate callbacks run on AVFoundation's serial
-/// queues — that foreign-thread work stays in C, where threading is
-/// well-defined. Dart drains the resulting FIFO queue from the isolate
-/// thread (see [NativeVideoCapture.popFrame] / [NativeAudioCapture.popFrame]).
-/// Same pattern as `lib/codec/h264/videotoolbox/vt_helper.dart`.
-@ffi.DefaultAsset('package:webdartc/media/macos/avf_capture.dart')
+/// Capture (AVCapture*) delegate callbacks and AudioQueue render
+/// callbacks run on the OS's own worker threads — that foreign-thread
+/// work stays in C, where threading is well-defined. Dart drains FIFO
+/// queues from the isolate thread (see [NativeVideoCapture.popFrame] /
+/// [NativeAudioCapture.popFrame]) and pushes PCM into the renderer's
+/// ring (see [NativeAudioRenderer.push]).
+@ffi.DefaultAsset('package:webdartc/media/macos/avf_media.dart')
 library;
 
 import 'dart:ffi' as ffi;
@@ -20,7 +21,9 @@ final class WmdVideoCapture extends ffi.Opaque {}
 
 final class WmdAudioCapture extends ffi.Opaque {}
 
-/// Layout matches `WmdVideoFrame` in `wmd_capture.h`.
+final class WmdAudioRenderer extends ffi.Opaque {}
+
+/// Layout matches `WmdVideoFrame` in `wmd_media.h`.
 final class WmdVideoFrameStruct extends ffi.Struct {
   external ffi.Pointer<ffi.Uint8> data;
   @ffi.Int32()
@@ -33,7 +36,7 @@ final class WmdVideoFrameStruct extends ffi.Struct {
   external int ptsUs;
 }
 
-/// Layout matches `WmdAudioFrame` in `wmd_capture.h`.
+/// Layout matches `WmdAudioFrame` in `wmd_media.h`.
 final class WmdAudioFrameStruct extends ffi.Struct {
   external ffi.Pointer<ffi.Uint8> data;
   @ffi.Int32()
@@ -146,6 +149,42 @@ external void _wmdAudioCaptureSetMaxQueue(
     symbol: 'wmd_audio_frame_free')
 external void _wmdAudioFrameFree(ffi.Pointer<WmdAudioFrameStruct> f);
 
+@ffi.Native<ffi.Pointer<WmdAudioRenderer> Function(ffi.Int, ffi.Int)>(
+    symbol: 'wmd_audio_renderer_create')
+external ffi.Pointer<WmdAudioRenderer> _wmdAudioRendererCreate(
+    int sampleRate, int channels);
+
+@ffi.Native<
+    ffi.Int Function(
+        ffi.Pointer<WmdAudioRenderer>, ffi.Pointer<pkgffi.Utf8>)>(
+    symbol: 'wmd_audio_renderer_set_sink')
+external int _wmdAudioRendererSetSink(
+    ffi.Pointer<WmdAudioRenderer> r, ffi.Pointer<pkgffi.Utf8> deviceId);
+
+@ffi.Native<ffi.Int Function(ffi.Pointer<WmdAudioRenderer>)>(
+    symbol: 'wmd_audio_renderer_start')
+external int _wmdAudioRendererStart(ffi.Pointer<WmdAudioRenderer> r);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<WmdAudioRenderer>)>(
+    symbol: 'wmd_audio_renderer_stop')
+external void _wmdAudioRendererStop(ffi.Pointer<WmdAudioRenderer> r);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<WmdAudioRenderer>)>(
+    symbol: 'wmd_audio_renderer_release')
+external void _wmdAudioRendererRelease(ffi.Pointer<WmdAudioRenderer> r);
+
+@ffi.Native<
+    ffi.Int Function(
+        ffi.Pointer<WmdAudioRenderer>, ffi.Pointer<ffi.Uint8>, ffi.Int)>(
+    symbol: 'wmd_audio_renderer_push', isLeaf: true)
+external int _wmdAudioRendererPush(
+    ffi.Pointer<WmdAudioRenderer> r, ffi.Pointer<ffi.Uint8> pcm, int bytes);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<WmdAudioRenderer>, ffi.Int)>(
+    symbol: 'wmd_audio_renderer_set_max_buffered')
+external void _wmdAudioRendererSetMaxBuffered(
+    ffi.Pointer<WmdAudioRenderer> r, int bytes);
+
 // ── Higher-level Dart wrappers ───────────────────────────────────────────
 
 bool requestVideoAccessBlocking() => _wmdRequestVideoAccessBlocking() == 1;
@@ -155,7 +194,8 @@ bool requestAudioAccessBlocking() => _wmdRequestAudioAccessBlocking() == 1;
 /// Native device kind passed to `wmd_devices_enumerate`.
 enum WmdDeviceKind {
   video(0),
-  audio(1);
+  audio(1),
+  audioOutput(2);
 
   final int nativeValue;
   const WmdDeviceKind(this.nativeValue);
@@ -319,6 +359,64 @@ final class NativeAudioCapture {
   void release() {
     if (_ptr == ffi.nullptr) return;
     _wmdAudioCaptureRelease(_ptr);
+    _ptr = ffi.nullptr;
+  }
+}
+
+final class NativeAudioRenderer {
+  ffi.Pointer<WmdAudioRenderer> _ptr;
+
+  NativeAudioRenderer._(this._ptr);
+
+  static NativeAudioRenderer? create({
+    int sampleRate = 48000,
+    int channels = 1,
+  }) {
+    final ptr = _wmdAudioRendererCreate(sampleRate, channels);
+    if (ptr == ffi.nullptr) return null;
+    return NativeAudioRenderer._(ptr);
+  }
+
+  bool setSink(String? deviceId) {
+    if (_ptr == ffi.nullptr) return false;
+    return pkgffi.using((arena) => _wmdAudioRendererSetSink(
+        _ptr,
+        deviceId == null
+            ? ffi.nullptr
+            : deviceId.toNativeUtf8(allocator: arena))) ==
+        1;
+  }
+
+  bool start() {
+    if (_ptr == ffi.nullptr) return false;
+    return _wmdAudioRendererStart(_ptr) == 1;
+  }
+
+  void stop() {
+    if (_ptr != ffi.nullptr) _wmdAudioRendererStop(_ptr);
+  }
+
+  /// Push s16-interleaved PCM into the playback ring. Returns the number
+  /// of bytes accepted (currently always equal to `pcm.length` — the
+  /// native side drops oldest chunks when overflowing rather than
+  /// rejecting the push).
+  ///
+  /// Uses `pcm.address` so the native side reads straight from the Dart
+  /// heap — no arena copy on the hot path. The native callee memcpys the
+  /// bytes into its own chunk before returning, so the address only
+  /// needs to remain valid for the synchronous call.
+  int push(Uint8List pcm) {
+    if (_ptr == ffi.nullptr || pcm.isEmpty) return 0;
+    return _wmdAudioRendererPush(_ptr, pcm.address, pcm.length);
+  }
+
+  void setMaxBuffered(int bytes) {
+    if (_ptr != ffi.nullptr) _wmdAudioRendererSetMaxBuffered(_ptr, bytes);
+  }
+
+  void release() {
+    if (_ptr == ffi.nullptr) return;
+    _wmdAudioRendererRelease(_ptr);
     _ptr = ffi.nullptr;
   }
 }

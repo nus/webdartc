@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>webdartc audio_receive</title>
+  <style>
+    body { font-family: system-ui; background: #111; color: #eee; margin: 2rem; max-width: 640px; }
+    h1 { font-size: 1.4rem; }
+    button { padding: 0.5rem 1.5rem; font-size: 1rem; cursor: pointer; border-radius: 4px; border: none; background: #2a6; color: #fff; }
+    button:disabled { background: #555; cursor: default; }
+    .status { margin: 1rem 0; font-size: 0.9rem; }
+    .status span.tag { padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.85rem; }
+    .ok { background: #2a6; }
+    .pending { background: #a82; }
+    .bad { background: #a22; }
+    #vu { width: 100%; height: 18px; background: #222; border-radius: 4px; overflow: hidden; }
+    #vu > div { height: 100%; background: #2a6; transition: width 80ms linear; width: 0%; }
+    #log { font-size: 0.8rem; color: #888; white-space: pre-wrap; margin-top: 1rem; max-height: 240px; overflow-y: auto; border-top: 1px solid #333; padding-top: 0.5rem; }
+  </style>
+</head>
+<body>
+<h1>webdartc — browser mic → Dart speaker</h1>
+<p>This page captures your microphone via <code>getUserMedia</code> and
+sends it over WebRTC to the Dart server, which plays it back through the
+local speaker via AudioQueue.</p>
+<button id="startBtn" onclick="start()">Start</button>
+<div class="status">
+  ICE: <span class="tag" id="iceStatus">-</span>
+  &nbsp;|&nbsp; sent: <span id="sent">0</span> Opus pkts
+</div>
+<p>Local mic level (what you're sending):</p>
+<div id="vu"><div></div></div>
+<pre id="log"></pre>
+
+<script>
+'use strict';
+
+const params = new URLSearchParams(location.search);
+const wsPort = params.get('port') || '8080';
+
+const log = (m) => {
+  console.log(m);
+  const el = document.getElementById('log');
+  el.textContent += m + '\n';
+  el.scrollTop = el.scrollHeight;
+};
+
+async function start() {
+  document.getElementById('startBtn').disabled = true;
+
+  let localStream;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    log('getUserMedia failed: ' + e);
+    return;
+  }
+  log('mic acquired');
+  setupVu(localStream);
+
+  const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' });
+
+  pc.oniceconnectionstatechange = () => {
+    const s = pc.iceConnectionState;
+    log('ICE: ' + s);
+    const el = document.getElementById('iceStatus');
+    el.textContent = s;
+    el.className = 'tag ' + (
+      s === 'connected' || s === 'completed' ? 'ok'
+        : s === 'checking' ? 'pending' : 'bad');
+  };
+
+  for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
+
+  const ws = new WebSocket('ws://127.0.0.1:' + wsPort);
+  pc.onicecandidate = (evt) => {
+    if (evt.candidate) {
+      ws.send(JSON.stringify({ type: 'candidate', candidate: evt.candidate.toJSON() }));
+    }
+  };
+
+  ws.onopen = async () => {
+    log('WS connected');
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+    log('Offer sent');
+  };
+
+  ws.onmessage = async (evt) => {
+    const msg = JSON.parse(evt.data);
+    if (msg.type === 'answer') {
+      await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      log('Answer received');
+    } else if (msg.type === 'candidate' && msg.candidate) {
+      try { await pc.addIceCandidate(msg.candidate); } catch (e) { log('addIceCandidate: ' + e); }
+    }
+  };
+
+  ws.onerror = () => log('WS error');
+  ws.onclose = () => log('WS closed');
+
+  setInterval(async () => {
+    try {
+      const report = await pc.getStats();
+      let sent = 0;
+      for (const [, s] of report) {
+        if (s.type === 'outbound-rtp' && s.kind === 'audio') {
+          sent = s.packetsSent || 0;
+        }
+      }
+      document.getElementById('sent').textContent = sent;
+    } catch (_) {}
+  }, 500);
+}
+
+function setupVu(stream) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const source = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  source.connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+  const bar = document.querySelector('#vu > div');
+  function tick() {
+    analyser.getFloatTimeDomainData(buf);
+    let peak = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = Math.abs(buf[i]);
+      if (v > peak) peak = v;
+    }
+    bar.style.width = Math.min(100, peak * 100 * 1.5) + '%';
+    requestAnimationFrame(tick);
+  }
+  tick();
+}
+</script>
+</body>
+</html>

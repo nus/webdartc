@@ -45,7 +45,7 @@ void main(List<String> args) async {
     await Future.wait<void>([
       if (targetOS == OS.macOS || targetOS == OS.iOS) ...[
         _buildVtCallback(input, output),
-        _buildWmdCapture(input, output),
+        _buildWmdMedia(input, output),
       ],
       if (targetOS == OS.macOS || targetOS == OS.linux) ...[
         _buildOpusCodecs(input, output),
@@ -124,15 +124,16 @@ Future<void> _buildVtCallback(BuildInput input, BuildOutputBuilder output) =>
       frameworks: const ['CoreFoundation', 'CoreVideo', 'CoreMedia', 'VideoToolbox'],
     );
 
-Future<void> _buildWmdCapture(BuildInput input, BuildOutputBuilder output) =>
+Future<void> _buildWmdMedia(BuildInput input, BuildOutputBuilder output) =>
     _buildAppleShim(
       input: input,
       output: output,
-      name: 'wmd_capture',
-      assetName: 'media/macos/avf_capture.dart',
-      source: 'src/wmd_capture.m',
+      name: 'wmd_media',
+      assetName: 'media/macos/avf_media.dart',
+      source: 'src/wmd_media.m',
       frameworks: const [
-        'Foundation', 'AVFoundation', 'CoreMedia', 'CoreVideo', 'CoreAudio',
+        'Foundation', 'AVFoundation', 'CoreMedia', 'CoreVideo',
+        'CoreAudio', 'AudioToolbox',
       ],
       objc: true,
     );

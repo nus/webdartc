@@ -1,9 +1,11 @@
-// AVFoundation-backed capture shim. See wmd_capture.h for the C API
-// shape. ARC is enabled (build hook passes -fobjc-arc).
+// AVFoundation + CoreAudio + AudioToolbox media I/O shim. See wmd_media.h
+// for the C API shape. ARC is enabled (build hook passes -fobjc-arc).
 
-#import "wmd_capture.h"
+#import "wmd_media.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
+#import <CoreAudio/CoreAudio.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <pthread.h>
@@ -77,7 +79,92 @@ static AVCaptureDevice* find_device(const char* device_id, AVMediaType type) {
   return [AVCaptureDevice defaultDeviceWithMediaType:type];
 }
 
+// Returns 1 iff the CoreAudio device has at least one output stream.
+static int coreaudio_device_has_output(AudioDeviceID dev) {
+  AudioObjectPropertyAddress addr = {
+    kAudioDevicePropertyStreams,
+    kAudioObjectPropertyScopeOutput,
+    kAudioObjectPropertyElementMain,
+  };
+  UInt32 size = 0;
+  OSStatus s = AudioObjectGetPropertyDataSize(dev, &addr, 0, NULL, &size);
+  if (s != noErr) return 0;
+  return size > 0 ? 1 : 0;
+}
+
+// CoreAudio CFStringRef property → C string. Caller frees with free().
+static char* coreaudio_device_string(AudioDeviceID dev,
+                                     AudioObjectPropertySelector sel) {
+  AudioObjectPropertyAddress addr = {
+    sel,
+    kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyElementMain,
+  };
+  CFStringRef cf = NULL;
+  UInt32 size = sizeof(cf);
+  OSStatus s = AudioObjectGetPropertyData(dev, &addr, 0, NULL, &size, &cf);
+  if (s != noErr || !cf) return NULL;
+  CFIndex len = CFStringGetMaximumSizeForEncoding(
+      CFStringGetLength(cf), kCFStringEncodingUTF8) + 1;
+  char* buf = (char*)malloc((size_t)len);
+  if (!buf || !CFStringGetCString(cf, buf, len, kCFStringEncodingUTF8)) {
+    free(buf);
+    CFRelease(cf);
+    return NULL;
+  }
+  CFRelease(cf);
+  return buf;
+}
+
+static WmdDeviceList* enumerate_audio_outputs(void) {
+  WmdDeviceList* list = (WmdDeviceList*)calloc(1, sizeof(WmdDeviceList));
+  if (!list) return NULL;
+
+  AudioObjectPropertyAddress addr = {
+    kAudioHardwarePropertyDevices,
+    kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyElementMain,
+  };
+  UInt32 size = 0;
+  if (AudioObjectGetPropertyDataSize(
+          kAudioObjectSystemObject, &addr, 0, NULL, &size) != noErr) {
+    return list;
+  }
+  int total = (int)(size / sizeof(AudioDeviceID));
+  if (total <= 0) return list;
+
+  AudioDeviceID* devs = (AudioDeviceID*)malloc(size);
+  if (!devs) return list;
+  if (AudioObjectGetPropertyData(
+          kAudioObjectSystemObject, &addr, 0, NULL, &size, devs) != noErr) {
+    free(devs);
+    return list;
+  }
+
+  // Worst case every device has an output; tighten later.
+  list->ids = (char**)calloc(total, sizeof(char*));
+  list->names = (char**)calloc(total, sizeof(char*));
+  int n = 0;
+  for (int i = 0; i < total; ++i) {
+    if (!coreaudio_device_has_output(devs[i])) continue;
+    char* uid = coreaudio_device_string(devs[i], kAudioDevicePropertyDeviceUID);
+    char* name = coreaudio_device_string(devs[i], kAudioObjectPropertyName);
+    if (!uid || !name) {
+      free(uid);
+      free(name);
+      continue;
+    }
+    list->ids[n] = uid;
+    list->names[n] = name;
+    n++;
+  }
+  list->count = n;
+  free(devs);
+  return list;
+}
+
 WmdDeviceList* wmd_devices_enumerate(int kind) {
+  if (kind == 2) return enumerate_audio_outputs();
   AVMediaType type = (kind == 0) ? AVMediaTypeVideo : AVMediaTypeAudio;
   NSArray<AVCaptureDevice*>* devices = list_devices(type);
   WmdDeviceList* list = (WmdDeviceList*)calloc(1, sizeof(WmdDeviceList));
@@ -695,4 +782,211 @@ void wmd_audio_frame_free(WmdAudioFrame* frame) {
   if (!frame) return;
   free(frame->data);
   free(frame);
+}
+
+// ── Audio renderer ───────────────────────────────────────────────────────
+
+// Pushed PCM chunk awaiting consumption by the AudioQueue callback.
+// `data` is a flexible array member so header + samples take one
+// allocation (matches WmdVideoFrameNode / WmdAudioFrameNode).
+typedef struct WmdRenderChunk {
+  int size;
+  int consumed;
+  struct WmdRenderChunk* next;
+  uint8_t data[];
+} WmdRenderChunk;
+
+// Three back-to-back buffers of 20 ms each: enough for AudioQueue to keep
+// the device fed across a single late push without underrunning, while
+// keeping the worst-case device → first sample latency at ~60 ms.
+#define WMD_RENDER_BUF_COUNT 3
+#define WMD_RENDER_BUF_MS 20
+
+struct WmdAudioRenderer {
+  AudioQueueRef queue;
+  AudioQueueBufferRef buffers[WMD_RENDER_BUF_COUNT];
+  int buffer_bytes;
+  int sample_rate;
+  int channels;
+  pthread_mutex_t mu;
+  WmdRenderChunk* head;
+  WmdRenderChunk* tail;
+  int buffered_bytes;
+  int max_buffered;
+  bool started;
+};
+
+// AudioQueue's output callback. Runs on the queue's internal worker
+// thread. Drains pushed chunks into `buf`; pads any remainder with
+// silence so the device keeps playing during underruns.
+static void render_cb(void* user, AudioQueueRef q, AudioQueueBufferRef buf) {
+  (void)q;
+  WmdAudioRenderer* r = (WmdAudioRenderer*)user;
+  uint8_t* dst = (uint8_t*)buf->mAudioData;
+  int remaining = r->buffer_bytes;
+
+  pthread_mutex_lock(&r->mu);
+  while (remaining > 0 && r->head) {
+    WmdRenderChunk* c = r->head;
+    int avail = c->size - c->consumed;
+    int take = avail < remaining ? avail : remaining;
+    memcpy(dst, c->data + c->consumed, (size_t)take);
+    dst += take;
+    remaining -= take;
+    c->consumed += take;
+    r->buffered_bytes -= take;
+    if (c->consumed >= c->size) {
+      r->head = c->next;
+      if (!r->head) r->tail = NULL;
+      free(c);
+    }
+  }
+  pthread_mutex_unlock(&r->mu);
+
+  if (remaining > 0) {
+    memset(dst, 0, (size_t)remaining);
+  }
+  buf->mAudioDataByteSize = (UInt32)r->buffer_bytes;
+  AudioQueueEnqueueBuffer(q, buf, 0, NULL);
+}
+
+WmdAudioRenderer* wmd_audio_renderer_create(int sample_rate, int channels) {
+  if (sample_rate <= 0 || channels <= 0) return NULL;
+
+  AudioStreamBasicDescription asbd = {0};
+  asbd.mSampleRate = sample_rate;
+  asbd.mFormatID = kAudioFormatLinearPCM;
+  asbd.mFormatFlags =
+      kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
+  asbd.mBitsPerChannel = 16;
+  asbd.mChannelsPerFrame = (UInt32)channels;
+  asbd.mFramesPerPacket = 1;
+  asbd.mBytesPerFrame = (UInt32)(channels * 2);
+  asbd.mBytesPerPacket = (UInt32)(channels * 2);
+
+  WmdAudioRenderer* r =
+      (WmdAudioRenderer*)calloc(1, sizeof(WmdAudioRenderer));
+  if (!r) return NULL;
+  pthread_mutex_init(&r->mu, NULL);
+  r->sample_rate = sample_rate;
+  r->channels = channels;
+  r->buffer_bytes =
+      (sample_rate * channels * 2 * WMD_RENDER_BUF_MS) / 1000;
+  // 100 ms worth of buffered audio is the cap. Beyond that we drop the
+  // oldest pushed chunks so memory stays bounded if the caller pushes
+  // faster than playback consumes.
+  r->max_buffered = (sample_rate * channels * 2 * 100) / 1000;
+
+  OSStatus s = AudioQueueNewOutput(
+      &asbd, render_cb, r, NULL, NULL, 0, &r->queue);
+  if (s != noErr) {
+    pthread_mutex_destroy(&r->mu);
+    free(r);
+    return NULL;
+  }
+  for (int i = 0; i < WMD_RENDER_BUF_COUNT; ++i) {
+    s = AudioQueueAllocateBuffer(
+        r->queue, (UInt32)r->buffer_bytes, &r->buffers[i]);
+    if (s != noErr) {
+      AudioQueueDispose(r->queue, true);
+      pthread_mutex_destroy(&r->mu);
+      free(r);
+      return NULL;
+    }
+  }
+  return r;
+}
+
+int wmd_audio_renderer_set_sink(WmdAudioRenderer* r, const char* device_id) {
+  if (!r) return 0;
+  if (!device_id || !device_id[0]) {
+    // Restore default by clearing the property to an empty CFString.
+    CFStringRef empty = CFSTR("");
+    OSStatus s = AudioQueueSetProperty(
+        r->queue, kAudioQueueProperty_CurrentDevice, &empty, sizeof(empty));
+    return s == noErr ? 1 : 0;
+  }
+  CFStringRef uid = CFStringCreateWithCString(
+      kCFAllocatorDefault, device_id, kCFStringEncodingUTF8);
+  if (!uid) return 0;
+  OSStatus s = AudioQueueSetProperty(
+      r->queue, kAudioQueueProperty_CurrentDevice, &uid, sizeof(uid));
+  CFRelease(uid);
+  return s == noErr ? 1 : 0;
+}
+
+int wmd_audio_renderer_start(WmdAudioRenderer* r) {
+  if (!r || r->started) return r ? 1 : 0;
+  // Prime each AudioQueueBuffer with silence and enqueue so AudioQueue
+  // has something to play immediately; subsequent refills come from the
+  // callback.
+  for (int i = 0; i < WMD_RENDER_BUF_COUNT; ++i) {
+    AudioQueueBufferRef buf = r->buffers[i];
+    memset(buf->mAudioData, 0, (size_t)r->buffer_bytes);
+    buf->mAudioDataByteSize = (UInt32)r->buffer_bytes;
+    AudioQueueEnqueueBuffer(r->queue, buf, 0, NULL);
+  }
+  OSStatus s = AudioQueueStart(r->queue, NULL);
+  if (s != noErr) return 0;
+  r->started = true;
+  return 1;
+}
+
+void wmd_audio_renderer_stop(WmdAudioRenderer* r) {
+  if (!r || !r->started) return;
+  AudioQueueStop(r->queue, true);
+  r->started = false;
+}
+
+void wmd_audio_renderer_release(WmdAudioRenderer* r) {
+  if (!r) return;
+  if (r->started) AudioQueueStop(r->queue, true);
+  // `true` here also frees the AudioQueueBuffers and runs the callback's
+  // teardown fence — no separate buffer dispose needed.
+  AudioQueueDispose(r->queue, true);
+  pthread_mutex_lock(&r->mu);
+  WmdRenderChunk* c = r->head;
+  while (c) {
+    WmdRenderChunk* nx = c->next;
+    free(c);
+    c = nx;
+  }
+  pthread_mutex_unlock(&r->mu);
+  pthread_mutex_destroy(&r->mu);
+  free(r);
+}
+
+int wmd_audio_renderer_push(WmdAudioRenderer* r, const uint8_t* pcm_s16,
+                            int num_bytes) {
+  if (!r || !pcm_s16 || num_bytes <= 0) return 0;
+  WmdRenderChunk* c =
+      (WmdRenderChunk*)malloc(sizeof(WmdRenderChunk) + (size_t)num_bytes);
+  if (!c) return 0;
+  c->size = num_bytes;
+  c->consumed = 0;
+  c->next = NULL;
+  memcpy(c->data, pcm_s16, (size_t)num_bytes);
+
+  pthread_mutex_lock(&r->mu);
+  if (r->tail) r->tail->next = c;
+  else r->head = c;
+  r->tail = c;
+  r->buffered_bytes += num_bytes;
+  // Drop oldest chunks until buffered_bytes is back under max — keeps
+  // memory bounded if a stalled consumer + fast producer drift apart.
+  while (r->buffered_bytes > r->max_buffered && r->head && r->head != r->tail) {
+    WmdRenderChunk* drop = r->head;
+    r->head = drop->next;
+    r->buffered_bytes -= (drop->size - drop->consumed);
+    free(drop);
+  }
+  pthread_mutex_unlock(&r->mu);
+  return num_bytes;
+}
+
+void wmd_audio_renderer_set_max_buffered(WmdAudioRenderer* r, int bytes) {
+  if (!r || bytes < 0) return;
+  pthread_mutex_lock(&r->mu);
+  r->max_buffered = bytes;
+  pthread_mutex_unlock(&r->mu);
 }
