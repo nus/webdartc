@@ -118,6 +118,32 @@ abstract final class StunParser {
         return _parseErrorCode(value);
       case StunAttributeType.software:
         return SoftwareAttr(String.fromCharCodes(value));
+      // TURN attributes
+      case StunAttributeType.realm:
+        return RealmAttr(String.fromCharCodes(value));
+      case StunAttributeType.nonce:
+        return NonceAttr(value);
+      case StunAttributeType.xorPeerAddress:
+        final parsed = _parseAddress(value, transactionId);
+        if (parsed == null) return null;
+        return XorPeerAddress(address: parsed.$1, port: parsed.$2);
+      case StunAttributeType.xorRelayedAddress:
+        final parsed = _parseAddress(value, transactionId);
+        if (parsed == null) return null;
+        return XorRelayedAddress(address: parsed.$1, port: parsed.$2);
+      case StunAttributeType.data:
+        return DataAttr(value);
+      case StunAttributeType.lifetime:
+        if (value.length != 4) return null;
+        return LifetimeAttr(_readUint32(value, 0));
+      case StunAttributeType.requestedTransport:
+        if (value.length != 4) return null;
+        return RequestedTransportAttr(value[0]);
+      case StunAttributeType.channelNumber:
+        if (value.length != 4) return null;
+        return ChannelNumberAttr(_readUint16(value, 0));
+      case StunAttributeType.dontFragment:
+        return const DontFragmentAttr();
       default:
         return RawAttribute(type, Uint8List.fromList(value));
     }

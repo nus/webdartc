@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 import '../core/ip_address.dart';
 
-/// STUN attribute types (RFC 5389 + RFC 8445).
+/// STUN attribute types (RFC 5389 + RFC 8445 + RFC 5766 TURN).
 abstract final class StunAttributeType {
   StunAttributeType._();
 
@@ -26,9 +26,18 @@ abstract final class StunAttributeType {
   static const int useCandidate     = 0x0025;
   static const int iceControlled    = 0x8029;
   static const int iceControlling   = 0x802A;
+
+  // TURN (RFC 5766 / RFC 8656)
+  static const int channelNumber       = 0x000C;
+  static const int lifetime            = 0x000D;
+  static const int xorPeerAddress      = 0x0012;
+  static const int data                = 0x0013;
+  static const int xorRelayedAddress   = 0x0016;
+  static const int requestedTransport  = 0x0019;
+  static const int dontFragment        = 0x001A;
 }
 
-/// STUN message types.
+/// STUN message types (RFC 5389) and TURN extensions (RFC 5766 / RFC 8656).
 abstract final class StunMessageType {
   StunMessageType._();
 
@@ -36,6 +45,21 @@ abstract final class StunMessageType {
   static const int bindingSuccessResponse      = 0x0101;
   static const int bindingErrorResponse        = 0x0111;
   static const int bindingIndication           = 0x0011;
+
+  static const int allocateRequest               = 0x0003;
+  static const int allocateSuccessResponse       = 0x0103;
+  static const int allocateErrorResponse         = 0x0113;
+  static const int refreshRequest                = 0x0004;
+  static const int refreshSuccessResponse        = 0x0104;
+  static const int refreshErrorResponse          = 0x0114;
+  static const int sendIndication                = 0x0016;
+  static const int dataIndication                = 0x0017;
+  static const int createPermissionRequest       = 0x0008;
+  static const int createPermissionSuccessResponse = 0x0108;
+  static const int createPermissionErrorResponse   = 0x0118;
+  static const int channelBindRequest            = 0x0009;
+  static const int channelBindSuccessResponse    = 0x0109;
+  static const int channelBindErrorResponse      = 0x0119;
 }
 
 /// Magic cookie (RFC 5389 §6).
@@ -117,4 +141,59 @@ final class SoftwareAttr extends StunAttribute {
 final class RawAttribute extends StunAttribute {
   final Uint8List value;
   const RawAttribute(super.type, this.value);
+}
+
+// ── TURN attribute data classes (RFC 5766 / RFC 8656) ────────────────────────
+
+final class RealmAttr extends StunAttribute {
+  final String realm;
+  const RealmAttr(this.realm) : super(StunAttributeType.realm);
+}
+
+final class NonceAttr extends StunAttribute {
+  final Uint8List nonce;
+  const NonceAttr(this.nonce) : super(StunAttributeType.nonce);
+}
+
+final class XorPeerAddress extends StunAttribute {
+  final IpAddress address;
+  final int port;
+  const XorPeerAddress({required this.address, required this.port})
+      : super(StunAttributeType.xorPeerAddress);
+}
+
+final class XorRelayedAddress extends StunAttribute {
+  final IpAddress address;
+  final int port;
+  const XorRelayedAddress({required this.address, required this.port})
+      : super(StunAttributeType.xorRelayedAddress);
+}
+
+final class DataAttr extends StunAttribute {
+  final Uint8List data;
+  const DataAttr(this.data) : super(StunAttributeType.data);
+}
+
+final class LifetimeAttr extends StunAttribute {
+  final int seconds;
+  const LifetimeAttr(this.seconds) : super(StunAttributeType.lifetime);
+}
+
+/// IANA Protocol Numbers — 17=UDP, 6=TCP. TURN-UDP carries 17.
+final class RequestedTransportAttr extends StunAttribute {
+  final int protocol;
+  const RequestedTransportAttr(this.protocol)
+      : super(StunAttributeType.requestedTransport);
+}
+
+/// Channel number (RFC 5766 §11). Valid range 0x4000–0x7FFF; numbers
+/// outside that range are reserved or for future use.
+final class ChannelNumberAttr extends StunAttribute {
+  final int channel;
+  const ChannelNumberAttr(this.channel)
+      : super(StunAttributeType.channelNumber);
+}
+
+final class DontFragmentAttr extends StunAttribute {
+  const DontFragmentAttr() : super(StunAttributeType.dontFragment);
 }
