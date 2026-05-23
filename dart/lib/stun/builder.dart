@@ -1,9 +1,8 @@
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart' as pkg_crypto;
-
 import '../core/ip_address.dart';
 import '../crypto/hmac_sha1.dart';
+import '../crypto/md5.dart';
 import 'crc32c.dart';
 import 'message.dart';
 
@@ -22,8 +21,7 @@ abstract final class StunMessageBuilder {
   /// on TURN messages and any other long-term-authenticated STUN flow.
   /// SASLprep on `username`/`realm` is a no-op for ASCII inputs.
   static Uint8List longTermKey(String username, String realm, String password) {
-    final input = '$username:$realm:$password';
-    return Uint8List.fromList(pkg_crypto.md5.convert(input.codeUnits).bytes);
+    return Md5.hash(Uint8List.fromList('$username:$realm:$password'.codeUnits));
   }
 
   /// Build a message with HMAC-SHA1 MESSAGE-INTEGRITY and (optionally)
@@ -179,13 +177,13 @@ abstract final class StunMessageBuilder {
       case RealmAttr(:final realm):
         return Uint8List.fromList(realm.codeUnits);
       case NonceAttr(:final nonce):
-        return Uint8List.fromList(nonce);
+        return nonce;
       case XorPeerAddress(:final address, :final port):
         return _encodeAddress(address, port, transactionId);
       case XorRelayedAddress(:final address, :final port):
         return _encodeAddress(address, port, transactionId);
       case DataAttr(:final data):
-        return Uint8List.fromList(data);
+        return data;
       case LifetimeAttr(:final seconds):
         return _uint32Bytes(seconds);
       case RequestedTransportAttr(:final protocol):

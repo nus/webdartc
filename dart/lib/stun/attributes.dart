@@ -38,10 +38,6 @@ abstract final class StunAttributeType {
 }
 
 /// STUN message types (RFC 5389) and TURN extensions (RFC 5766 / RFC 8656).
-///
-/// Encoding: bit 8 = class:resp-bit2, bit 4 = class:resp-bit1. Method
-/// bits are scattered: bits 0-3, 5-7, 9-13. Class bits 4 and 8 select
-/// request / indication / success / error.
 abstract final class StunMessageType {
   StunMessageType._();
 
@@ -50,9 +46,6 @@ abstract final class StunMessageType {
   static const int bindingErrorResponse        = 0x0111;
   static const int bindingIndication           = 0x0011;
 
-  // TURN methods. Method numbers (Allocate=0x003, Refresh=0x004,
-  // Send=0x006, Data=0x007, CreatePermission=0x008, ChannelBind=0x009)
-  // are folded together with the class bits per RFC 5389 §6.
   static const int allocateRequest               = 0x0003;
   static const int allocateSuccessResponse       = 0x0103;
   static const int allocateErrorResponse         = 0x0113;
@@ -167,8 +160,6 @@ final class XorPeerAddress extends StunAttribute {
   final int port;
   const XorPeerAddress({required this.address, required this.port})
       : super(StunAttributeType.xorPeerAddress);
-
-  int get family => address.isV4 ? 0x01 : 0x02;
 }
 
 final class XorRelayedAddress extends StunAttribute {
@@ -176,8 +167,6 @@ final class XorRelayedAddress extends StunAttribute {
   final int port;
   const XorRelayedAddress({required this.address, required this.port})
       : super(StunAttributeType.xorRelayedAddress);
-
-  int get family => address.isV4 ? 0x01 : 0x02;
 }
 
 final class DataAttr extends StunAttribute {

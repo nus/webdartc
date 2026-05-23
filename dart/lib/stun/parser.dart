@@ -122,7 +122,7 @@ abstract final class StunParser {
       case StunAttributeType.realm:
         return RealmAttr(String.fromCharCodes(value));
       case StunAttributeType.nonce:
-        return NonceAttr(Uint8List.fromList(value));
+        return NonceAttr(value);
       case StunAttributeType.xorPeerAddress:
         final parsed = _parseAddress(value, transactionId);
         if (parsed == null) return null;
@@ -132,7 +132,7 @@ abstract final class StunParser {
         if (parsed == null) return null;
         return XorRelayedAddress(address: parsed.$1, port: parsed.$2);
       case StunAttributeType.data:
-        return DataAttr(Uint8List.fromList(value));
+        return DataAttr(value);
       case StunAttributeType.lifetime:
         if (value.length != 4) return null;
         return LifetimeAttr(_readUint32(value, 0));
