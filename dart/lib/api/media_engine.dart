@@ -59,6 +59,32 @@ final class MediaEngine {
     ),
   ];
 
+  /// JPEG / MJPEG payload (RFC 2435). Not in [defaultVideoCodecs] because
+  /// no major browser implements RFC 2435 — they parse the SDP, fail to
+  /// match `JPEG/90000` against their internal codec table, and drop the
+  /// PT silently from the answer. Useful in webdartc↔webdartc topologies
+  /// where the sender wants to forward a camera's native MJPEG bytes
+  /// without re-encoding.
+  ///
+  /// PT 26 is statically assigned by RFC 3551 §6 and so doesn't strictly
+  /// need an `a=rtpmap` line, but the SDP builder emits one anyway for
+  /// peers that filter by name.
+  ///
+  /// ```dart
+  /// final pc = PeerConnection(
+  ///   configuration: const PeerConnectionConfiguration(),
+  ///   mediaEngine: MediaEngine(
+  ///     videoCodecs: [MediaEngine.jpegVideoCodec, ...MediaEngine.defaultVideoCodecs],
+  ///   ),
+  /// );
+  /// pc.addTransceiver('video', preferredCodecs: ['JPEG']);
+  /// ```
+  static const RtpCodec jpegVideoCodec = RtpCodec(
+    payloadType: 26,
+    name: 'JPEG',
+    clockRate: 90000,
+  );
+
   static const List<RtpCodec> defaultAudioCodecs = [
     RtpCodec(
       payloadType: 111,

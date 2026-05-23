@@ -74,6 +74,19 @@ typedef struct WmdVideoFrame {
 WMD_EXPORT WmdVideoCapture* wmd_video_capture_create(
     const char* device_id, int width, int height, double fps);
 
+// MJPEG passthrough constructor. Selects an AVCaptureDeviceFormat whose
+// `mediaSubType` is `kCMVideoCodecType_JPEG` (or its 'dmb1' alias) and
+// hands the encoded JPEG bytes through verbatim — no decode-then-re-encode
+// round-trip. Returns NULL when the requested device has no matching
+// MJPEG format (e.g. macOS built-in FaceTime cameras only expose
+// uncompressed formats; external UVC cameras typically do offer MJPEG).
+//
+// Frames popped via `wmd_video_capture_pop` carry the JPEG bytes in
+// `WmdVideoFrame.data` (size = encoded byte length, width/height = the
+// format's pixel dimensions).
+WMD_EXPORT WmdVideoCapture* wmd_video_capture_create_jpeg(
+    const char* device_id, int width, int height, double fps);
+
 // Returns 1 on success, 0 on failure.
 WMD_EXPORT int wmd_video_capture_start(WmdVideoCapture* cap);
 WMD_EXPORT void wmd_video_capture_stop(WmdVideoCapture* cap);

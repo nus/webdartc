@@ -131,6 +131,11 @@ typedef struct WmdVideoFrameNode {
 
 @class WmdVideoDelegate;
 
+typedef enum {
+  WMD_VIDEO_MODE_I420 = 0,
+  WMD_VIDEO_MODE_MJPEG = 1,
+} WmdVideoMode;
+
 struct WmdVideoCapture {
   AVCaptureSession* session;
   AVCaptureDeviceInput* input;
@@ -144,6 +149,7 @@ struct WmdVideoCapture {
   int qmax;
   CFAbsoluteTime t0;
   BOOL t0_set;
+  WmdVideoMode mode;
 };
 
 @interface WmdVideoDelegate
@@ -224,6 +230,37 @@ static WmdVideoFrameNode* nv12_to_i420_node(CVPixelBufferRef pb,
   return n;
 }
 
+// MJPEG mode: the device delivers compressed CMSampleBuffers carrying a
+// CMBlockBuffer (no CVPixelBuffer). Copy the encoded bytes verbatim and
+// pull width/height off the sample's CMVideoFormatDescription so the
+// downstream JPEG packetizer doesn't need to parse SOF0 just to know
+// dimensions.
+static WmdVideoFrameNode* mjpeg_passthrough_node(CMSampleBufferRef sb,
+                                                 int64_t pts_us) {
+  CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sb);
+  if (!block) return NULL;
+  size_t totalLen = CMBlockBufferGetDataLength(block);
+  if (totalLen == 0) return NULL;
+  CMFormatDescriptionRef fd = CMSampleBufferGetFormatDescription(sb);
+  CMVideoDimensions dims = {0, 0};
+  if (fd) dims = CMVideoFormatDescriptionGetDimensions(fd);
+
+  WmdVideoFrameNode* n =
+      (WmdVideoFrameNode*)malloc(sizeof(WmdVideoFrameNode));
+  if (!n) return NULL;
+  uint8_t* data = (uint8_t*)malloc(totalLen);
+  if (!data) { free(n); return NULL; }
+  OSStatus s = CMBlockBufferCopyDataBytes(block, 0, totalLen, data);
+  if (s != noErr) { free(n); free(data); return NULL; }
+  n->frame.data = data;
+  n->frame.size = (int32_t)totalLen;
+  n->frame.width = dims.width;
+  n->frame.height = dims.height;
+  n->frame.pts_us = pts_us;
+  n->next = NULL;
+  return n;
+}
+
 @implementation WmdVideoDelegate
 - (void)captureOutput:(AVCaptureOutput*)output
     didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
@@ -232,8 +269,6 @@ static WmdVideoFrameNode* nv12_to_i420_node(CVPixelBufferRef pb,
   (void)connection;
   WmdVideoCapture* cap = self.owner;
   if (!cap) return;
-  CVImageBufferRef img = CMSampleBufferGetImageBuffer(sampleBuffer);
-  if (!img) return;
 
   // CMSampleBuffer's PTS is wall-clock or device-uptime depending on
   // source; translate to session-relative microseconds using the first
@@ -251,7 +286,14 @@ static WmdVideoFrameNode* nv12_to_i420_node(CVPixelBufferRef pb,
   int64_t pts_us = (int64_t)((tsec - cap->t0) * 1e6);
   pthread_mutex_unlock(&cap->mu);
 
-  WmdVideoFrameNode* n = nv12_to_i420_node(img, pts_us);
+  WmdVideoFrameNode* n = NULL;
+  if (cap->mode == WMD_VIDEO_MODE_MJPEG) {
+    n = mjpeg_passthrough_node(sampleBuffer, pts_us);
+  } else {
+    CVImageBufferRef img = CMSampleBufferGetImageBuffer(sampleBuffer);
+    if (!img) return;
+    n = nv12_to_i420_node(img, pts_us);
+  }
   if (!n) return;
   pthread_mutex_lock(&cap->mu);
   video_enqueue_locked(cap, n);
@@ -294,6 +336,60 @@ static void configure_video_format(AVCaptureDevice* dev, int width, int height,
   [dev unlockForConfiguration];
 }
 
+// MJPEG counterpart of [configure_video_format] — restricts the format
+// search to AVCaptureDeviceFormats whose mediaSubType is JPEG, so the
+// session emits compressed sample buffers we can forward as-is. Returns
+// YES when an MJPEG format was selected and activated.
+static BOOL configure_video_format_mjpeg(AVCaptureDevice* dev, int width,
+                                         int height, double fps) {
+  AVCaptureDeviceFormat* best = nil;
+  long bestDelta = LONG_MAX;
+  for (AVCaptureDeviceFormat* f in dev.formats) {
+    FourCharCode subtype =
+        CMFormatDescriptionGetMediaSubType(f.formatDescription);
+    // 'jpeg' (kCMVideoCodecType_JPEG) — and the rare 'dmb1' OpenDML
+    // variant emitted by some legacy UVC firmware.
+    if (subtype != kCMVideoCodecType_JPEG && subtype != 'dmb1') continue;
+    CMVideoDimensions d =
+        CMVideoFormatDescriptionGetDimensions(f.formatDescription);
+    if (width > 0 && d.width < width) continue;
+    if (height > 0 && d.height < height) continue;
+    if (fps > 0) {
+      BOOL fpsOk = NO;
+      for (AVFrameRateRange* r in f.videoSupportedFrameRateRanges) {
+        if (r.minFrameRate <= fps && fps <= r.maxFrameRate) {
+          fpsOk = YES;
+          break;
+        }
+      }
+      if (!fpsOk) continue;
+    }
+    long delta = (long)((d.width - width) + (d.height - height));
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = f;
+    }
+  }
+  if (!best) return NO;
+  NSError* err = nil;
+  if (![dev lockForConfiguration:&err]) return NO;
+  dev.activeFormat = best;
+  if (fps > 0) {
+    CMTime frameDur = CMTimeMake(1, (int32_t)fps);
+    dev.activeVideoMinFrameDuration = frameDur;
+    dev.activeVideoMaxFrameDuration = frameDur;
+  }
+  [dev unlockForConfiguration];
+  return YES;
+}
+
+// Forward decl — assemble_video_capture is defined after the I420
+// constructor (and shared with the MJPEG constructor that follows).
+static WmdVideoCapture* assemble_video_capture(AVCaptureSession* session,
+                                               AVCaptureDeviceInput* input,
+                                               AVCaptureVideoDataOutput* output,
+                                               WmdVideoMode mode);
+
 WmdVideoCapture* wmd_video_capture_create(const char* device_id, int width,
                                           int height, double fps) {
   @autoreleasepool {
@@ -326,28 +422,78 @@ WmdVideoCapture* wmd_video_capture_create(const char* device_id, int width,
     if (height > 0) settings[(NSString*)kCVPixelBufferHeightKey] = @(height);
     output.videoSettings = settings;
 
-    WmdVideoCapture* cap =
-        (WmdVideoCapture*)calloc(1, sizeof(WmdVideoCapture));
-    if (!cap) return NULL;
-    pthread_mutex_init(&cap->mu, NULL);
-    cap->qmax = 4;
-    cap->session = session;
-    cap->input = input;
-    cap->output = output;
-    cap->queue =
-        dispatch_queue_create("webdartc.wmd.video", DISPATCH_QUEUE_SERIAL);
+    return assemble_video_capture(session, input, output,
+                                  WMD_VIDEO_MODE_I420);
+  }
+}
 
-    WmdVideoDelegate* delegate = [[WmdVideoDelegate alloc] init];
-    delegate.owner = cap;
-    cap->delegate = delegate;
-    [output setSampleBufferDelegate:delegate queue:cap->queue];
-    if (![session canAddOutput:output]) {
-      pthread_mutex_destroy(&cap->mu);
-      free(cap);
+// Shared by both video-capture constructors so the queue/delegate/cleanup
+// wiring isn't duplicated. Caller is responsible for adding [input] to
+// [session] before calling.
+static WmdVideoCapture* assemble_video_capture(AVCaptureSession* session,
+                                               AVCaptureDeviceInput* input,
+                                               AVCaptureVideoDataOutput* output,
+                                               WmdVideoMode mode) {
+  WmdVideoCapture* cap =
+      (WmdVideoCapture*)calloc(1, sizeof(WmdVideoCapture));
+  if (!cap) return NULL;
+  pthread_mutex_init(&cap->mu, NULL);
+  cap->qmax = 4;
+  cap->session = session;
+  cap->input = input;
+  cap->output = output;
+  cap->mode = mode;
+  cap->queue =
+      dispatch_queue_create("webdartc.wmd.video", DISPATCH_QUEUE_SERIAL);
+
+  WmdVideoDelegate* delegate = [[WmdVideoDelegate alloc] init];
+  delegate.owner = cap;
+  cap->delegate = delegate;
+  [output setSampleBufferDelegate:delegate queue:cap->queue];
+  if (![session canAddOutput:output]) {
+    pthread_mutex_destroy(&cap->mu);
+    free(cap);
+    return NULL;
+  }
+  [session addOutput:output];
+  return cap;
+}
+
+WmdVideoCapture* wmd_video_capture_create_jpeg(const char* device_id,
+                                               int width, int height,
+                                               double fps) {
+  @autoreleasepool {
+    AVCaptureDevice* dev = find_device(device_id, AVMediaTypeVideo);
+    if (!dev) return NULL;
+
+    // Pick an MJPEG activeFormat first; if the device has no MJPEG format
+    // there's nothing to pass through, so fail fast instead of silently
+    // falling back to I420 (which would defeat the whole purpose).
+    if (!configure_video_format_mjpeg(dev, width, height, fps)) {
       return NULL;
     }
-    [session addOutput:output];
-    return cap;
+
+    NSError* err = nil;
+    AVCaptureDeviceInput* input =
+        [AVCaptureDeviceInput deviceInputWithDevice:dev error:&err];
+    if (!input) return NULL;
+
+    AVCaptureSession* session = [[AVCaptureSession alloc] init];
+    if (![session canAddInput:input]) return NULL;
+    [session addInput:input];
+
+    AVCaptureVideoDataOutput* output =
+        [[AVCaptureVideoDataOutput alloc] init];
+    output.alwaysDiscardsLateVideoFrames = YES;
+    // Empty videoSettings tells AVFoundation to deliver the device's
+    // native sample buffers; combined with an MJPEG activeFormat this
+    // yields compressed CMSampleBuffers that the delegate forwards
+    // verbatim. Requesting a specific pixel format here would force a
+    // hidden decode-then-recompress round-trip and erase the savings.
+    output.videoSettings = @{};
+
+    return assemble_video_capture(session, input, output,
+                                  WMD_VIDEO_MODE_MJPEG);
   }
 }
 

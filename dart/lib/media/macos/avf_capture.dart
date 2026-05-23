@@ -85,6 +85,13 @@ external void _wmdDevicesFree(ffi.Pointer<WmdDeviceList> list);
 external ffi.Pointer<WmdVideoCapture> _wmdVideoCaptureCreate(
     ffi.Pointer<pkgffi.Utf8> deviceId, int width, int height, double fps);
 
+@ffi.Native<
+    ffi.Pointer<WmdVideoCapture> Function(
+        ffi.Pointer<pkgffi.Utf8>, ffi.Int, ffi.Int, ffi.Double)>(
+    symbol: 'wmd_video_capture_create_jpeg')
+external ffi.Pointer<WmdVideoCapture> _wmdVideoCaptureCreateJpeg(
+    ffi.Pointer<pkgffi.Utf8> deviceId, int width, int height, double fps);
+
 @ffi.Native<ffi.Int Function(ffi.Pointer<WmdVideoCapture>)>(
     symbol: 'wmd_video_capture_start')
 external int _wmdVideoCaptureStart(ffi.Pointer<WmdVideoCapture> cap);
@@ -242,6 +249,30 @@ final class NativeVideoCapture {
   }) {
     final ptr = pkgffi.using((arena) => _wmdVideoCaptureCreate(
         deviceId == null ? ffi.nullptr : deviceId.toNativeUtf8(allocator: arena),
+        width,
+        height,
+        fps));
+    if (ptr == ffi.nullptr) return null;
+    return NativeVideoCapture._(ptr);
+  }
+
+  /// MJPEG passthrough variant — selects an AVCaptureDeviceFormat whose
+  /// native codec is JPEG and delivers the encoded bytes verbatim via
+  /// [popFrame] (no decode-then-recompress round-trip).
+  ///
+  /// Returns `null` when the chosen device has no MJPEG format available
+  /// (e.g. macOS built-in FaceTime cameras only expose uncompressed
+  /// formats; most external UVC cameras do offer MJPEG).
+  static NativeVideoCapture? createJpeg({
+    String? deviceId,
+    int width = 0,
+    int height = 0,
+    double fps = 0,
+  }) {
+    final ptr = pkgffi.using((arena) => _wmdVideoCaptureCreateJpeg(
+        deviceId == null
+            ? ffi.nullptr
+            : deviceId.toNativeUtf8(allocator: arena),
         width,
         height,
         fps));

@@ -9,6 +9,7 @@ library;
 import 'dart:async';
 import 'dart:typed_data';
 
+import '../../codec/video_codec.dart';
 import '../../crypto/csprng.dart';
 import '../audio_data.dart';
 import '../media_stream_track.dart';
@@ -134,6 +135,84 @@ final class AvfCaptureVideoTrack extends _AvfCaptureTrack<VideoFrame> {
         format: VideoPixelFormat.i420,
         codedWidth: frame.width,
         codedHeight: frame.height,
+        timestamp: frame.ptsUs,
+        data: frame.data,
+      ));
+    }
+    return true;
+  }
+
+  @override
+  void _disposeNativeCapture() {
+    _capture.stop();
+    _capture.release();
+  }
+}
+
+/// MJPEG passthrough camera track. Selects an AVCaptureDeviceFormat whose
+/// native codec is JPEG (typical for external UVC cameras), and exposes
+/// the encoded JPEG bytes via [onEncodedChunk] so the application can
+/// hand them straight to [JpegPacketizer] and `RtpSender.sendRtp` — no
+/// VideoEncoder pass on the sender.
+///
+/// Implements [MediaStreamTrack] so it slots into [MediaStream]s, but the
+/// [onVideoFrame] getter throws: a passthrough track has no raw frames to
+/// expose. Stop the track to release the AVCaptureSession.
+final class AvfCaptureMjpegTrack extends _AvfCaptureTrack<EncodedVideoChunk> {
+  final NativeVideoCapture _capture;
+
+  AvfCaptureMjpegTrack._(this._capture, super.id, super.label, super.interval);
+
+  /// Returns `null` when the device has no MJPEG-capable format — e.g.
+  /// macOS built-in FaceTime cameras only advertise uncompressed formats.
+  /// Most external UVC webcams do advertise MJPEG.
+  static AvfCaptureMjpegTrack? create({
+    String? deviceId,
+    String label = 'camera-mjpeg',
+    int width = 1280,
+    int height = 720,
+    double framerate = 30,
+  }) {
+    final cap = NativeVideoCapture.createJpeg(
+        deviceId: deviceId, width: width, height: height, fps: framerate);
+    if (cap == null) return null;
+    if (!cap.start()) {
+      cap.release();
+      return null;
+    }
+    final interval = Duration(
+        microseconds:
+            ((1000000 / framerate) / 2).round().clamp(2000, 33000));
+    return AvfCaptureMjpegTrack._(
+        cap, Csprng.randomHex(16), label, interval);
+  }
+
+  @override
+  String get kind => 'video';
+
+  /// Stream of encoded JPEG chunks (one per camera frame). Each chunk's
+  /// `data` is a standalone baseline JFIF byte stream.
+  Stream<EncodedVideoChunk> get onEncodedChunk => _events.stream;
+
+  @override
+  Stream<VideoFrame> get onVideoFrame =>
+      throw UnsupportedError(
+          'MJPEG passthrough track exposes EncodedVideoChunk via '
+          'onEncodedChunk, not raw VideoFrame');
+
+  @override
+  Stream<AudioData> get onAudioData =>
+      throw UnsupportedError('Video track does not produce audio data');
+
+  @override
+  bool _drainOne() {
+    final frame = _capture.popFrame();
+    if (frame == null) return false;
+    if (_enabled) {
+      _events.add(EncodedVideoChunk(
+        // Every MJPEG frame is self-contained — there are no inter-frame
+        // dependencies, so the "key" type is always accurate.
+        type: EncodedVideoChunkType.key,
         timestamp: frame.ptsUs,
         data: frame.data,
       ));
