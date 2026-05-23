@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as pkg_crypto;
+
 import '../core/ip_address.dart';
 import '../crypto/hmac_sha1.dart';
 import 'crc32c.dart';
@@ -15,10 +17,26 @@ abstract final class StunMessageBuilder {
     return _buildHeader(msg.type, body.length, msg.transactionId, body);
   }
 
-  /// Build a message with HMAC-SHA1 MESSAGE-INTEGRITY and FINGERPRINT.
+  /// Long-term credential key: MD5(username:realm:password) per
+  /// RFC 5389 §15.4. Used as the HMAC-SHA1 key for MESSAGE-INTEGRITY
+  /// on TURN messages and any other long-term-authenticated STUN flow.
+  /// SASLprep on `username`/`realm` is a no-op for ASCII inputs.
+  static Uint8List longTermKey(String username, String realm, String password) {
+    final input = '$username:$realm:$password';
+    return Uint8List.fromList(pkg_crypto.md5.convert(input.codeUnits).bytes);
+  }
+
+  /// Build a message with HMAC-SHA1 MESSAGE-INTEGRITY and (optionally)
+  /// FINGERPRINT.
   ///
-  /// [key] is the HMAC-SHA1 key (password in short-term credential).
-  static Uint8List buildWithIntegrity(StunMessage msg, Uint8List key) {
+  /// [key] is the HMAC-SHA1 key — either the raw password (short-term
+  /// credential) or [longTermKey] output (long-term credential).
+  /// [fingerprint] controls whether a FINGERPRINT attribute is appended;
+  /// STUN-over-multiplexed-transport (RFC 5389 §15.5) wants it, plain
+  /// TURN-over-its-own-socket doesn't and most TURN servers reject the
+  /// connection-id-style FINGERPRINT.
+  static Uint8List buildWithIntegrity(StunMessage msg, Uint8List key,
+      {bool fingerprint = true}) {
     // Encode all user attributes except integrity/fingerprint
     final userAttrs = msg.attributes
         .where((a) =>
@@ -43,6 +61,11 @@ abstract final class StunMessageBuilder {
     // Build with integrity included
     final allAttrs = [...userAttrs, integrityAttr];
     final bodyWithIntegrity = _encodeAttributes(allAttrs, msg.transactionId);
+
+    if (!fingerprint) {
+      return _buildHeader(
+          msg.type, bodyWithIntegrity.length, msg.transactionId, bodyWithIntegrity);
+    }
 
     // FINGERPRINT covers header + all attributes up through MESSAGE-INTEGRITY
     // length field includes fingerprint (8 bytes)
@@ -152,6 +175,32 @@ abstract final class StunMessageBuilder {
         return out;
       case SoftwareAttr(:final value):
         return Uint8List.fromList(value.codeUnits);
+      // TURN attributes
+      case RealmAttr(:final realm):
+        return Uint8List.fromList(realm.codeUnits);
+      case NonceAttr(:final nonce):
+        return Uint8List.fromList(nonce);
+      case XorPeerAddress(:final address, :final port):
+        return _encodeAddress(address, port, transactionId);
+      case XorRelayedAddress(:final address, :final port):
+        return _encodeAddress(address, port, transactionId);
+      case DataAttr(:final data):
+        return Uint8List.fromList(data);
+      case LifetimeAttr(:final seconds):
+        return _uint32Bytes(seconds);
+      case RequestedTransportAttr(:final protocol):
+        // 1 byte protocol + 3 bytes reserved (RFC 5766 §14.7).
+        final out = Uint8List(4);
+        out[0] = protocol & 0xFF;
+        return out;
+      case ChannelNumberAttr(:final channel):
+        // 2 bytes channel + 2 bytes reserved (RFC 5766 §14.1).
+        final out = Uint8List(4);
+        out[0] = (channel >> 8) & 0xFF;
+        out[1] = channel & 0xFF;
+        return out;
+      case DontFragmentAttr():
+        return Uint8List(0);
       case RawAttribute(:final value):
         return Uint8List.fromList(value);
     }
