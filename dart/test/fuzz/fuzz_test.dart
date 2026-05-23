@@ -13,6 +13,7 @@ import 'package:webdartc/webdartc.dart';
 // Not exported via webdartc.dart — import directly.
 import 'package:webdartc/dtls/record.dart';
 import 'package:webdartc/sctp/chunk.dart';
+import 'package:webdartc/turn/channel_data.dart';
 
 /// Number of random iterations per test.
 const int _iterations = 10000;
@@ -449,6 +450,116 @@ void main() {
     test('SdpParser.parse handles very long lines', () {
       final longLine = 'a=${'x' * 10000}\r\n';
       SdpParser.parse('v=0\r\n$longLine');
+    });
+  });
+
+  // ── TURN ──────────────────────────────────────────────────────────────────
+
+  group('Fuzz: TURN ChannelData', () {
+    test('isChannelData never throws on random input', () {
+      for (var i = 0; i < _iterations; i++) {
+        isChannelData(_randomPacket());
+      }
+    });
+
+    test('parseChannelData never throws on random input', () {
+      for (var i = 0; i < _iterations; i++) {
+        parseChannelData(_randomPacket());
+      }
+    });
+
+    test('parseChannelData never throws on mutated valid frame', () {
+      final valid = buildChannelData(0x4001, _randomBytes(200));
+      for (var i = 0; i < _iterations; i++) {
+        parseChannelData(_mutate(valid));
+      }
+    });
+
+    test('parseChannelData never throws on truncated valid frame', () {
+      final valid = buildChannelData(0x4001, _randomBytes(200));
+      for (var i = 0; i < _iterations; i++) {
+        parseChannelData(_truncate(valid));
+      }
+    });
+
+    test('all-zeros and all-0xFF buffers (0-32 bytes)', () {
+      for (var size = 0; size <= 32; size++) {
+        parseChannelData(Uint8List(size));
+        isChannelData(Uint8List(size));
+        final ff = Uint8List(size)..fillRange(0, size, 0xFF);
+        parseChannelData(ff);
+        isChannelData(ff);
+      }
+    });
+
+    test('encode→parse round-trip', () {
+      for (var i = 0; i < _iterations; i++) {
+        final channel =
+            channelNumberMin + _rng.nextInt(channelNumberMax - channelNumberMin + 1);
+        final payload = _randomBytes(_rng.nextInt(500));
+        final frame = buildChannelData(channel, payload, pad: _rng.nextBool());
+        final parsed = parseChannelData(frame);
+        expect(parsed, isNotNull, reason: 'round-trip failed at iteration $i');
+        expect(parsed!.channel, equals(channel));
+        expect(parsed.payload, equals(payload));
+      }
+    });
+  });
+
+  group('Fuzz: TURN STUN messages', () {
+    // Allocate request shape that exercises every new TURN attribute on
+    // the parse path. Mutating it covers the new switch arms in the
+    // parser against arbitrary bit flips in attribute lengths / types /
+    // values.
+    final txId = _randomBytes(12);
+    final allocateRequest = StunMessageBuilder.build(StunMessage(
+      type: StunMessageType.allocateRequest,
+      transactionId: txId,
+      attributes: [
+        const RequestedTransportAttr(17),
+        const LifetimeAttr(600),
+        const DontFragmentAttr(),
+        const UsernameAttr('alice'),
+        const RealmAttr('example.org'),
+        NonceAttr(Uint8List.fromList('deadbeef'.codeUnits)),
+        XorPeerAddress(
+          address: IpAddress.parse('192.0.2.1'),
+          port: 12345,
+        ),
+        DataAttr(_randomBytes(64)),
+      ],
+    ));
+
+    test('StunParser.parse never throws on mutated TURN Allocate', () {
+      for (var i = 0; i < _iterations; i++) {
+        StunParser.parse(_mutate(allocateRequest));
+      }
+    });
+
+    test('StunParser.parse never throws on truncated TURN Allocate', () {
+      for (var i = 0; i < _iterations; i++) {
+        StunParser.parse(_truncate(allocateRequest));
+      }
+    });
+
+    // Data indication is the TURN receive-path message — relayed peer
+    // bytes arrive wrapped in XOR-PEER-ADDRESS + DATA attributes.
+    test('StunParser.parse never throws on mutated TURN DataIndication',
+        () {
+      final dataInd = StunMessageBuilder.build(StunMessage(
+        type: StunMessageType.dataIndication,
+        transactionId: _randomBytes(12),
+        attributes: [
+          XorPeerAddress(
+            address: IpAddress.parse('203.0.113.7'),
+            port: 49152,
+          ),
+          DataAttr(_randomBytes(800)),
+        ],
+      ));
+      for (var i = 0; i < _iterations; i++) {
+        StunParser.parse(_mutate(dataInd));
+      }
     });
   });
 
