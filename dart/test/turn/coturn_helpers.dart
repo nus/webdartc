@@ -4,11 +4,9 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
-/// Long-term credential the spawned coturn instance accepts. Stable so
-/// tests can build the IceServer config without coordinating with the
-/// helper.
 const coturnUser = 'test';
 const coturnPass = 'test';
 const coturnRealm = 'webdartc.test';
@@ -42,14 +40,16 @@ Future<int> _freeUdpPort() async {
 
 /// Spawn coturn on a free port and wait until it answers a STUN Binding
 /// request. Throws if the binary is missing or doesn't come up within
-/// [timeout].
+/// [timeout]. Default 15 s — CI runners with cold caches need more
+/// headroom than a local dev box.
 Future<CoturnInstance> startCoturn({
-  Duration timeout = const Duration(seconds: 5),
+  Duration timeout = const Duration(seconds: 15),
 }) async {
   if (!_hasTurnserver()) {
     throw StateError(
         'turnserver binary not found in PATH — install coturn '
-        '(`brew install coturn` on macOS) to run this test.');
+        '(`brew install coturn` on macOS, `apt-get install coturn` on '
+        'Linux) to run this test.');
   }
 
   final port = await _freeUdpPort();
@@ -65,7 +65,6 @@ Future<CoturnInstance> startCoturn({
     '--user=$coturnUser:$coturnPass',
     '--lt-cred-mech',
     '--simple-log',
-    '--no-stdout-log',
     '--min-port=49160',
     '--max-port=49200',
     // coturn 4.5+ rejects CreatePermission for loopback peer addresses
@@ -73,15 +72,27 @@ Future<CoturnInstance> startCoturn({
     // this flag the relay-only traffic test gets 403 Forbidden.
     '--allow-loopback-peers',
   ]);
-  // Forward coturn's diagnostics to the test runner's stderr so a
-  // surprise failure shows up in CI logs.
-  process.stdout.listen((_) {});
-  process.stderr.listen((bytes) => stderr.add(bytes));
+  // Capture coturn's output so a startup failure (bad CLI flag, missing
+  // /etc/turnserver.conf overrides, etc.) lands in the error message
+  // instead of vanishing into a silent timeout.
+  final logBuffer = StringBuffer();
+  void capture(List<int> bytes) {
+    logBuffer.write(utf8.decode(bytes, allowMalformed: true));
+  }
+  process.stdout.listen(capture);
+  process.stderr.listen(capture);
 
-  await _waitUntilStunRespondsOn(port, timeout).onError((e, _) async {
+  try {
+    await _waitUntilStunRespondsOn(port, timeout);
+  } catch (e) {
     process.kill(ProcessSignal.sigkill);
-    throw StateError('coturn did not come up on port $port: $e');
-  });
+    // Allow the captured stream a brief flush before we read the buffer.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    throw StateError(
+        'coturn did not come up on port $port: $e\n'
+        '--- coturn output ---\n${logBuffer.toString()}\n'
+        '--- end coturn output ---');
+  }
   return CoturnInstance._(process, port);
 }
 
@@ -115,7 +126,7 @@ Future<void> _waitUntilStunRespondsOn(int port, Duration timeout) async {
     ];
     socket.send(req, InternetAddress.loopbackIPv4, port);
     try {
-      await got.future.timeout(const Duration(milliseconds: 200));
+      await got.future.timeout(const Duration(milliseconds: 250));
       await sub.cancel();
       socket.close();
       return;
