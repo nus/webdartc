@@ -11,6 +11,7 @@ import '../rtp/parser.dart';
 import '../sctp/state_machine.dart';
 import '../srtp/context.dart';
 import '../stun/parser.dart';
+import '../turn/state_machine.dart';
 
 /// The only module in webdartc that uses dart:io.
 ///
@@ -35,6 +36,13 @@ final class TransportController {
   DtlsStateMachine? _dtls;
   SrtpContext? _srtp;
   SctpStateMachine? _sctp;
+
+  List<TurnServer> _turnServers = const [];
+
+  /// Active allocations keyed by the TURN server's (IP, port). Record
+  /// keys give value equality without per-datagram string interpolation
+  /// in the dispatch path.
+  final Map<(IpAddress, int), TurnAllocation> _allocations = {};
 
   /// (ip, port) pairs to advertise as ICE host candidates. Computed once
   /// at [start] time from the resolved bind list; for the wildcard fallback
@@ -86,6 +94,7 @@ final class TransportController {
       );
       _sockets[bindIp] = socket;
       _bindings = [(ip: await _findLocalIpv4(), port: socket.port)];
+      _startTurnAllocations();
       return;
     }
 
@@ -105,6 +114,7 @@ final class TransportController {
       bindings.add((ip: ip, port: socket.port));
     }
     _bindings = bindings;
+    _startTurnAllocations();
   }
 
   /// Resolves the IPs the transport will bind to from a [SettingEngine].
@@ -174,6 +184,17 @@ final class TransportController {
   }
 
   Future<void> stop() async {
+    // Send Refresh(lifetime=0) for each allocation so coturn frees the
+    // relay slot immediately rather than waiting out the (default 10 min)
+    // server-side timeout. The Refresh ack arrives after the socket
+    // closes; we don't wait for it.
+    for (final allocation in _allocations.values) {
+      if (allocation.state == TurnState.allocated) {
+        final res = allocation.close();
+        if (res.isOk) _sendOutputPackets(res.value.outputPackets);
+      }
+    }
+    _allocations.clear();
     for (final timer in _timers.values) {
       timer.cancel();
     }
@@ -200,6 +221,47 @@ final class TransportController {
 
   void attachSctp(SctpStateMachine sctp) {
     _sctp = sctp;
+  }
+
+  /// Register TURN servers to allocate against during [start]. Must be
+  /// called before [start]; allocations happen once, immediately after
+  /// sockets bind.
+  void attachTurnServers(List<TurnServer> servers) {
+    _turnServers = servers;
+  }
+
+  void _startTurnAllocations() {
+    if (_turnServers.isEmpty || _bindings.isEmpty) return;
+    final host = _bindings.first;
+    for (final server in _turnServers) {
+      if (server.transport != 'udp' || server.secure) {
+        // PR 3 wires UDP only; turns:/transport=tcp lands in a later PR.
+        continue;
+      }
+      final serverIp = IpAddress.parse(server.host);
+      final endpoint = (serverIp, server.port);
+      final allocation = TurnAllocation(
+        serverIp: serverIp,
+        serverPort: server.port,
+        username: server.username,
+        password: server.password,
+      );
+      allocation.onAllocated = (relayedIp, relayedPort) {
+        _ice?.addLocalRelayCandidate(
+          relayedIp: relayedIp,
+          relayedPort: relayedPort,
+          relatedAddress: host.ip,
+          relatedPort: host.port,
+        );
+      };
+      _allocations[endpoint] = allocation;
+      final res = allocation.start();
+      if (res.isOk) {
+        _sendOutputPackets(res.value.outputPackets);
+        _scheduleTimeout(
+            res.value.nextTimeout, 'turn-${server.host}:${server.port}');
+      }
+    }
   }
 
   /// Start the DTLS handshake, sending the initial flight and scheduling
@@ -290,6 +352,25 @@ final class TransportController {
       int remotePort, IpAddress localIp) {
     if (data.isEmpty) return;
     final firstByte = data[0];
+
+    // Allocation lookup gated on isNotEmpty so the common no-TURN flow
+    // stays a single Map.isEmpty check per datagram.
+    if (_allocations.isNotEmpty) {
+      final allocation = _allocations[(remoteIp, remotePort)];
+      if (allocation != null) {
+        final result = allocation.processInput(
+          data,
+          remoteIp: remoteIp,
+          remotePort: remotePort,
+        );
+        if (result.isOk) {
+          _sendOutputPackets(result.value.outputPackets);
+          _scheduleTimeout(
+              result.value.nextTimeout, 'turn-$remoteIp:$remotePort');
+        }
+        return;
+      }
+    }
 
     if (StunParser.isStun(data)) {
       _processIce(data, remoteIp, remotePort, localIp);
@@ -513,6 +594,26 @@ final class TransportController {
         token is SctpT3RtxToken) {
       return _sctp?.handleTimeout(token) ?? const Ok(ProcessResult.empty);
     }
+    if (token is TurnRefreshToken ||
+        token is TurnPermissionRefreshToken ||
+        token is TurnChannelRefreshToken) {
+      // Token doesn't identify its allocation, so broadcast and let each
+      // SM ignore tokens that aren't theirs. Output is sent inline so a
+      // simultaneous refresh on multiple allocations isn't dropped.
+      _broadcastTurnTimeout(token);
+      return const Ok(ProcessResult.empty);
+    }
     return null;
+  }
+
+  void _broadcastTurnTimeout(TimerToken token) {
+    for (final entry in _allocations.entries) {
+      final res = entry.value.handleTimeout(token);
+      if (res.isOk && res.value.outputPackets.isNotEmpty) {
+        _sendOutputPackets(res.value.outputPackets);
+        _scheduleTimeout(
+            res.value.nextTimeout, 'turn-${entry.key.$1}:${entry.key.$2}');
+      }
+    }
   }
 }

@@ -75,14 +75,18 @@ jobs:
         # plus the VideoToolbox callback shim on macOS. The opus and
         # libvpx submodules must be checked out (see
         # `submodules: recursive` above).
-        run: dart test --exclude-tags e2e --timeout=60s
+        #
+        # `coturn` is excluded here because most runners don't ship the
+        # turnserver binary — the dedicated turn-integration job below
+        # installs coturn and runs that tag.
+        run: dart test --exclude-tags e2e,coturn --timeout=60s
       - if: runner.os == 'Windows'
         working-directory: dart
         # Windows uses CNG (bcrypt.dll) for the crypto backend — no build
         # deps needed. Native-tagged tests stay excluded from this pass
         # (they need codec DLLs); the codec set we bundle is exercised
         # in the follow-up step.
-        run: dart test --exclude-tags e2e,native --timeout=60s
+        run: dart test --exclude-tags e2e,native,coturn --timeout=60s
       - if: runner.os == 'Windows'
         working-directory: dart
         # Codec tests for everything we bundle on Windows:
@@ -227,6 +231,35 @@ jobs:
             test/e2e/video_call_sample_test.dart \
             test/e2e/video_call_bidir_test.dart \
             --timeout=180s
+
+  # ── coturn-backed TURN integration ────────────────────────────────────
+  # Spawns a real coturn instance on an ephemeral port and asserts the
+  # PeerConnection emits a relay candidate after Allocate. Linux-only —
+  # coturn ships in the apt repos there; macOS / Windows runners would
+  # need brew / a separate vcpkg recipe, deferred until needed.
+  dart-turn-integration:
+    name: dart / TURN Integration (Linux + coturn)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.11.0'
+      - name: Install coturn + native build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y coturn libssl-dev yasm
+          turnserver --version | head -1
+      - name: Detach from workspace
+        run: |
+          rm -f pubspec.yaml
+          sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
+      - working-directory: dart
+        run: dart pub get
+      - working-directory: dart
+        run: dart test --tags=coturn test/turn/ --timeout=60s
 
   # ── flutter (Flutter) ─────────────────────────────────────────────────
   flutter-analyze:

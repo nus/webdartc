@@ -16,6 +16,7 @@ import '../sctp/state_machine.dart';
 import '../sdp/parser.dart';
 import '../srtp/context.dart';
 import '../transport/transport_controller.dart';
+import '../turn/state_machine.dart';
 
 part 'data_channel.dart';
 part 'events.dart';
@@ -558,15 +559,25 @@ final class PeerConnection {
     _icePwd = Csprng.randomHex(22);
 
     _localRtcpSsrc = Csprng.randomUint32();
-    // Parse STUN server URLs from configuration.
+    // Split iceServers into STUN and TURN forms. STUN URLs are gathered
+    // for srflx discovery; TURN URLs become allocations driven by the
+    // transport (relay candidates emitted on Allocate success).
     final stunServers = <StunServer>[];
+    final turnServers = <TurnServer>[];
     for (final server in configuration.iceServers) {
       for (final url in server.urls) {
-        final parsed = StunServer.parse(url);
-        if (parsed != null) stunServers.add(parsed);
+        final stun = StunServer.parse(url);
+        if (stun != null) {
+          stunServers.add(stun);
+          continue;
+        }
+        final turn = TurnServer.parse(url,
+            username: server.username, credential: server.credential);
+        if (turn != null) turnServers.add(turn);
       }
     }
     _ice = IceStateMachine(controlling: true, stunServers: stunServers);
+    _transport.attachTurnServers(turnServers);
     _dtls = DtlsStateMachine(role: DtlsRole.client, localCert: _localCert);
     // SCTP role is set dynamically in _onDtlsConnected based on actual DTLS role.
     _sctp = SctpStateMachine(isClient: true);

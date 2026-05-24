@@ -219,5 +219,40 @@ void main() {
       final line = c.toSdpLine();
       expect(line, contains('abc 1 udp 123456 192.168.1.1 54321 typ host'));
     });
+
+    test('addLocalRelayCandidate emits a relay candidate with raddr/rport',
+        () {
+      final ice = IceStateMachine(controlling: true);
+      final emitted = <IceCandidate>[];
+      ice.onLocalCandidate = emitted.add;
+
+      ice.startGathering(
+        IceParameters(usernameFragment: 'u', password: 'p'),
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
+      );
+      emitted.clear();
+
+      ice.addLocalRelayCandidate(
+        relayedIp: IpAddress.parse('203.0.113.7'),
+        relayedPort: 49152,
+        relatedAddress: IpAddress.parse('192.168.1.10'),
+        relatedPort: 5000,
+      );
+
+      expect(emitted, hasLength(1));
+      final c = emitted.single;
+      expect(c.type, IceCandidateType.relay);
+      expect(c.ip.toCanonical(), '203.0.113.7');
+      expect(c.port, 49152);
+      expect(c.relatedAddress?.toCanonical(), '192.168.1.10');
+      expect(c.relatedPort, 5000);
+      // Relay candidates use type-pref 0 per RFC 8445 §5.1.2.2.
+      // Encoded into the priority's top byte.
+      expect((c.priority >> 24) & 0xFF, IceCandidate.typePreferenceRelay);
+      // SDP line contains the candidate type + raddr/rport.
+      final sdp = c.toSdpLine();
+      expect(sdp, contains('typ relay'));
+      expect(sdp, contains('raddr 192.168.1.10 rport 5000'));
+    });
   });
 }
