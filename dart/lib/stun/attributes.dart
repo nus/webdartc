@@ -37,6 +37,28 @@ abstract final class StunAttributeType {
   static const int dontFragment        = 0x001A;
 }
 
+/// ERROR-CODE values from RFC 5389 §15.6 and RFC 5766 §15 (TURN-specific).
+/// Wire layout is `class * 100 + number`, exposed by [ErrorCodeAttr.code].
+abstract final class StunErrorCode {
+  StunErrorCode._();
+
+  // RFC 5389
+  static const int tryAlternate     = 300;
+  static const int badRequest       = 400;
+  static const int unauthorized     = 401;
+  static const int unknownAttribute = 420;
+  static const int staleNonce       = 438;
+  static const int serverError      = 500;
+
+  // RFC 5766 (TURN)
+  static const int forbidden                    = 403;
+  static const int allocationMismatch           = 437;
+  static const int wrongCredentials             = 441;
+  static const int unsupportedTransportProtocol = 442;
+  static const int allocationQuotaReached       = 486;
+  static const int insufficientCapacity         = 508;
+}
+
 /// STUN message types (RFC 5389) and TURN extensions (RFC 5766 / RFC 8656).
 abstract final class StunMessageType {
   StunMessageType._();

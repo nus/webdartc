@@ -64,6 +64,20 @@ final class IceGatheringTimeoutToken extends TimerToken {
   IceGatheringTimeoutToken();
 }
 
+final class TurnRefreshToken extends TimerToken {
+  TurnRefreshToken();
+}
+
+final class TurnPermissionRefreshToken extends TimerToken {
+  final IpAddress peerIp;
+  TurnPermissionRefreshToken(this.peerIp);
+}
+
+final class TurnChannelRefreshToken extends TimerToken {
+  final int channel;
+  TurnChannelRefreshToken(this.channel);
+}
+
 /// A scheduled timeout event.
 final class Timeout {
   final DateTime at;

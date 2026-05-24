@@ -25,6 +25,9 @@ abstract final class Csprng {
         .join();
   }
 
+  /// 12-byte STUN transaction ID (RFC 5389 §6).
+  static Uint8List randomTransactionId() => randomBytes(12);
+
   /// Returns a random 32-bit unsigned integer.
   static int randomUint32() {
     final bytes = randomBytes(4);
