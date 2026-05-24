@@ -7,7 +7,7 @@ import 'package:webdartc/webdartc.dart' hide Timeout;
 import 'coturn_helpers.dart';
 
 void main() {
-  group('TURN relay-only data channel', () {
+  group('TURN channel promotion', () {
     late CoturnInstance coturn;
 
     setUp(() async {
@@ -18,12 +18,8 @@ void main() {
       await coturn.stop();
     });
 
-    test('two PeerConnections reach connected over a relay-only path',
+    test('peer with sustained traffic is auto-promoted to ChannelData',
         () async {
-      // Forced relay-only: only relay candidates cross the signaling
-      // channel and the SDP default address is scrubbed, so direct
-      // host pairs can't form. Both peers reaching connected proves
-      // every layer (ICE / DTLS / SCTP) survives the TURN round-trip.
       final iceServers = [
         IceServer(
           urls: ['turn:127.0.0.1:${coturn.port}?transport=udp'],
@@ -42,11 +38,7 @@ void main() {
         pcA.onIceCandidate.listen((evt) => maybeForwardRelay(evt, pcB));
         pcB.onIceCandidate.listen((evt) => maybeForwardRelay(evt, pcA));
 
-        // A data channel forces SCTP setup over DTLS, which in turn
-        // exercises the wrap path end-to-end (ICE checks → DTLS
-        // handshake → SCTP INIT/COOKIE) without needing the DCEP
-        // ACK semantics that the in-band open expects.
-        pcA.createDataChannel('relay-probe');
+        pcA.createDataChannel('promote-probe');
 
         final offer = await pcA.createOffer();
         await pcA.setLocalDescription(offer);
@@ -65,10 +57,49 @@ void main() {
           pcB.onConnectionStateChange
               .firstWhere((s) => s == PeerConnectionState.connected),
         ]).timeout(const Duration(seconds: 25));
+
+        // Reaching connected required ~10+ wrapped sends per side (ICE
+        // checks + DTLS handshake + SCTP setup) so the promotion
+        // threshold has fired by now; the ChannelBind ack lands one
+        // RTT after the threshold trips — wait briefly for it.
+        await _eventuallyTrue(
+          () => _allAllocationsHaveBoundChannel([pcA, pcB]),
+          timeout: const Duration(seconds: 5),
+        );
+
+        for (final pc in [pcA, pcB]) {
+          expect(pc.turnAllocations, isNotEmpty);
+          for (final allocation in pc.turnAllocations) {
+            expect(allocation.channelCount, greaterThan(0),
+                reason:
+                    'allocation against ${allocation.serverIp} should have '
+                    'promoted at least one peer to ChannelData by now');
+          }
+        }
       } finally {
         await pcA.close();
         await pcB.close();
       }
     }, timeout: const Timeout(Duration(seconds: 45)));
   });
+}
+
+bool _allAllocationsHaveBoundChannel(List<PeerConnection> pcs) {
+  for (final pc in pcs) {
+    if (pc.turnAllocations.isEmpty) return false;
+    for (final allocation in pc.turnAllocations) {
+      if (allocation.channelCount == 0) return false;
+    }
+  }
+  return true;
+}
+
+Future<void> _eventuallyTrue(bool Function() predicate,
+    {required Duration timeout}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (predicate()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+  throw StateError('predicate stayed false for $timeout');
 }

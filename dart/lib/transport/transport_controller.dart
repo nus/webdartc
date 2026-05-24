@@ -55,6 +55,11 @@ final class TransportController {
   List<HostBinding> _bindings = const [];
   List<HostBinding> get bindings => _bindings;
 
+  /// Snapshot of TURN allocations the transport currently owns.
+  /// Primarily for tests + diagnostics; membership order isn't part of
+  /// the contract.
+  List<TurnAllocation> get turnAllocations => _allocations.values.toList();
+
   /// First advertised IP, in canonical text form. Used by the legacy
   /// single-IP SDP builder path.
   String get localAddress =>
@@ -202,6 +207,8 @@ final class TransportController {
     _allocations.clear();
     _relayedAllocations.clear();
     _pendingPermissions.clear();
+    _peerSendCounts.clear();
+    _pendingChannelBinds.clear();
     for (final timer in _timers.values) {
       timer.cancel();
     }
@@ -277,6 +284,22 @@ final class TransportController {
       };
       allocation.onPermissionResult = (peerIp, _) {
         _pendingPermissions.remove((allocation, peerIp));
+      };
+      allocation.onChannelResult = (channel, peerIp, peerPort, bound) {
+        final key = (allocation, peerIp, peerPort);
+        _pendingChannelBinds.remove(key);
+        if (bound) {
+          // Channel is bound; `wrapSend` will pick ChannelData from now
+          // on. The counter has done its job — drop it so long-running
+          // calls with peer churn don't accumulate dead entries.
+          _peerSendCounts.remove(key);
+        } else {
+          // Server refused to bind this peer (rare: 486 quota, 437 alloc
+          // mismatch, etc.). Freeze the counter so we don't keep
+          // retrying forever; future sends stay on the heavier
+          // Send-indication path.
+          _peerSendCounts[key] = _channelBindFrozen;
+        }
       };
       _allocations[endpoint] = allocation;
       final res = allocation.start();
@@ -542,7 +565,11 @@ final class TransportController {
       final allocation = _selectRelayAllocation(localIp);
       if (allocation != null) {
         final peer = IpAddress.tryParse(ip);
-        if (peer != null) {
+        // Skip the wrap when the destination is itself a TURN server we
+        // own an allocation against — that's a TURN-internal send
+        // (Allocate / Refresh / CreatePermission / ChannelBind) and
+        // re-wrapping would loop instead of reaching the server.
+        if (peer != null && !_allocations.containsKey((peer, port))) {
           _sendViaRelay(allocation, peer, port, data);
           return;
         }
@@ -581,12 +608,49 @@ final class TransportController {
     // packet on its way to the TURN server) and avoid a second
     // `IpAddress.tryParse` on the same destination.
     _sendUdpRaw(out.data, out.remoteIp, out.remotePort);
+
+    // After enough traffic to a peer, promote from Send-indication
+    // (~36 B overhead) to a bound channel (4 B). The state machine's
+    // own `_peerToChannel` table makes future `wrapSend` calls pick
+    // ChannelData automatically once the bind succeeds.
+    _maybePromoteToChannel(allocation, peer, peerPort);
+  }
+
+  void _maybePromoteToChannel(
+      TurnAllocation allocation, IpAddress peer, int port) {
+    if (allocation.channelFor(peer, port) != null) return;
+    final key = (allocation, peer, port);
+    final next = _peerSendCounts.update(
+        key, (c) => c == _channelBindFrozen ? c : c + 1,
+        ifAbsent: () => 1);
+    if (next == _channelBindFrozen) return;
+    if (next < _channelPromotionThreshold) return;
+    if (!_pendingChannelBinds.add(key)) return;
+    final res = allocation.bindChannel(peer, port);
+    if (res.isOk) _sendOutputPackets(res.value.outputPackets);
   }
 
   /// Permission requests in flight, so ICE / DTLS retransmits don't
   /// pile new CreatePermissions onto the TURN state machine while the
   /// first one is still being acked. Cleared on the response callback.
   final Set<(TurnAllocation, IpAddress)> _pendingPermissions = {};
+
+  /// Per-peer send counters that drive ChannelBind auto-promotion.
+  /// `-1` means "frozen" — a prior bind failed, don't try again.
+  final Map<(TurnAllocation, IpAddress, int), int> _peerSendCounts = {};
+
+  /// ChannelBind requests in flight; same role as [_pendingPermissions].
+  final Set<(TurnAllocation, IpAddress, int)> _pendingChannelBinds = {};
+
+  /// Send-indication count after which we promote a peer to a bound
+  /// channel. 10 packets ≈ 200 ms of an audio stream / 1 ICE keepalive
+  /// round-trip — enough to filter short-lived flows but quick enough
+  /// to pay for itself on long ones.
+  static const int _channelPromotionThreshold = 10;
+
+  /// Sentinel value stored in [_peerSendCounts] after the server refused
+  /// a ChannelBind. Negative so it can never collide with a real count.
+  static const int _channelBindFrozen = -1;
 
   void _sendUdpRaw(Uint8List data, String ip, int port, {IpAddress? localIp}) {
     try {

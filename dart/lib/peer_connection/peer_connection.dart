@@ -159,6 +159,10 @@ final class PeerConnection {
   Stream<SignalingState> get onSignalingStateChange =>
       _signalingStateController.stream;
 
+  /// Snapshot of TURN allocations the underlying transport is driving.
+  /// Primarily for tests + diagnostics.
+  List<TurnAllocation> get turnAllocations => _transport.turnAllocations;
+
   // ── W3C API ───────────────────────────────────────────────────────────────
 
   /// Create an SDP offer.

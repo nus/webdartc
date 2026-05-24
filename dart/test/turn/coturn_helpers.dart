@@ -7,6 +7,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:webdartc/webdartc.dart';
+
 const coturnUser = 'test';
 const coturnPass = 'test';
 const coturnRealm = 'webdartc.test';
@@ -109,6 +111,47 @@ bool _hasTurnserver() {
   } catch (_) {
     return false;
   }
+}
+
+/// Forward [evt] to [to] only if it advertises a relay candidate.
+/// Used by the relay-only coturn tests to keep host pairs from ever
+/// forming on the answerer side.
+void maybeForwardRelay(PeerConnectionIceEvent evt, PeerConnection to) {
+  if (!evt.candidate.contains('typ relay')) return;
+  to.addIceCandidate(IceCandidateInit(
+    candidate: evt.candidate,
+    sdpMid: evt.sdpMid,
+    sdpMLineIndex: evt.sdpMLineIndex,
+  ));
+}
+
+/// Force the relay-only test: scrub the SDP so the peer can't fall
+/// back to any non-relay path.
+///   - default connection address → 0.0.0.0 / port 9 (RFC 8839 §5.1)
+///   - drop every `a=candidate:` line that isn't `typ relay`
+///   (host candidates are emitted into the offer SDP synchronously by
+///   the SdpBuilder; trickle-side filtering alone isn't enough.)
+String stripHostAddress(String sdp) {
+  final out = StringBuffer();
+  for (final line in const LineSplitter().convert(sdp)) {
+    if (line.startsWith('c=IN IP4 ')) {
+      out.writeln('c=IN IP4 0.0.0.0');
+    } else if (line.startsWith('m=')) {
+      final parts = line.split(' ');
+      if (parts.length >= 4) {
+        parts[1] = '9';
+        out.writeln(parts.join(' '));
+      } else {
+        out.writeln(line);
+      }
+    } else if (line.startsWith('a=candidate:') &&
+        !line.contains('typ relay')) {
+      // drop
+    } else {
+      out.writeln(line);
+    }
+  }
+  return out.toString();
 }
 
 /// Send a STUN Binding request and wait for any response — the simplest
