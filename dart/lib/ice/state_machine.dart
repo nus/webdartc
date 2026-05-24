@@ -178,6 +178,35 @@ final class IceStateMachine implements ProtocolStateMachine {
     return const Ok(ProcessResult.empty);
   }
 
+  /// Emit a relay candidate gathered from a TURN allocation that the
+  /// transport owns. `raddr`/`rport` carry the host binding the
+  /// allocation was sourced from — required by RFC 8839 §5.1 for peer
+  /// pair scoring.
+  void addLocalRelayCandidate({
+    required IpAddress relayedIp,
+    required int relayedPort,
+    required IpAddress relatedAddress,
+    required int relatedPort,
+  }) {
+    final candidate = IceCandidate(
+      foundation: Csprng.randomHex(4),
+      componentId: 1,
+      transport: 'udp',
+      priority: IceCandidate.computePriority(
+        typePreference: IceCandidate.typePreferenceRelay,
+        localPreference: 65535,
+        componentId: 1,
+      ),
+      ip: relayedIp,
+      port: relayedPort,
+      type: IceCandidateType.relay,
+      relatedAddress: relatedAddress,
+      relatedPort: relatedPort,
+    );
+    _localCandidates.add(candidate);
+    onLocalCandidate?.call(candidate);
+  }
+
   /// Add a remote ICE candidate (Trickle ICE).
   ///
   /// Returns a [ProcessResult] that may include an initial STUN check to send.

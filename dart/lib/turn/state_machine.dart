@@ -21,6 +21,76 @@ enum TurnState {
   closed,
 }
 
+/// Parsed `turn:` / `turns:` URI per RFC 7065. Credentials come from the
+/// enclosing IceServer (W3C splits URL list and credentials).
+final class TurnServer {
+  final String host;
+  final int port;
+  final String username;
+  final String password;
+
+  /// `udp` (RFC 7065 default for `turn:`) or `tcp`. PR 3 only wires UDP.
+  final String transport;
+
+  /// True for `turns:` URIs.
+  final bool secure;
+
+  const TurnServer({
+    required this.host,
+    required this.port,
+    required this.username,
+    required this.password,
+    required this.transport,
+    required this.secure,
+  });
+
+  /// Parse a `turn:` / `turns:` URI per RFC 7065 §3.1. Returns null on
+  /// syntax error or when credentials are missing — TURN always needs
+  /// long-term credentials, so silently dropping such URIs would mask
+  /// configuration mistakes from the caller.
+  static TurnServer? parse(
+    String uri, {
+    required String? username,
+    required String? credential,
+  }) {
+    final secure = uri.startsWith('turns:');
+    if (!secure && !uri.startsWith('turn:')) return null;
+    if (username == null || credential == null) return null;
+    final body = uri.substring(secure ? 6 : 5);
+    final qIdx = body.indexOf('?');
+    final hostPort = qIdx < 0 ? body : body.substring(0, qIdx);
+    final query = qIdx < 0 ? '' : body.substring(qIdx + 1);
+    var transport = secure ? 'tcp' : 'udp';
+    for (final kv in query.split('&')) {
+      if (kv.startsWith('transport=')) {
+        transport = kv.substring('transport='.length).toLowerCase();
+      }
+    }
+    final defaultPort = secure ? 5349 : 3478;
+    final colonIdx = hostPort.lastIndexOf(':');
+    int port;
+    String host;
+    if (colonIdx <= 0) {
+      host = hostPort;
+      port = defaultPort;
+    } else {
+      final parsedPort = int.tryParse(hostPort.substring(colonIdx + 1));
+      if (parsedPort == null) return null;
+      host = hostPort.substring(0, colonIdx);
+      port = parsedPort;
+    }
+    if (host.isEmpty) return null;
+    return TurnServer(
+      host: host,
+      port: port,
+      username: username,
+      password: credential,
+      transport: transport,
+      secure: secure,
+    );
+  }
+}
+
 /// IANA protocol number for UDP — the value the client puts in
 /// REQUESTED-TRANSPORT per RFC 5766 §14.7.
 const int turnRequestedTransportUdp = 17;

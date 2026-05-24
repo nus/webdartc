@@ -3,3 +3,5 @@ tags:
     description: "End-to-end tests requiring a browser (Chrome or Firefox)"
   native:
     description: "Tests that load native libraries via FFI (codec backends, etc.)"
+  coturn:
+    description: "Integration tests that spawn a local coturn TURN server"
