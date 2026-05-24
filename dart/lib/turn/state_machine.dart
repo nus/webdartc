@@ -166,6 +166,11 @@ final class TurnAllocation implements ProtocolStateMachine {
   int? channelFor(IpAddress peerIp, int peerPort) =>
       _peerToChannel[(peerIp, peerPort)];
 
+  /// Number of currently bound (peer, port) → channel mappings.
+  /// Surfaced for diagnostics and tests; production callers should
+  /// use [channelFor] for the specific peer they care about.
+  int get channelCount => _peerToChannel.length;
+
   // ── Public control ─────────────────────────────────────────────────────
 
   Result<ProcessResult, ProtocolError> start() {
