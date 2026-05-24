@@ -56,9 +56,14 @@ Future<CoturnInstance> startCoturn({
   final process = await Process.start('turnserver', [
     '--no-tls',
     '--no-dtls',
-    // --no-cli is deprecated in coturn 4.6+; setting cli-port=0
-    // disables the admin TCP listener the same way.
+    // --no-cli is deprecated in coturn 4.6+; cli-port=0 disables the
+    // admin TCP listener the same way.
     '--cli-port=0',
+    // coturn 4.6 still validates `--allow-loopback-peers` against the
+    // CLI password even when the CLI is disabled; set a dummy so the
+    // server doesn't refuse to start with "allow_loopback_peers and
+    // empty cli password cannot be used together".
+    '--cli-password=unused',
     '--listening-port=$port',
     '--listening-ip=127.0.0.1',
     '--realm=$coturnRealm',
