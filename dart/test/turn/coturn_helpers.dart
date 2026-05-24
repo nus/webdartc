@@ -68,6 +68,10 @@ Future<CoturnInstance> startCoturn({
     '--no-stdout-log',
     '--min-port=49160',
     '--max-port=49200',
+    // coturn 4.5+ rejects CreatePermission for loopback peer addresses
+    // by default; in this test both PCs sit on 127.0.0.1 so without
+    // this flag the relay-only traffic test gets 403 Forbidden.
+    '--allow-loopback-peers',
   ]);
   // Forward coturn's diagnostics to the test runner's stderr so a
   // surprise failure shows up in CI logs.

@@ -44,6 +44,14 @@ final class TransportController {
   /// in the dispatch path.
   final Map<(IpAddress, int), TurnAllocation> _allocations = {};
 
+  /// Reverse lookup: relayed transport address → allocation. Populated
+  /// when an Allocate succeeds; consulted on every outgoing packet so
+  /// the transport knows to wrap relay-sourced sends through the right
+  /// allocation. Each TURN server gives us a different relayed IP, so
+  /// keying by IP alone is sufficient for the single-allocation-per-
+  /// server policy.
+  final Map<IpAddress, TurnAllocation> _relayedAllocations = {};
+
   /// (ip, port) pairs to advertise as ICE host candidates. Computed once
   /// at [start] time from the resolved bind list; for the wildcard fallback
   /// the IP is the auto-detected non-loopback address rather than 0.0.0.0.
@@ -247,12 +255,28 @@ final class TransportController {
         password: server.password,
       );
       allocation.onAllocated = (relayedIp, relayedPort) {
-        _ice?.addLocalRelayCandidate(
+        _relayedAllocations[relayedIp] = allocation;
+        final res = _ice?.addLocalRelayCandidate(
           relayedIp: relayedIp,
           relayedPort: relayedPort,
           relatedAddress: host.ip,
           relatedPort: host.port,
         );
+        if (res != null && res.isOk) {
+          _sendOutputPackets(res.value.outputPackets);
+          _scheduleTimeout(res.value.nextTimeout, 'ice-check');
+        }
+      };
+      allocation.onPeerData = (peerIp, peerPort, payload) {
+        // Relayed datagram from a peer — re-enter dispatch as if the
+        // packet had arrived directly from the peer's address, with the
+        // allocation's relayed transport address as the local. The
+        // higher layers (ICE / DTLS / SRTP) never need to know it came
+        // via TURN.
+        final relayedIp = allocation.relayedAddress;
+        if (relayedIp == null) return;
+        _dispatch(payload, _arrivalClock.elapsedMicroseconds, peerIp, peerPort,
+            relayedIp);
       };
       _allocations[endpoint] = allocation;
       final res = allocation.start();
@@ -514,6 +538,29 @@ final class TransportController {
   }
 
   void _sendUdp(Uint8List data, String ip, int port, {IpAddress? localIp}) {
+    if (_relayedAllocations.isNotEmpty) {
+      // DTLS / SCTP records arrive here with no explicit localIp; if
+      // ICE has nominated a relay pair, route their traffic the same
+      // way the connectivity checks went so DTLS doesn't try (and
+      // fail) to send DTLS records straight to the peer's relay port.
+      //
+      // But skip the wrap when the destination is itself a TURN
+      // server we hold an allocation against — that's the wrapped
+      // packet on its way to coturn, and re-entering wrap would loop.
+      final destIp = IpAddress.tryParse(ip);
+      final destIsTurnServer =
+          destIp != null && _allocations.containsKey((destIp, port));
+      if (!destIsTurnServer) {
+        final effectiveLocal = localIp ?? _ice?.selectedPair?.local.ip;
+        if (effectiveLocal != null) {
+          final allocation = _relayedAllocations[effectiveLocal];
+          if (allocation != null) {
+            _sendViaRelay(allocation, data, ip, port);
+            return;
+          }
+        }
+      }
+    }
     try {
       var addr = InternetAddress.tryParse(ip);
       if (addr == null) {
@@ -537,6 +584,26 @@ final class TransportController {
     } catch (_) {
       // Network errors are non-fatal in UDP
     }
+  }
+
+  /// Wrap [data] as a TURN Send indication or ChannelData and forward
+  /// it to the allocation's server. On a missing-permission Err the
+  /// allocation is asked to install one; the caller's packet is dropped
+  /// and recovered by the upper-layer retransmit (ICE checks at ~500 ms).
+  void _sendViaRelay(TurnAllocation allocation, Uint8List data, String peerIp,
+      int peerPort) {
+    final peer = IpAddress.tryParse(peerIp);
+    if (peer == null) return;
+    final wrapped = allocation.wrapSend(peer, peerPort, data);
+    if (wrapped.isErr) {
+      if (!allocation.hasPermission(peer)) {
+        final res = allocation.createPermission(peer);
+        if (res.isOk) _sendOutputPackets(res.value.outputPackets);
+      }
+      return;
+    }
+    final out = wrapped.value;
+    _sendUdp(out.data, out.remoteIp, out.remotePort);
   }
 
   /// Public hook so PeerConnection can schedule SCTP-layer timers
