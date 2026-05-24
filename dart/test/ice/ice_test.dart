@@ -256,4 +256,100 @@ void main() {
       expect(sdp, contains('raddr 192.168.1.10 rport 5000'));
     });
   });
+
+  group('IceTransportPolicy.relay', () {
+    test('startGathering does not emit a host candidate', () {
+      final ice = IceStateMachine(controlling: true, relayOnly: true);
+      final emitted = <IceCandidate>[];
+      ice.onLocalCandidate = emitted.add;
+
+      ice.startGathering(
+        IceParameters(usernameFragment: 'u', password: 'p'),
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
+      );
+
+      expect(emitted, isEmpty);
+    });
+
+    test('startGathering does not send STUN binding requests for srflx', () {
+      final ice = IceStateMachine(
+        controlling: true,
+        stunServers: const [StunServer(host: '203.0.113.1', port: 3478)],
+        relayOnly: true,
+      );
+      final res = ice.startGathering(
+        IceParameters(usernameFragment: 'u', password: 'p'),
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
+      );
+      expect(res.isOk, isTrue);
+      expect(res.value.outputPackets, isEmpty);
+    });
+
+    test('relay-only still emits relay candidates from TURN allocations', () {
+      final ice = IceStateMachine(controlling: true, relayOnly: true);
+      final emitted = <IceCandidate>[];
+      ice.onLocalCandidate = emitted.add;
+
+      ice.startGathering(
+        IceParameters(usernameFragment: 'u', password: 'p'),
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
+      );
+
+      final res = ice.addLocalRelayCandidate(
+        relayedIp: IpAddress.parse('203.0.113.7'),
+        relayedPort: 49152,
+        relatedAddress: IpAddress.parse('192.168.1.10'),
+        relatedPort: 5000,
+      );
+      expect(res.isOk, isTrue);
+      expect(emitted, hasLength(1));
+      expect(emitted.single.type, IceCandidateType.relay);
+    });
+
+    test('host and srflx remotes do not form a pair but relay does', () {
+      // Set up a relay-only ICE with one local relay + remote params so
+      // any accepted remote will trigger a connectivity check.
+      final ice = IceStateMachine(controlling: true, relayOnly: true);
+      ice.startGathering(
+        IceParameters(usernameFragment: 'u', password: 'p'),
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
+      );
+      ice.addLocalRelayCandidate(
+        relayedIp: IpAddress.parse('203.0.113.7'),
+        relayedPort: 49152,
+        relatedAddress: IpAddress.parse('192.168.1.10'),
+        relatedPort: 5000,
+      );
+      ice.setRemoteParameters(
+          IceParameters(usernameFragment: 'r', password: 'rp'));
+
+      IceCandidate make(IceCandidateType type, String ip, int port) =>
+          IceCandidate(
+            foundation: 'f',
+            componentId: 1,
+            transport: 'udp',
+            priority: 1,
+            ip: IpAddress.parse(ip),
+            port: port,
+            type: type,
+          );
+
+      // Host and srflx remotes are silently dropped: ProcessResult.empty.
+      final h = ice.addRemoteCandidate(make(
+          IceCandidateType.host, '10.0.0.5', 30000));
+      expect(h.isOk, isTrue);
+      expect(h.value.outputPackets, isEmpty);
+
+      final s = ice.addRemoteCandidate(make(
+          IceCandidateType.srflx, '198.51.100.1', 30001));
+      expect(s.isOk, isTrue);
+      expect(s.value.outputPackets, isEmpty);
+
+      // Relay remote pairs with our local relay → triggers a STUN check.
+      final r = ice.addRemoteCandidate(make(
+          IceCandidateType.relay, '203.0.113.99', 49200));
+      expect(r.isOk, isTrue);
+      expect(r.value.outputPackets, isNotEmpty);
+    });
+  });
 }

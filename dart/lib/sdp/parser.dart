@@ -181,15 +181,18 @@ abstract final class SdpParser {
 abstract final class SdpBuilder {
   SdpBuilder._();
 
-  /// Build an SDP offer/answer for a data channel session.
+  /// Build an SDP offer/answer for a data channel session. Pass `null`
+  /// for [localIp]/[localPort] to skip the inline host candidate (used
+  /// when `IceTransportPolicy.relay` is in effect — relay candidates
+  /// trickle in later from TURN allocations).
   static SdpSessionDescription buildDataChannelSdp({
     required String ufrag,
     required String password,
     required String fingerprint, // SHA-256 colon-separated
     required bool isOffer,
     required int sctpPort,
-    required String localIp,
-    required int localPort,
+    String? localIp,
+    int? localPort,
     String mid = '0',
   }) {
     final setup = isOffer ? 'actpass' : 'active';
@@ -204,19 +207,10 @@ abstract final class SdpBuilder {
       'max-message-size': '262144',
     };
 
-    final hostCandidate = IceCandidate(
-      foundation: '1',
-      componentId: 1,
-      transport: 'udp',
-      priority: IceCandidate.computePriority(
-        typePreference: IceCandidate.typePreferenceHost,
-        localPreference: 65535,
-        componentId: 1,
-      ),
-      ip: IpAddress.parse(localIp),
-      port: localPort,
-      type: IceCandidateType.host,
-    );
+    final candidates = <IceCandidate>[];
+    if (localIp != null && localPort != null) {
+      candidates.add(_hostCandidate(IpAddress.parse(localIp), localPort));
+    }
 
     final media = SdpMediaDescription(
       type: 'application',
@@ -224,7 +218,7 @@ abstract final class SdpBuilder {
       proto: 'UDP/DTLS/SCTP',
       formats: ['webrtc-datachannel'],
       attributes: attrs,
-      candidates: [hostCandidate],
+      candidates: candidates,
     );
 
     return SdpSessionDescription(
@@ -291,23 +285,9 @@ abstract final class SdpBuilder {
         rawAttrs.add('ssrc:$ssrc msid:webdartc-stream webdartc-track-$i');
       }
 
-      // Host candidate if localIp/localPort provided
-      final candidates = <IceCandidate>[];
-      if (localIp != null && localPort != null) {
-        candidates.add(IceCandidate(
-          foundation: '1',
-          componentId: 1,
-          transport: 'udp',
-          priority: IceCandidate.computePriority(
-            typePreference: IceCandidate.typePreferenceHost,
-            localPreference: 65535,
-            componentId: 1,
-          ),
-          ip: IpAddress.parse(localIp),
-          port: localPort,
-          type: IceCandidateType.host,
-        ));
-      }
+      final candidates = (localIp != null && localPort != null)
+          ? [_hostCandidate(IpAddress.parse(localIp), localPort)]
+          : const <IceCandidate>[];
 
       mediaDescriptions.add(SdpMediaDescription(
         type: track.type,
@@ -341,12 +321,15 @@ abstract final class SdpBuilder {
     required String ufrag,
     required String password,
     required String fingerprint,
-    required String localIp,
-    required int localPort,
+    String? localIp,
+    int? localPort,
     List<String> supportedAudioCodecs = const ['opus'],
     List<String> supportedVideoCodecs = const ['VP8', 'VP9', 'H264'],
     Map<String, int> localSenderSsrcs = const {}, // kind → SSRC
   }) {
+    final hostCandidates = (localIp != null && localPort != null)
+        ? [_hostCandidate(IpAddress.parse(localIp), localPort)]
+        : const <IceCandidate>[];
     final mediaDescriptions = <SdpMediaDescription>[];
     final mids = <String>[];
 
@@ -372,7 +355,7 @@ abstract final class SdpBuilder {
           proto: rm.proto,
           formats: rm.formats,
           attributes: attrs,
-          candidates: [_hostCandidate(IpAddress.parse(localIp), localPort)],
+          candidates: hostCandidates,
         ));
       } else {
         // Audio or video — select supported codecs from offer
@@ -465,7 +448,7 @@ abstract final class SdpBuilder {
           attributes: attrs,
           allAttributes: _allAttrsFrom(attrs, rawAttrs),
           rawAttributes: rawAttrs,
-          candidates: [_hostCandidate(IpAddress.parse(localIp), localPort)],
+          candidates: hostCandidates,
         ));
       }
     }

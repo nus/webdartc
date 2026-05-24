@@ -67,6 +67,20 @@ a=candidate:1 1 udp 2122260223 192.168.1.1 9999 typ host
       expect(media.iceUfrag, equals('ufrag1'));
       expect(media.setup, equals('actpass'));
     });
+
+    test('buildDataChannelSdp omits host candidate when localIp is null',
+        () {
+      final built = SdpBuilder.buildDataChannelSdp(
+        ufrag: 'u',
+        password: 'pwd0123456789012345678',
+        fingerprint: 'AA:' * 31 + 'BB',
+        isOffer: true,
+        sctpPort: 5000,
+      );
+      expect(built.media.single.candidates, isEmpty);
+      final sdpText = built.build();
+      expect(sdpText, isNot(contains('a=candidate:')));
+    });
   });
 
   group('SdpParser.parseCandidate', () {

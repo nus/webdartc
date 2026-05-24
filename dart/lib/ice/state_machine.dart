@@ -84,10 +84,17 @@ final class IceStateMachine implements ProtocolStateMachine {
   /// Emitted when data arrives on the selected pair (non-STUN packet).
   void Function(Uint8List data, IpAddress remoteIp, int remotePort)? onData;
 
+  /// `IceTransportPolicy.relay` makes the state machine ignore every
+  /// non-relay candidate (both local and remote). Stored as an opaque
+  /// boolean here so this module doesn't depend on the W3C enum.
+  final bool _relayOnly;
+
   IceStateMachine({
     required this.controlling,
     List<StunServer> stunServers = const [],
+    bool relayOnly = false,
   })  : _stunServers = stunServers,
+        _relayOnly = relayOnly,
         _tieBreaker = Csprng.randomUint32() << 32 | Csprng.randomUint32();
 
   IceState get state => _state;
@@ -110,36 +117,42 @@ final class IceStateMachine implements ProtocolStateMachine {
     _localParams = localParams;
     _setState(IceState.iceGathering);
 
-    for (final host in hosts) {
-      final foundation = Csprng.randomHex(4);
-      // Loopback candidates only form usable pairs when the peer is on
-      // the same host — common in E2E tests. When they do, prefer
-      // them: same-host loopback is cheaper and more reliable than
-      // forcing UDP across non-loopback adapters (notably on Windows,
-      // which can refuse the latter with errno 1214). On real networks
-      // the loopback pair simply doesn't form, so non-loopback still
-      // wins by default.
-      final priority = IceCandidate.computePriority(
-        typePreference: IceCandidate.typePreferenceHost,
-        localPreference: host.ip.isLoopback ? 65535 : 32767,
-        componentId: 1,
-      );
-      final hostCandidate = IceCandidate(
-        foundation: foundation,
-        componentId: 1,
-        transport: 'udp',
-        priority: priority,
-        ip: host.ip,
-        port: host.port,
-        type: IceCandidateType.host,
-      );
-      _localCandidates.add(hostCandidate);
-      onLocalCandidate?.call(hostCandidate);
+    // Under `IceTransportPolicy.relay` only TURN-derived relay candidates
+    // are allowed — skip host emit (the socket bindings still happen in
+    // the transport so the allocations have a source IP) and skip the
+    // STUN srflx round-trip below.
+    if (!_relayOnly) {
+      for (final host in hosts) {
+        final foundation = Csprng.randomHex(4);
+        // Loopback candidates only form usable pairs when the peer is on
+        // the same host — common in E2E tests. When they do, prefer
+        // them: same-host loopback is cheaper and more reliable than
+        // forcing UDP across non-loopback adapters (notably on Windows,
+        // which can refuse the latter with errno 1214). On real networks
+        // the loopback pair simply doesn't form, so non-loopback still
+        // wins by default.
+        final priority = IceCandidate.computePriority(
+          typePreference: IceCandidate.typePreferenceHost,
+          localPreference: host.ip.isLoopback ? 65535 : 32767,
+          componentId: 1,
+        );
+        final hostCandidate = IceCandidate(
+          foundation: foundation,
+          componentId: 1,
+          transport: 'udp',
+          priority: priority,
+          ip: host.ip,
+          port: host.port,
+          type: IceCandidateType.host,
+        );
+        _localCandidates.add(hostCandidate);
+        onLocalCandidate?.call(hostCandidate);
+      }
     }
 
     // Send STUN Binding Requests to STUN servers for srflx candidates,
     // sourced from the first host binding.
-    if (_stunServers.isNotEmpty) {
+    if (!_relayOnly && _stunServers.isNotEmpty) {
       final firstHost = hosts.first;
       final packets = <OutputPacket>[];
       for (final server in _stunServers) {
@@ -247,6 +260,13 @@ final class IceStateMachine implements ProtocolStateMachine {
   /// Returns a [ProcessResult] that may include an initial STUN check to send.
   Result<ProcessResult, ProtocolError> addRemoteCandidate(
       IceCandidate candidate) {
+    // Defense in depth: even with [_relayOnly] the peer may still trickle
+    // host/srflx candidates (W3C doesn't require both sides to share a
+    // policy). Drop them silently — pairing them would defeat the
+    // privacy guarantee of the policy.
+    if (_relayOnly && candidate.type != IceCandidateType.relay) {
+      return const Ok(ProcessResult.empty);
+    }
     _remoteCandidates.add(candidate);
     if (_state == IceState.iceGatheringComplete ||
         _state == IceState.iceChecking ||
@@ -616,6 +636,12 @@ final class IceStateMachine implements ProtocolStateMachine {
       return const [];
     }
 
+    // Under relay-only, a STUN request from an unknown source IP means
+    // the peer reached us off-relay (or the peer's relay's mapping
+    // shifted). Don't promote it to a paired prflx — the policy says
+    // only relay-paired flows count.
+    if (_relayOnly) return const [];
+
     // Avoid duplicates.
     final alreadyRemote =
         _remoteCandidates.any((c) => c.ip == remoteAddr && c.port == remotePort);
@@ -657,6 +683,7 @@ final class IceStateMachine implements ProtocolStateMachine {
   }
 
   void _discoverPrflxCandidate(IpAddress addr, int port, CandidatePair triggeredBy) {
+    if (_relayOnly) return; // prflx is just srflx-by-another-name; banned in relay mode.
     final exists = _localCandidates.any((c) => c.ip == addr && c.port == port);
     if (exists) return;
     final priority = IceCandidate.computePriority(
