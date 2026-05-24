@@ -23,13 +23,10 @@ void main() {
 
     test('two PeerConnections reach connected over a relay-only path',
         () async {
-      // End-to-end proof of the relay-traffic plumbing: each PC's
-      // outgoing packets get wrapped into TURN Send indications, the
-      // peer's TURN allocation unwraps them, the transport
-      // re-dispatches as if direct, and the full STUN/DTLS/SCTP stack
-      // completes — all forced through coturn because the test feeds
-      // only relay candidates across the signaling channel and scrubs
-      // the SDP's default address.
+      // Forced relay-only: only relay candidates cross the signaling
+      // channel and the SDP default address is scrubbed, so direct
+      // host pairs can't form. Both peers reaching connected proves
+      // every layer (ICE / DTLS / SCTP) survives the TURN round-trip.
       final iceServers = [
         IceServer(
           urls: ['turn:127.0.0.1:${coturn.port}?transport=udp'],

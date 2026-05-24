@@ -227,13 +227,19 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   void _pairLocalCandidate(IceCandidate local) {
     for (final remote in _remoteCandidates) {
-      if (local.transport != remote.transport) continue;
-      if (local.ip.isV6 != remote.ip.isV6) continue;
-      final pair = CandidatePair(local: local, remote: remote);
-      pair.state = CandidatePairState.waiting;
-      _pairs.add(pair);
+      _addPair(local, remote);
     }
     _pairs.sort((a, b) => b.priority.compareTo(a.priority));
+  }
+
+  /// Cartesian-product helper shared by [_pairCandidate] and
+  /// [_pairLocalCandidate]. RFC 8445 §6.1.2.2 only pairs candidates of
+  /// the same transport (UDP here) and same address family.
+  void _addPair(IceCandidate local, IceCandidate remote) {
+    if (local.transport != remote.transport) return;
+    if (local.ip.isV6 != remote.ip.isV6) return;
+    _pairs.add(CandidatePair(local: local, remote: remote)
+      ..state = CandidatePairState.waiting);
   }
 
   /// Add a remote ICE candidate (Trickle ICE).
@@ -486,13 +492,7 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   void _pairCandidate(IceCandidate remote) {
     for (final local in _localCandidates) {
-      // Only pair same transport (UDP)
-      if (local.transport != remote.transport) continue;
-      // Only pair same address family (RFC 8445 §6.1.2.2)
-      if (local.ip.isV6 != remote.ip.isV6) continue;
-      final pair = CandidatePair(local: local, remote: remote);
-      pair.state = CandidatePairState.waiting;
-      _pairs.add(pair);
+      _addPair(local, remote);
     }
     _pairs.sort((a, b) => b.priority.compareTo(a.priority));
   }
