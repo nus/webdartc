@@ -30,16 +30,23 @@ final class IceServer {
   const IceServer({required this.urls, this.username, this.credential});
 }
 
+/// W3C `RTCIceTransportPolicy` (WebRTC §4.2.2).
+///
+/// `relay` restricts ICE to TURN-derived `relay` candidates: no host or
+/// srflx candidates are gathered or paired, and host/srflx candidates
+/// arriving from the peer are dropped.
+enum IceTransportPolicy { all, relay }
+
 /// PeerConnection configuration.
 final class PeerConnectionConfiguration {
   final List<IceServer> iceServers;
-  final IceCandidateType? iceTransportPolicy;
+  final IceTransportPolicy iceTransportPolicy;
   final String bundlePolicy; // "balanced" | "max-bundle" | "max-compat"
   final String rtcpMuxPolicy;
 
   const PeerConnectionConfiguration({
     this.iceServers = const [],
-    this.iceTransportPolicy,
+    this.iceTransportPolicy = IceTransportPolicy.all,
     this.bundlePolicy = 'max-bundle',
     this.rtcpMuxPolicy = 'require',
   });
@@ -173,6 +180,14 @@ final class PeerConnection {
     }
     await _ensureTransportStarted();
 
+    // Under relay-only, never embed a host candidate in the offer SDP:
+    // the policy forbids host paths and relay candidates trickle in
+    // after the TURN allocation completes.
+    final relayOnly =
+        configuration.iceTransportPolicy == IceTransportPolicy.relay;
+    final localIp = relayOnly ? null : _transport.localAddress;
+    final localPort = relayOnly ? null : _transport.localPort;
+
     final SdpSessionDescription sdp;
     if (_transceivers.isNotEmpty) {
       // Media session — codec list comes from MediaEngine, optionally
@@ -194,8 +209,8 @@ final class PeerConnection {
         fingerprint: _localCert.sha256Fingerprint,
         isOffer: true,
         tracks: tracks,
-        localIp: _transport.localAddress,
-        localPort: _transport.localPort,
+        localIp: localIp,
+        localPort: localPort,
       );
     } else {
       // Data channel session
@@ -205,8 +220,8 @@ final class PeerConnection {
         fingerprint: _localCert.sha256Fingerprint,
         isOffer: true,
         sctpPort: 5000,
-        localIp: _transport.localAddress,
-        localPort: _transport.localPort,
+        localIp: localIp,
+        localPort: localPort,
       );
     }
     return SessionDescription(type: SessionDescriptionType.offer, sdp: sdp.build());
@@ -230,13 +245,15 @@ final class PeerConnection {
       if (t.sender != null) localSenderSsrcs[t.kind] = t.sender!.ssrc;
     }
     // Honour each transceiver's preferredCodecs on the answer side.
+    final relayOnly =
+        configuration.iceTransportPolicy == IceTransportPolicy.relay;
     final sdp = SdpBuilder.buildAnswerFromOffer(
       remoteOffer: parsed.value,
       ufrag: _iceUfrag,
       password: _icePwd,
       fingerprint: _localCert.sha256Fingerprint,
-      localIp: _transport.localAddress,
-      localPort: _transport.localPort,
+      localIp: relayOnly ? null : _transport.localAddress,
+      localPort: relayOnly ? null : _transport.localPort,
       localSenderSsrcs: localSenderSsrcs,
       supportedAudioCodecs: _answerCodecNames('audio'),
       supportedVideoCodecs: _answerCodecNames('video'),
@@ -580,7 +597,12 @@ final class PeerConnection {
         if (turn != null) turnServers.add(turn);
       }
     }
-    _ice = IceStateMachine(controlling: true, stunServers: stunServers);
+    _ice = IceStateMachine(
+      controlling: true,
+      stunServers: stunServers,
+      relayOnly:
+          configuration.iceTransportPolicy == IceTransportPolicy.relay,
+    );
     _transport.attachTurnServers(turnServers);
     _dtls = DtlsStateMachine(role: DtlsRole.client, localCert: _localCert);
     // SCTP role is set dynamically in _onDtlsConnected based on actual DTLS role.

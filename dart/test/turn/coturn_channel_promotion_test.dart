@@ -27,29 +27,33 @@ void main() {
           credential: coturnPass,
         ),
       ];
-      final pcA = PeerConnection(
-        configuration: PeerConnectionConfiguration(iceServers: iceServers),
+      final config = PeerConnectionConfiguration(
+        iceServers: iceServers,
+        iceTransportPolicy: IceTransportPolicy.relay,
       );
-      final pcB = PeerConnection(
-        configuration: PeerConnectionConfiguration(iceServers: iceServers),
-      );
+      final pcA = PeerConnection(configuration: config);
+      final pcB = PeerConnection(configuration: config);
 
       try {
-        pcA.onIceCandidate.listen((evt) => maybeForwardRelay(evt, pcB));
-        pcB.onIceCandidate.listen((evt) => maybeForwardRelay(evt, pcA));
+        pcA.onIceCandidate.listen((evt) => pcB.addIceCandidate(IceCandidateInit(
+              candidate: evt.candidate,
+              sdpMid: evt.sdpMid,
+              sdpMLineIndex: evt.sdpMLineIndex,
+            )));
+        pcB.onIceCandidate.listen((evt) => pcA.addIceCandidate(IceCandidateInit(
+              candidate: evt.candidate,
+              sdpMid: evt.sdpMid,
+              sdpMLineIndex: evt.sdpMLineIndex,
+            )));
 
         pcA.createDataChannel('promote-probe');
 
         final offer = await pcA.createOffer();
         await pcA.setLocalDescription(offer);
-        await pcB.setRemoteDescription(SessionDescription(
-            type: SessionDescriptionType.offer,
-            sdp: stripHostAddress(offer.sdp)));
+        await pcB.setRemoteDescription(offer);
         final answer = await pcB.createAnswer();
         await pcB.setLocalDescription(answer);
-        await pcA.setRemoteDescription(SessionDescription(
-            type: SessionDescriptionType.answer,
-            sdp: stripHostAddress(answer.sdp)));
+        await pcA.setRemoteDescription(answer);
 
         await Future.wait([
           pcA.onConnectionStateChange
