@@ -1,9 +1,6 @@
 @Tags(['coturn'])
 library;
 
-import 'dart:async';
-import 'dart:convert';
-
 import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart' hide Timeout;
 
@@ -38,8 +35,8 @@ void main() {
       );
 
       try {
-        pcA.onIceCandidate.listen((evt) => _maybeForwardRelay(evt, pcB));
-        pcB.onIceCandidate.listen((evt) => _maybeForwardRelay(evt, pcA));
+        pcA.onIceCandidate.listen((evt) => maybeForwardRelay(evt, pcB));
+        pcB.onIceCandidate.listen((evt) => maybeForwardRelay(evt, pcA));
 
         pcA.createDataChannel('promote-probe');
 
@@ -47,12 +44,12 @@ void main() {
         await pcA.setLocalDescription(offer);
         await pcB.setRemoteDescription(SessionDescription(
             type: SessionDescriptionType.offer,
-            sdp: _stripHostAddress(offer.sdp)));
+            sdp: stripHostAddress(offer.sdp)));
         final answer = await pcB.createAnswer();
         await pcB.setLocalDescription(answer);
         await pcA.setRemoteDescription(SessionDescription(
             type: SessionDescriptionType.answer,
-            sdp: _stripHostAddress(answer.sdp)));
+            sdp: stripHostAddress(answer.sdp)));
 
         await Future.wait([
           pcA.onConnectionStateChange
@@ -85,38 +82,6 @@ void main() {
       }
     }, timeout: const Timeout(Duration(seconds: 45)));
   });
-}
-
-void _maybeForwardRelay(PeerConnectionIceEvent evt, PeerConnection to) {
-  if (!evt.candidate.contains('typ relay')) return;
-  to.addIceCandidate(IceCandidateInit(
-    candidate: evt.candidate,
-    sdpMid: evt.sdpMid,
-    sdpMLineIndex: evt.sdpMLineIndex,
-  ));
-}
-
-String _stripHostAddress(String sdp) {
-  final out = StringBuffer();
-  for (final line in const LineSplitter().convert(sdp)) {
-    if (line.startsWith('c=IN IP4 ')) {
-      out.writeln('c=IN IP4 0.0.0.0');
-    } else if (line.startsWith('m=')) {
-      final parts = line.split(' ');
-      if (parts.length >= 4) {
-        parts[1] = '9';
-        out.writeln(parts.join(' '));
-      } else {
-        out.writeln(line);
-      }
-    } else if (line.startsWith('a=candidate:') &&
-        !line.contains('typ relay')) {
-      // drop
-    } else {
-      out.writeln(line);
-    }
-  }
-  return out.toString();
 }
 
 bool _allAllocationsHaveBoundChannel(List<PeerConnection> pcs) {

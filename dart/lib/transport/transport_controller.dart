@@ -286,13 +286,19 @@ final class TransportController {
         _pendingPermissions.remove((allocation, peerIp));
       };
       allocation.onChannelResult = (channel, peerIp, peerPort, bound) {
-        _pendingChannelBinds.remove((allocation, peerIp, peerPort));
-        if (!bound) {
+        final key = (allocation, peerIp, peerPort);
+        _pendingChannelBinds.remove(key);
+        if (bound) {
+          // Channel is bound; `wrapSend` will pick ChannelData from now
+          // on. The counter has done its job — drop it so long-running
+          // calls with peer churn don't accumulate dead entries.
+          _peerSendCounts.remove(key);
+        } else {
           // Server refused to bind this peer (rare: 486 quota, 437 alloc
-          // mismatch, etc.). Freeze the counter past the threshold so
-          // we don't keep retrying forever; future sends stay on the
-          // heavier Send-indication path.
-          _peerSendCounts[(allocation, peerIp, peerPort)] = -1;
+          // mismatch, etc.). Freeze the counter so we don't keep
+          // retrying forever; future sends stay on the heavier
+          // Send-indication path.
+          _peerSendCounts[key] = _channelBindFrozen;
         }
       };
       _allocations[endpoint] = allocation;
@@ -614,10 +620,10 @@ final class TransportController {
       TurnAllocation allocation, IpAddress peer, int port) {
     if (allocation.channelFor(peer, port) != null) return;
     final key = (allocation, peer, port);
-    final count = (_peerSendCounts[key] ?? 0);
-    if (count < 0) return; // frozen after a prior bind failure
-    final next = count + 1;
-    _peerSendCounts[key] = next;
+    final next = _peerSendCounts.update(
+        key, (c) => c == _channelBindFrozen ? c : c + 1,
+        ifAbsent: () => 1);
+    if (next == _channelBindFrozen) return;
     if (next < _channelPromotionThreshold) return;
     if (!_pendingChannelBinds.add(key)) return;
     final res = allocation.bindChannel(peer, port);
@@ -641,6 +647,10 @@ final class TransportController {
   /// round-trip — enough to filter short-lived flows but quick enough
   /// to pay for itself on long ones.
   static const int _channelPromotionThreshold = 10;
+
+  /// Sentinel value stored in [_peerSendCounts] after the server refused
+  /// a ChannelBind. Negative so it can never collide with a real count.
+  static const int _channelBindFrozen = -1;
 
   void _sendUdpRaw(Uint8List data, String ip, int port, {IpAddress? localIp}) {
     try {
