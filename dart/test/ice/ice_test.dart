@@ -232,12 +232,13 @@ void main() {
       );
       emitted.clear();
 
-      ice.addLocalRelayCandidate(
+      final res = ice.addLocalRelayCandidate(
         relayedIp: IpAddress.parse('203.0.113.7'),
         relayedPort: 49152,
         relatedAddress: IpAddress.parse('192.168.1.10'),
         relatedPort: 5000,
       );
+      expect(res.isOk, isTrue);
 
       expect(emitted, hasLength(1));
       final c = emitted.single;

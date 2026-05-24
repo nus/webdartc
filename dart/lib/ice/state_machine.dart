@@ -182,7 +182,12 @@ final class IceStateMachine implements ProtocolStateMachine {
   /// transport owns. `raddr`/`rport` carry the host binding the
   /// allocation was sourced from — required by RFC 8839 §5.1 for peer
   /// pair scoring.
-  void addLocalRelayCandidate({
+  ///
+  /// Mirrors [addRemoteCandidate]'s pair-and-check side effects: pairs
+  /// the new local against every known remote, and (when the state
+  /// machine is already running checks) returns the first connectivity
+  /// check on the new pair so the transport can put it on the wire.
+  Result<ProcessResult, ProtocolError> addLocalRelayCandidate({
     required IpAddress relayedIp,
     required int relayedPort,
     required IpAddress relatedAddress,
@@ -205,6 +210,36 @@ final class IceStateMachine implements ProtocolStateMachine {
     );
     _localCandidates.add(candidate);
     onLocalCandidate?.call(candidate);
+    _pairLocalCandidate(candidate);
+    if (_state == IceState.iceChecking) {
+      final packets = _doNextCheck();
+      if (packets.isNotEmpty) {
+        final nextTimeout = Timeout(
+          at: DateTime.now().add(_checkTimeout),
+          token: IceTimerToken(++_timerIdCounter),
+        );
+        return Ok(ProcessResult(
+            outputPackets: packets, nextTimeout: nextTimeout));
+      }
+    }
+    return const Ok(ProcessResult.empty);
+  }
+
+  void _pairLocalCandidate(IceCandidate local) {
+    for (final remote in _remoteCandidates) {
+      _addPair(local, remote);
+    }
+    _pairs.sort((a, b) => b.priority.compareTo(a.priority));
+  }
+
+  /// Cartesian-product helper shared by [_pairCandidate] and
+  /// [_pairLocalCandidate]. RFC 8445 §6.1.2.2 only pairs candidates of
+  /// the same transport (UDP here) and same address family.
+  void _addPair(IceCandidate local, IceCandidate remote) {
+    if (local.transport != remote.transport) return;
+    if (local.ip.isV6 != remote.ip.isV6) return;
+    _pairs.add(CandidatePair(local: local, remote: remote)
+      ..state = CandidatePairState.waiting);
   }
 
   /// Add a remote ICE candidate (Trickle ICE).
@@ -457,13 +492,7 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   void _pairCandidate(IceCandidate remote) {
     for (final local in _localCandidates) {
-      // Only pair same transport (UDP)
-      if (local.transport != remote.transport) continue;
-      // Only pair same address family (RFC 8445 §6.1.2.2)
-      if (local.ip.isV6 != remote.ip.isV6) continue;
-      final pair = CandidatePair(local: local, remote: remote);
-      pair.state = CandidatePairState.waiting;
-      _pairs.add(pair);
+      _addPair(local, remote);
     }
     _pairs.sort((a, b) => b.priority.compareTo(a.priority));
   }

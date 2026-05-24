@@ -4,11 +4,9 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
-/// Long-term credential the spawned coturn instance accepts. Stable so
-/// tests can build the IceServer config without coordinating with the
-/// helper.
 const coturnUser = 'test';
 const coturnPass = 'test';
 const coturnRealm = 'webdartc.test';
@@ -42,42 +40,65 @@ Future<int> _freeUdpPort() async {
 
 /// Spawn coturn on a free port and wait until it answers a STUN Binding
 /// request. Throws if the binary is missing or doesn't come up within
-/// [timeout].
+/// [timeout]. Default 15 s — CI runners with cold caches need more
+/// headroom than a local dev box.
 Future<CoturnInstance> startCoturn({
-  Duration timeout = const Duration(seconds: 5),
+  Duration timeout = const Duration(seconds: 15),
 }) async {
   if (!_hasTurnserver()) {
     throw StateError(
         'turnserver binary not found in PATH — install coturn '
-        '(`brew install coturn` on macOS) to run this test.');
+        '(`brew install coturn` on macOS, `apt-get install coturn` on '
+        'Linux) to run this test.');
   }
 
   final port = await _freeUdpPort();
   final process = await Process.start('turnserver', [
     '--no-tls',
     '--no-dtls',
-    // --no-cli is deprecated in coturn 4.6+; setting cli-port=0
-    // disables the admin TCP listener the same way.
+    // --no-cli is deprecated in coturn 4.6+; cli-port=0 disables the
+    // admin TCP listener the same way.
     '--cli-port=0',
+    // coturn 4.6 still validates `--allow-loopback-peers` against the
+    // CLI password even when the CLI is disabled; set a dummy so the
+    // server doesn't refuse to start with "allow_loopback_peers and
+    // empty cli password cannot be used together".
+    '--cli-password=unused',
     '--listening-port=$port',
     '--listening-ip=127.0.0.1',
     '--realm=$coturnRealm',
     '--user=$coturnUser:$coturnPass',
     '--lt-cred-mech',
     '--simple-log',
-    '--no-stdout-log',
     '--min-port=49160',
     '--max-port=49200',
+    // coturn 4.5+ rejects CreatePermission for loopback peer addresses
+    // by default; in this test both PCs sit on 127.0.0.1 so without
+    // this flag the relay-only traffic test gets 403 Forbidden.
+    '--allow-loopback-peers',
   ]);
-  // Forward coturn's diagnostics to the test runner's stderr so a
-  // surprise failure shows up in CI logs.
-  process.stdout.listen((_) {});
-  process.stderr.listen((bytes) => stderr.add(bytes));
+  // Capture coturn's output so a startup failure (bad CLI flag, missing
+  // /etc/turnserver.conf overrides, etc.) lands in the error message
+  // instead of vanishing into a silent timeout.
+  final logBuffer = StringBuffer();
+  void capture(List<int> bytes) {
+    logBuffer.write(utf8.decode(bytes, allowMalformed: true));
+  }
+  process.stdout.listen(capture);
+  process.stderr.listen(capture);
 
-  await _waitUntilStunRespondsOn(port, timeout).onError((e, _) async {
+  try {
+    await _waitUntilStunRespondsOn(port, timeout);
+  } catch (e) {
     process.kill(ProcessSignal.sigkill);
-    throw StateError('coturn did not come up on port $port: $e');
-  });
+    // Await exit so the stdout/stderr listeners flush every last byte
+    // into logBuffer before we render the error message.
+    await process.exitCode;
+    throw StateError(
+        'coturn did not come up on port $port: $e\n'
+        '--- coturn output ---\n$logBuffer\n'
+        '--- end coturn output ---');
+  }
   return CoturnInstance._(process, port);
 }
 
@@ -111,7 +132,7 @@ Future<void> _waitUntilStunRespondsOn(int port, Duration timeout) async {
     ];
     socket.send(req, InternetAddress.loopbackIPv4, port);
     try {
-      await got.future.timeout(const Duration(milliseconds: 200));
+      await got.future.timeout(const Duration(milliseconds: 250));
       await sub.cancel();
       socket.close();
       return;

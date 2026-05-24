@@ -44,6 +44,11 @@ final class TransportController {
   /// in the dispatch path.
   final Map<(IpAddress, int), TurnAllocation> _allocations = {};
 
+  /// Reverse lookup: relayed transport address → allocation. Keying by
+  /// IP only is safe under the one-allocation-per-server policy
+  /// (each TURN server gives back a distinct relayed IP).
+  final Map<IpAddress, TurnAllocation> _relayedAllocations = {};
+
   /// (ip, port) pairs to advertise as ICE host candidates. Computed once
   /// at [start] time from the resolved bind list; for the wildcard fallback
   /// the IP is the auto-detected non-loopback address rather than 0.0.0.0.
@@ -195,6 +200,8 @@ final class TransportController {
       }
     }
     _allocations.clear();
+    _relayedAllocations.clear();
+    _pendingPermissions.clear();
     for (final timer in _timers.values) {
       timer.cancel();
     }
@@ -247,12 +254,29 @@ final class TransportController {
         password: server.password,
       );
       allocation.onAllocated = (relayedIp, relayedPort) {
-        _ice?.addLocalRelayCandidate(
+        _relayedAllocations[relayedIp] = allocation;
+        final res = _ice?.addLocalRelayCandidate(
           relayedIp: relayedIp,
           relayedPort: relayedPort,
           relatedAddress: host.ip,
           relatedPort: host.port,
         );
+        if (res != null && res.isOk) {
+          _sendOutputPackets(res.value.outputPackets);
+          _scheduleTimeout(res.value.nextTimeout, 'ice-check');
+        }
+      };
+      allocation.onPeerData = (peerIp, peerPort, payload) {
+        // Re-dispatch as if direct from the peer so upper layers don't
+        // need to know it came via TURN. Loop-safe: `peerIp` ≠ TURN
+        // server, so the next `_allocations[(peerIp, peerPort)]` misses.
+        final relayedIp = allocation.relayedAddress;
+        if (relayedIp == null) return;
+        _dispatch(payload, _arrivalClock.elapsedMicroseconds, peerIp, peerPort,
+            relayedIp);
+      };
+      allocation.onPermissionResult = (peerIp, _) {
+        _pendingPermissions.remove((allocation, peerIp));
       };
       _allocations[endpoint] = allocation;
       final res = allocation.start();
@@ -514,6 +538,57 @@ final class TransportController {
   }
 
   void _sendUdp(Uint8List data, String ip, int port, {IpAddress? localIp}) {
+    if (_relayedAllocations.isNotEmpty) {
+      final allocation = _selectRelayAllocation(localIp);
+      if (allocation != null) {
+        final peer = IpAddress.tryParse(ip);
+        if (peer != null) {
+          _sendViaRelay(allocation, peer, port, data);
+          return;
+        }
+      }
+    }
+    _sendUdpRaw(data, ip, port, localIp: localIp);
+  }
+
+  /// Pick the allocation whose relayed transport address is the source
+  /// of this packet. DTLS / SCTP records arrive with no explicit
+  /// `localIp` — when ICE has nominated a relay pair, fall back to its
+  /// local so their traffic follows the same path the connectivity
+  /// checks took.
+  TurnAllocation? _selectRelayAllocation(IpAddress? localIp) {
+    final src = localIp ?? _ice?.selectedPair?.local.ip;
+    return src == null ? null : _relayedAllocations[src];
+  }
+
+  /// Wrap [data] as a Send indication / ChannelData and forward to the
+  /// allocation's server. Missing-permission Errs install a permission
+  /// inline; the dropped packet is recovered by the upper-layer
+  /// retransmit (ICE checks at ~500 ms).
+  void _sendViaRelay(TurnAllocation allocation, IpAddress peer, int peerPort,
+      Uint8List data) {
+    final wrapped = allocation.wrapSend(peer, peerPort, data);
+    if (wrapped.isErr) {
+      if (!allocation.hasPermission(peer) &&
+          _pendingPermissions.add((allocation, peer))) {
+        final res = allocation.createPermission(peer);
+        if (res.isOk) _sendOutputPackets(res.value.outputPackets);
+      }
+      return;
+    }
+    final out = wrapped.value;
+    // Straight to the raw send: skip the wrap-gate (this is the wrapped
+    // packet on its way to the TURN server) and avoid a second
+    // `IpAddress.tryParse` on the same destination.
+    _sendUdpRaw(out.data, out.remoteIp, out.remotePort);
+  }
+
+  /// Permission requests in flight, so ICE / DTLS retransmits don't
+  /// pile new CreatePermissions onto the TURN state machine while the
+  /// first one is still being acked. Cleared on the response callback.
+  final Set<(TurnAllocation, IpAddress)> _pendingPermissions = {};
+
+  void _sendUdpRaw(Uint8List data, String ip, int port, {IpAddress? localIp}) {
     try {
       var addr = InternetAddress.tryParse(ip);
       if (addr == null) {
