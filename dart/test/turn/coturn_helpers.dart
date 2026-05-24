@@ -91,11 +91,12 @@ Future<CoturnInstance> startCoturn({
     await _waitUntilStunRespondsOn(port, timeout);
   } catch (e) {
     process.kill(ProcessSignal.sigkill);
-    // Allow the captured stream a brief flush before we read the buffer.
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+    // Await exit so the stdout/stderr listeners flush every last byte
+    // into logBuffer before we render the error message.
+    await process.exitCode;
     throw StateError(
         'coturn did not come up on port $port: $e\n'
-        '--- coturn output ---\n${logBuffer.toString()}\n'
+        '--- coturn output ---\n$logBuffer\n'
         '--- end coturn output ---');
   }
   return CoturnInstance._(process, port);
