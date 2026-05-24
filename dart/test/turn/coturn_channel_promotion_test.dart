@@ -35,16 +35,8 @@ void main() {
       final pcB = PeerConnection(configuration: config);
 
       try {
-        pcA.onIceCandidate.listen((evt) => pcB.addIceCandidate(IceCandidateInit(
-              candidate: evt.candidate,
-              sdpMid: evt.sdpMid,
-              sdpMLineIndex: evt.sdpMLineIndex,
-            )));
-        pcB.onIceCandidate.listen((evt) => pcA.addIceCandidate(IceCandidateInit(
-              candidate: evt.candidate,
-              sdpMid: evt.sdpMid,
-              sdpMLineIndex: evt.sdpMLineIndex,
-            )));
+        forwardIceCandidates(pcA, pcB);
+        forwardIceCandidates(pcB, pcA);
 
         pcA.createDataChannel('promote-probe');
 

@@ -81,6 +81,9 @@ final class PeerConnection {
   late final SctpStateMachine _sctp;
   SrtpContext? _srtp;
 
+  bool get _relayOnly =>
+      configuration.iceTransportPolicy == IceTransportPolicy.relay;
+
   // Local credentials
   late final EcdsaCertificate _localCert;
   late final String _iceUfrag;
@@ -180,13 +183,11 @@ final class PeerConnection {
     }
     await _ensureTransportStarted();
 
-    // Under relay-only, never embed a host candidate in the offer SDP:
-    // the policy forbids host paths and relay candidates trickle in
-    // after the TURN allocation completes.
-    final relayOnly =
-        configuration.iceTransportPolicy == IceTransportPolicy.relay;
-    final localIp = relayOnly ? null : _transport.localAddress;
-    final localPort = relayOnly ? null : _transport.localPort;
+    // Relay candidates trickle in once the TURN allocation completes,
+    // so under relay-only the inline host candidate would be the only
+    // non-relay path the offer ever advertised.
+    final localIp = _relayOnly ? null : _transport.localAddress;
+    final localPort = _relayOnly ? null : _transport.localPort;
 
     final SdpSessionDescription sdp;
     if (_transceivers.isNotEmpty) {
@@ -245,15 +246,13 @@ final class PeerConnection {
       if (t.sender != null) localSenderSsrcs[t.kind] = t.sender!.ssrc;
     }
     // Honour each transceiver's preferredCodecs on the answer side.
-    final relayOnly =
-        configuration.iceTransportPolicy == IceTransportPolicy.relay;
     final sdp = SdpBuilder.buildAnswerFromOffer(
       remoteOffer: parsed.value,
       ufrag: _iceUfrag,
       password: _icePwd,
       fingerprint: _localCert.sha256Fingerprint,
-      localIp: relayOnly ? null : _transport.localAddress,
-      localPort: relayOnly ? null : _transport.localPort,
+      localIp: _relayOnly ? null : _transport.localAddress,
+      localPort: _relayOnly ? null : _transport.localPort,
       localSenderSsrcs: localSenderSsrcs,
       supportedAudioCodecs: _answerCodecNames('audio'),
       supportedVideoCodecs: _answerCodecNames('video'),
@@ -600,8 +599,7 @@ final class PeerConnection {
     _ice = IceStateMachine(
       controlling: true,
       stunServers: stunServers,
-      relayOnly:
-          configuration.iceTransportPolicy == IceTransportPolicy.relay,
+      relayOnly: _relayOnly,
     );
     _transport.attachTurnServers(turnServers);
     _dtls = DtlsStateMachine(role: DtlsRole.client, localCert: _localCert);

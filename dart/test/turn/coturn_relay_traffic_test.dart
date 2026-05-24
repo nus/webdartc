@@ -39,16 +39,8 @@ void main() {
       final pcB = PeerConnection(configuration: config);
 
       try {
-        pcA.onIceCandidate.listen((evt) => pcB.addIceCandidate(IceCandidateInit(
-              candidate: evt.candidate,
-              sdpMid: evt.sdpMid,
-              sdpMLineIndex: evt.sdpMLineIndex,
-            )));
-        pcB.onIceCandidate.listen((evt) => pcA.addIceCandidate(IceCandidateInit(
-              candidate: evt.candidate,
-              sdpMid: evt.sdpMid,
-              sdpMLineIndex: evt.sdpMLineIndex,
-            )));
+        forwardIceCandidates(pcA, pcB);
+        forwardIceCandidates(pcB, pcA);
 
         // A data channel forces SCTP setup over DTLS, which in turn
         // exercises the wrap path end-to-end (ICE checks → DTLS

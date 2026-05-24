@@ -285,23 +285,9 @@ abstract final class SdpBuilder {
         rawAttrs.add('ssrc:$ssrc msid:webdartc-stream webdartc-track-$i');
       }
 
-      // Host candidate if localIp/localPort provided
-      final candidates = <IceCandidate>[];
-      if (localIp != null && localPort != null) {
-        candidates.add(IceCandidate(
-          foundation: '1',
-          componentId: 1,
-          transport: 'udp',
-          priority: IceCandidate.computePriority(
-            typePreference: IceCandidate.typePreferenceHost,
-            localPreference: 65535,
-            componentId: 1,
-          ),
-          ip: IpAddress.parse(localIp),
-          port: localPort,
-          type: IceCandidateType.host,
-        ));
-      }
+      final candidates = (localIp != null && localPort != null)
+          ? [_hostCandidate(IpAddress.parse(localIp), localPort)]
+          : const <IceCandidate>[];
 
       mediaDescriptions.add(SdpMediaDescription(
         type: track.type,

@@ -7,6 +7,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:webdartc/webdartc.dart';
+
 const coturnUser = 'test';
 const coturnPass = 'test';
 const coturnRealm = 'webdartc.test';
@@ -109,6 +111,19 @@ bool _hasTurnserver() {
   } catch (_) {
     return false;
   }
+}
+
+/// Wire trickled candidates from [from] to [to]. Returns the
+/// subscription so tests can cancel it from a `finally` block if needed.
+StreamSubscription<PeerConnectionIceEvent> forwardIceCandidates(
+    PeerConnection from, PeerConnection to) {
+  return from.onIceCandidate.listen((evt) {
+    to.addIceCandidate(IceCandidateInit(
+      candidate: evt.candidate,
+      sdpMid: evt.sdpMid,
+      sdpMLineIndex: evt.sdpMLineIndex,
+    ));
+  });
 }
 
 /// Send a STUN Binding request and wait for any response — the simplest
