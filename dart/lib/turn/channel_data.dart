@@ -10,6 +10,25 @@ import 'dart:typed_data';
 const int channelNumberMin = 0x4000;
 const int channelNumberMax = 0x7FFF;
 
+/// STUN message header length (RFC 5389 §6) — fixed at 20 bytes
+/// (type 2 + length 2 + magic cookie 4 + transaction id 12).
+const int stunHeaderBytes = 20;
+
+/// Top two bits of the first byte distinguish framing classes on a
+/// TURN-TCP stream:
+///   * `00` — STUN (`stunHeaderBytes` + body length).
+///   * `01` — ChannelData (4-byte header + body, padded to 4-byte
+///     multiple on TCP per RFC 5766 §11.5).
+/// Anything else means the byte stream is out of sync.
+const int _turnTcpClassMask = 0xC0;
+const int _turnTcpStunClass = 0x00;
+const int _turnTcpChannelDataClass = 0x40;
+
+/// ChannelData header is 4 bytes; bodies on TCP pad to the next 4-byte
+/// boundary. The mask is `align - 1` so `(x + mask) & ~mask` rounds up.
+const int _channelDataHeaderBytes = 4;
+const int _channelDataAlignmentMask = 3;
+
 bool isValidChannelNumber(int n) =>
     n >= channelNumberMin && n <= channelNumberMax;
 
@@ -41,6 +60,55 @@ Uint8List buildChannelData(int channel, Uint8List payload, {bool pad = false}) {
   out[3] = payload.length & 0xFF;
   out.setRange(4, 4 + payload.length, payload);
   return out;
+}
+
+/// Result of inspecting the head of a TURN-over-TCP receive buffer
+/// (RFC 5766 §11.5). The wire is a back-to-back stream of STUN messages
+/// and ChannelData frames, each with a self-describing length; the
+/// receiver peels them off using only the first four bytes plus the
+/// declared length.
+sealed class TurnTcpFrameLength {
+  const TurnTcpFrameLength();
+}
+
+/// Buffer is too short to decide; caller should wait for more bytes.
+final class TurnTcpFrameLengthNeedMore extends TurnTcpFrameLength {
+  const TurnTcpFrameLengthNeedMore();
+}
+
+/// Buffer's leading bytes form a complete frame header. [totalBytes] is
+/// the total length the frame occupies on the wire (including any
+/// 4-byte ChannelData alignment padding); caller still has to wait
+/// until the buffer holds at least that many bytes before slicing.
+final class TurnTcpFrameLengthKnown extends TurnTcpFrameLength {
+  final int totalBytes;
+  const TurnTcpFrameLengthKnown(this.totalBytes);
+}
+
+/// Leading byte matches neither STUN (`(b0 & 0xC0) == 0x00`) nor
+/// ChannelData (`(b0 & 0xC0) == 0x40`) — the stream is out of sync and
+/// the only safe action is for the caller to drop the connection.
+final class TurnTcpFrameLengthMalformed extends TurnTcpFrameLength {
+  const TurnTcpFrameLengthMalformed();
+}
+
+/// Decide how many bytes the next complete frame in a TURN-over-TCP
+/// byte stream will occupy. Pure; never throws.
+TurnTcpFrameLength turnTcpFrameLength(Uint8List buffer) {
+  if (buffer.length < _channelDataHeaderBytes) {
+    return const TurnTcpFrameLengthNeedMore();
+  }
+  final framingClass = buffer[0] & _turnTcpClassMask;
+  final bodyLen = (buffer[2] << 8) | buffer[3];
+  if (framingClass == _turnTcpStunClass) {
+    return TurnTcpFrameLengthKnown(stunHeaderBytes + bodyLen);
+  }
+  if (framingClass == _turnTcpChannelDataClass) {
+    return TurnTcpFrameLengthKnown(
+        (_channelDataHeaderBytes + bodyLen + _channelDataAlignmentMask) &
+            ~_channelDataAlignmentMask);
+  }
+  return const TurnTcpFrameLengthMalformed();
 }
 
 /// Parse a ChannelData frame. Returns null when the input is malformed

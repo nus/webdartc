@@ -506,6 +506,94 @@ void main() {
     });
   });
 
+  // ── TURN-TCP framing (RFC 5766 §11.5) ────────────────────────────────────
+  //
+  // `turnTcpFrameLength` runs on every chunk of bytes a TURN-TCP server
+  // emits, so it has to stay total: no exceptions, no negatives, no
+  // overflows, no infinite loops in the surrounding demux. A malicious
+  // server should never crash the client by sending garbage.
+
+  group('Fuzz: TURN-TCP framing', () {
+    test('turnTcpFrameLength never throws on random input', () {
+      for (var i = 0; i < _iterations; i++) {
+        turnTcpFrameLength(_randomPacket());
+      }
+    });
+
+    test('turnTcpFrameLength always returns non-negative totals', () {
+      // Smallest possible frame: ChannelData with an empty payload
+      // (4-byte header, zero pad) — anything STUN-class is at least
+      // 20 bytes. Largest possible: a STUN body of 0xFFFF on top of
+      // the 20-byte header.
+      const minTotal = 4;
+      const maxBodyLen = 0xFFFF;
+      const maxTotal = stunHeaderBytes + maxBodyLen;
+      for (var i = 0; i < _iterations; i++) {
+        final r = turnTcpFrameLength(_randomPacket());
+        if (r is TurnTcpFrameLengthKnown) {
+          expect(r.totalBytes, greaterThanOrEqualTo(minTotal));
+          expect(r.totalBytes, lessThanOrEqualTo(maxTotal));
+        }
+      }
+    });
+
+    test('turnTcpFrameLength handles empty + sub-header buffers', () {
+      // The smallest frame possible is 4 bytes (ChannelData header);
+      // any buffer shorter than that can't carry a length field yet.
+      const minFrameBytes = 4;
+      for (var len = 0; len < minFrameBytes; len++) {
+        expect(turnTcpFrameLength(_randomBytes(len)),
+            isA<TurnTcpFrameLengthNeedMore>());
+      }
+    });
+
+    test('demux loop never infinite-loops or unbounded-grows on garbage', () {
+      // Simulate the `_TurnTcpConnection._drain` loop against a random
+      // stream split into random chunks. The drain must either consume
+      // bytes, ask for more, or terminate via the malformed branch —
+      // never neither.
+      const int maxStreamBytes = 4096;
+      const int maxIterationsPerStream = 200;
+      for (var stream = 0; stream < 200; stream++) {
+        var buffer = Uint8List(0);
+        final chunks = <Uint8List>[];
+        var streamLen = 0;
+        while (streamLen < maxStreamBytes) {
+          final chunkLen = 1 + _rng.nextInt(64);
+          final chunk = _randomBytes(chunkLen);
+          chunks.add(chunk);
+          streamLen += chunkLen;
+        }
+        for (final chunk in chunks) {
+          final next = Uint8List(buffer.length + chunk.length)
+            ..setRange(0, buffer.length, buffer)
+            ..setRange(buffer.length, buffer.length + chunk.length, chunk);
+          buffer = next;
+          var drained = 0;
+          var malformed = false;
+          while (drained < maxIterationsPerStream) {
+            final r = turnTcpFrameLength(buffer);
+            if (r is TurnTcpFrameLengthNeedMore) break;
+            if (r is TurnTcpFrameLengthMalformed) {
+              malformed = true;
+              break;
+            }
+            final known = r as TurnTcpFrameLengthKnown;
+            if (buffer.length < known.totalBytes) break;
+            buffer = buffer.length == known.totalBytes
+                ? Uint8List(0)
+                : Uint8List.fromList(
+                    Uint8List.sublistView(buffer, known.totalBytes));
+            drained++;
+          }
+          expect(drained, lessThan(maxIterationsPerStream),
+              reason: 'demux entered a hot loop on stream $stream');
+          if (malformed) break;
+        }
+      }
+    });
+  });
+
   group('Fuzz: TURN STUN messages', () {
     // Allocate request shape that exercises every new TURN attribute on
     // the parse path. Mutating it covers the new switch arms in the

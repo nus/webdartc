@@ -310,6 +310,35 @@ void main() {
       expect(frame.payload, payload);
     });
 
+    test('ChannelData pads to a 4-byte boundary when padChannelData=true',
+        () {
+      final a = TurnAllocation(
+        serverIp: _serverIp,
+        serverPort: _serverPort,
+        username: 'alice',
+        password: 'pw',
+        padChannelData: true,
+      );
+      _runAuthFlow(a);
+      final req = a.bindChannel(_peerIp, _peerPort).value;
+      final reqTx = _stun(req.outputPackets.single).transactionId;
+      a.processInput(
+        _serverResponse(StunMessageType.channelBindSuccessResponse, reqTx, []),
+        remoteIp: _serverIp,
+        remotePort: _serverPort,
+      );
+
+      // 5-byte payload → 9 bytes total with padding rounds up to 12.
+      final payload = Uint8List.fromList([1, 2, 3, 4, 5]);
+      final out = a.wrapSend(_peerIp, _peerPort, payload).value;
+      expect(isChannelData(out.data), isTrue);
+      expect(out.data.length, 12);
+      // The length field still reports the unpadded payload length so
+      // parsers can recover the original bytes.
+      final frame = parseChannelData(out.data)!;
+      expect(frame.payload, payload);
+    });
+
     test('wrapSend without permission fails', () {
       final a = _newAlloc();
       _runAuthFlow(a);
