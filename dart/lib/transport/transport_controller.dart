@@ -90,12 +90,20 @@ final class TransportController {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
+  /// Last [SettingEngine] passed to [start], stashed so async helpers
+  /// (notably [_startTcpAllocation], which only fires after `Socket
+  /// .connect` resolves) can reach hooks like [SettingEngine
+  /// .onBadTurnCertificate] without re-threading the argument through
+  /// every caller.
+  SettingEngine _settingEngine = const SettingEngine();
+
   /// Bind UDP sockets and start receiving packets. One socket per IP
   /// resolved by [_resolveBindAddresses].
   Future<void> start({
     SettingEngine settingEngine = const SettingEngine(),
     int port = 0,
   }) async {
+    _settingEngine = settingEngine;
     final bindIps = await _resolveBindAddresses(settingEngine);
 
     if (bindIps.isEmpty) {
@@ -258,12 +266,14 @@ final class TransportController {
     if (_turnServers.isEmpty || _bindings.isEmpty) return;
     final host = _bindings.first;
     for (final server in _turnServers) {
-      if (server.secure) {
-        // `turns:` (TLS-over-TCP) lands in a later PR.
-        continue;
-      }
       switch (server.transport) {
         case 'udp':
+          if (server.secure) {
+            // RFC 7350 defines DTLS-over-UDP TURN (`turns:?transport=udp`).
+            // Not implemented yet; skip rather than allocate against a
+            // server we can't actually talk to.
+            continue;
+          }
           _startUdpAllocation(server, host);
         case 'tcp':
           // Fire-and-forget: Socket.connect is async but we don't want
@@ -289,53 +299,49 @@ final class TransportController {
   }
 
   Future<void> _startTcpAllocation(TurnServer server, HostBinding host) async {
-    final InternetAddress serverAddr;
-    final IpAddress serverIp;
-    final parsed = InternetAddress.tryParse(server.host);
-    if (parsed != null) {
-      serverAddr = parsed;
-      serverIp = IpAddress.fromBytes(parsed.rawAddress);
-    } else {
-      // Resolve hostname; reuse the existing DNS cache so we don't
-      // double-lookup if upper layers already resolved this server.
-      final resolved = await _resolveAddress(server.host);
-      if (resolved == null) {
-        if (_debug) {
-          stderr.writeln(
-              '[transport] TURN-TCP dns failed for ${server.host}');
-        }
-        return;
-      }
-      serverAddr = resolved;
-      serverIp = IpAddress.fromBytes(resolved.rawAddress);
-    }
-    final endpoint = (serverIp, server.port);
-    final allocation =
-        _buildAllocation(server, host, serverIp, padChannelData: true);
-    final _TurnTcpConnection conn;
+    // Connect first; pass the original `server.host` string so both
+    // plain TCP and TLS see the same hostname (TLS needs it for SNI +
+    // certificate validation). The kernel resolves it for us — we
+    // learn the chosen IP from `socket.remoteAddress` afterwards.
+    // ignore: close_sinks  — ownership transfers to _TurnTcpConnection.
+    final Socket socket;
     try {
-      conn = await _TurnTcpConnection.connect(
-        address: serverAddr,
-        port: server.port,
-        onFrame: (frame) {
-          // Dispatch each demuxed STUN/ChannelData frame through the
-          // same allocation lookup the UDP receive path uses.
-          _dispatch(frame, _arrivalClock.elapsedMicroseconds, serverIp,
-              server.port, host.ip);
-        },
-        onClose: () {
-          _turnTcpConnections.remove(endpoint);
-          // The allocation entry stays in `_allocations` long enough
-          // for the upper layers to observe `state != allocated`; an
-          // explicit ICE candidate teardown isn't wired yet.
-        },
-      );
+      socket = server.secure
+          ? await SecureSocket.connect(
+              server.host,
+              server.port,
+              onBadCertificate: _settingEngine.onBadTurnCertificate,
+            )
+          : await Socket.connect(server.host, server.port);
     } catch (e) {
       if (_debug) {
-        stderr.writeln('[transport] TURN-TCP connect ${server.host}:${server.port} failed: $e');
+        stderr.writeln(
+            '[transport] TURN-${server.secure ? "TLS" : "TCP"} connect'
+            ' ${server.host}:${server.port} failed: $e');
       }
       return;
     }
+
+    final serverIp = IpAddress.fromBytes(socket.remoteAddress.rawAddress);
+    final endpoint = (serverIp, server.port);
+    final allocation =
+        _buildAllocation(server, host, serverIp, padChannelData: true);
+    final conn = _TurnTcpConnection(
+      socket,
+      onFrame: (frame) {
+        // Dispatch each demuxed STUN/ChannelData frame through the
+        // same allocation lookup the UDP receive path uses.
+        _dispatch(frame, _arrivalClock.elapsedMicroseconds, serverIp,
+            server.port, host.ip);
+      },
+      onClose: () {
+        _turnTcpConnections.remove(endpoint);
+        // The allocation entry stays in `_allocations` long enough
+        // for the upper layers to observe `state != allocated`; an
+        // explicit ICE candidate teardown isn't wired yet.
+      },
+    );
+
     _allocations[endpoint] = allocation;
     _turnTcpConnections[endpoint] = conn;
     final res = allocation.start();
@@ -881,23 +887,19 @@ final class _TurnTcpConnection {
   Uint8List _buffer = Uint8List(0);
   bool _closed = false;
 
-  _TurnTcpConnection._(this._socket, this.onFrame, this.onClose) {
+  /// Wrap an already-connected [socket] (plain TCP or TLS-over-TCP —
+  /// `SecureSocket` extends [Socket] so the same demux applies). The
+  /// caller is responsible for the actual `Socket.connect` /
+  /// `SecureSocket.connect` so it can pass through TLS-specific knobs
+  /// without leaking them into this class.
+  _TurnTcpConnection(this._socket, {required this.onFrame, required this.onClose}) {
+    // STUN retransmits over TCP are managed by the protocol layer; the
+    // 200 ms Nagle delay just inflates handshake RTT.
+    _socket.setOption(SocketOption.tcpNoDelay, true);
     _socket.listen(_onBytes, onError: _onError, onDone: _onDone);
   }
 
-  static Future<_TurnTcpConnection> connect({
-    required InternetAddress address,
-    required int port,
-    required void Function(Uint8List frame) onFrame,
-    required void Function() onClose,
-  }) async {
-    // ignore: close_sinks  — owned by the returned _TurnTcpConnection.
-    final socket = await Socket.connect(address, port);
-    // STUN retransmits over TCP are managed by the protocol layer; the
-    // 200 ms Nagle delay just inflates handshake RTT.
-    socket.setOption(SocketOption.tcpNoDelay, true);
-    return _TurnTcpConnection._(socket, onFrame, onClose);
-  }
+  InternetAddress get remoteAddress => _socket.remoteAddress;
 
   void send(Uint8List data) {
     if (_closed) return;

@@ -41,10 +41,19 @@ final class SettingEngine {
   /// testing.
   final bool includeLoopbackCandidate;
 
+  /// Invoked when the TLS handshake against a `turns:` TURN server
+  /// presents a certificate that fails platform validation. Returning
+  /// `true` accepts the certificate anyway. `null` (the default) keeps
+  /// strict validation — invalid certs abort the connection. Intended
+  /// for self-signed dev/test TURN servers; production code should
+  /// leave this null and rely on platform trust roots.
+  final bool Function(X509Certificate certificate)? onBadTurnCertificate;
+
   const SettingEngine({
     this.bindAddresses,
     this.udpPortRange,
     this.interfaceFilter,
     this.includeLoopbackCandidate = false,
+    this.onBadTurnCertificate,
   });
 }
