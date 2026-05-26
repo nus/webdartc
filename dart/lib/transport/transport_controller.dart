@@ -66,6 +66,19 @@ final class TransportController {
   /// the contract.
   List<TurnAllocation> get turnAllocations => _allocations.values.toList();
 
+  /// Monotonically-increasing byte counts spanning every UDP datagram
+  /// the transport has put on / taken off the wire, plus everything
+  /// pushed through a TURN-TCP / TLS control link. Surfaced via
+  /// `PeerConnection.getStats()`.
+  int get bytesSent => _bytesSent;
+  int get bytesReceived => _bytesReceived;
+  int get packetsSent => _packetsSent;
+  int get packetsReceived => _packetsReceived;
+  int _bytesSent = 0;
+  int _bytesReceived = 0;
+  int _packetsSent = 0;
+  int _packetsReceived = 0;
+
   /// First advertised IP, in canonical text form. Used by the legacy
   /// single-IP SDP builder path.
   String get localAddress =>
@@ -341,6 +354,17 @@ final class TransportController {
         // for the upper layers to observe `state != allocated`; an
         // explicit ICE candidate teardown isn't wired yet.
       },
+      // TLS path: byte counts are post-TLS plaintext. Packet count is
+      // approximate — one per `send` on transmit, one per TCP chunk
+      // on receive. Good enough for the stats.
+      onBytesSent: (bytes) {
+        _bytesSent += bytes;
+        _packetsSent++;
+      },
+      onBytesReceived: (bytes) {
+        _bytesReceived += bytes;
+        _packetsReceived++;
+      },
     );
 
     _allocations[endpoint] = allocation;
@@ -476,6 +500,9 @@ final class TransportController {
     final data = datagram.data;
     final remoteIp = IpAddress.fromBytes(datagram.address.rawAddress);
     final remotePort = datagram.port;
+
+    _bytesReceived += data.length;
+    _packetsReceived++;
 
     if (_debug) {
       stderr.writeln('[transport] RX ${data.length}b from $remoteIp:$remotePort'
@@ -789,7 +816,11 @@ final class TransportController {
         }
       }
       final socket = _selectSocket(localIp);
-      socket?.send(data, addr, port);
+      final sent = socket?.send(data, addr, port);
+      if (sent != null && sent > 0) {
+        _bytesSent += sent;
+        _packetsSent++;
+      }
     } catch (_) {
       // Network errors are non-fatal in UDP
     }
@@ -885,6 +916,17 @@ final class _TurnTcpConnection {
   final Socket _socket;
   final void Function(Uint8List frame) onFrame;
   final void Function() onClose;
+
+  /// Per-`send` callback: feeds the outer transport's `bytesSent` /
+  /// `packetsSent` counters. Post-TLS-decrypt bytes (one frame per
+  /// call). Decoupled from [onBytesReceived] so neither path carries
+  /// a dead-zero argument.
+  final void Function(int bytes) onBytesSent;
+
+  /// Per-chunk callback: one invocation per TCP read of decrypted
+  /// bytes off the wire.
+  final void Function(int bytes) onBytesReceived;
+
   Uint8List _buffer = Uint8List(0);
   bool _closed = false;
 
@@ -893,7 +935,11 @@ final class _TurnTcpConnection {
   /// caller is responsible for the actual `Socket.connect` /
   /// `SecureSocket.connect` so it can pass through TLS-specific knobs
   /// without leaking them into this class.
-  _TurnTcpConnection(this._socket, {required this.onFrame, required this.onClose}) {
+  _TurnTcpConnection(this._socket,
+      {required this.onFrame,
+      required this.onClose,
+      required this.onBytesSent,
+      required this.onBytesReceived}) {
     // STUN retransmits over TCP are managed by the protocol layer; the
     // 200 ms Nagle delay just inflates handshake RTT.
     _socket.setOption(SocketOption.tcpNoDelay, true);
@@ -905,6 +951,7 @@ final class _TurnTcpConnection {
   void send(Uint8List data) {
     if (_closed) return;
     _socket.add(data);
+    onBytesSent(data.length);
   }
 
   void close() {
@@ -914,6 +961,7 @@ final class _TurnTcpConnection {
   }
 
   void _onBytes(Uint8List chunk) {
+    onBytesReceived(chunk.length);
     if (_buffer.isEmpty) {
       _buffer = Uint8List.fromList(chunk);
     } else {

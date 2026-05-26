@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import '../api/media_engine.dart';
 import '../api/setting_engine.dart';
+import '../api/stats.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
 import '../dtls/state_machine.dart';
@@ -537,8 +538,127 @@ final class PeerConnection {
     _transport.sendRtp(srtp.encryptRtp(rtpPacket));
   }
 
-  /// Get statistics (stub — returns empty).
-  Future<Map<String, dynamic>> getStats() async => {};
+  /// Snapshot of stats across this PeerConnection's transport, ICE
+  /// agent, and data channels. W3C §8 `RTCStatsReport`.
+  ///
+  /// Returned counters are monotonic; callers compute deltas across
+  /// snapshots themselves.
+  Future<RtcStatsReport> getStats() {
+    // Body is synchronous: no awaits, just assembling counter snapshots
+    // into typed entries. Returning via `Future.value` keeps the W3C
+    // Promise-shaped API without forcing the extra microtask `async`
+    // would queue per call.
+    final now = DateTime.now();
+    final entries = <String, RtcStats>{};
+    var dcOpened = 0;
+    var dcClosed = 0;
+    for (final dc in _dataChannels.values) {
+      if (dc.readyState == DataChannelState.open) dcOpened++;
+      if (dc.readyState == DataChannelState.closed) dcClosed++;
+      final id = 'dc-${dc.id}';
+      entries[id] = DataChannelStats(
+        id: id,
+        timestamp: now,
+        label: dc.label,
+        state: dc.readyState.name,
+        messagesSent: dc.messagesSent,
+        bytesSent: dc.bytesSent,
+        messagesReceived: dc.messagesReceived,
+        bytesReceived: dc.bytesReceived,
+      );
+    }
+
+    String? selectedPairId;
+    for (final pair in _ice.pairs) {
+      final localId = pair.local.statsId(isLocal: true);
+      final remoteId = pair.remote.statsId(isLocal: false);
+      final pairId = 'pair-$localId-$remoteId';
+      final isSelected = identical(_ice.selectedPair, pair);
+      if (isSelected) selectedPairId = pairId;
+      entries[pairId] = CandidatePairStats(
+        id: pairId,
+        timestamp: now,
+        localCandidateId: localId,
+        remoteCandidateId: remoteId,
+        state: pair.state.name,
+        nominated: pair.nominated,
+      );
+    }
+    for (final c in _ice.localCandidates) {
+      final id = c.statsId(isLocal: true);
+      entries[id] = CandidateStats(
+        id: id,
+        type: RtcStatsType.localCandidate,
+        timestamp: now,
+        ip: c.ip.toCanonical(),
+        port: c.port,
+        protocol: c.transport,
+        candidateType: c.type,
+        priority: c.priority,
+      );
+    }
+    for (final c in _ice.remoteCandidates) {
+      final id = c.statsId(isLocal: false);
+      entries[id] = CandidateStats(
+        id: id,
+        type: RtcStatsType.remoteCandidate,
+        timestamp: now,
+        ip: c.ip.toCanonical(),
+        port: c.port,
+        protocol: c.transport,
+        candidateType: c.type,
+        priority: c.priority,
+      );
+    }
+
+    for (final t in _transceivers) {
+      final sender = t.sender;
+      if (sender == null) continue;
+      final id = 'outbound-rtp-${sender.ssrc}';
+      entries[id] = OutboundRtpStats(
+        id: id,
+        timestamp: now,
+        ssrc: sender.ssrc,
+        kind: sender.kind,
+        packetsSent: sender.packetsSent,
+        bytesSent: sender.bytesSent,
+      );
+    }
+    for (final s in _rtpRecvStats.values) {
+      // Skip the placeholder entry created for the local sender's
+      // SSRC in `setRemoteDescription` (line ~369) — it never gets a
+      // packet, so emitting it would falsely suggest a paired inbound
+      // stream that doesn't exist.
+      if (s.packetsReceived == 0) continue;
+      final id = 'inbound-rtp-${s.ssrc}';
+      entries[id] = InboundRtpStats(
+        id: id,
+        timestamp: now,
+        ssrc: s.ssrc,
+        packetsReceived: s.packetsReceived,
+        bytesReceived: s.bytesReceived,
+      );
+    }
+
+    entries['transport'] = TransportStats(
+      id: 'transport',
+      timestamp: now,
+      bytesSent: _transport.bytesSent,
+      bytesReceived: _transport.bytesReceived,
+      packetsSent: _transport.packetsSent,
+      packetsReceived: _transport.packetsReceived,
+      selectedCandidatePairId: selectedPairId,
+    );
+
+    entries['pc'] = PeerConnectionStats(
+      id: 'pc',
+      timestamp: now,
+      dataChannelsOpened: dcOpened,
+      dataChannelsClosed: dcClosed,
+    );
+
+    return Future.value(RtcStatsReport(entries));
+  }
 
   /// Close the connection.
   Future<void> close() async {
@@ -822,9 +942,9 @@ final class PeerConnection {
     final ssrc = rtp.ssrc;
     if (_debug) _log('[pc] RTP received: ssrc=$ssrc pt=${rtp.payloadType} seq=${rtp.sequenceNumber}');
 
-    // Update reception stats for RTCP RR
+    // Update reception stats for RTCP RR + getStats inboundRtp.
     final stats = _rtpRecvStats.putIfAbsent(ssrc, () => _RtpRecvStats(ssrc));
-    stats.update(rtp.sequenceNumber);
+    stats.update(rtp.sequenceNumber, rtp.payload.length);
 
     // Extract transport-cc sequence number from header extension
     if (_twccExtId > 0) {
@@ -1141,13 +1261,15 @@ final class _RtpRecvStats {
   final int ssrc;
   int highestSeq = 0;
   int packetsReceived = 0;
+  int bytesReceived = 0;
   int lastSrNtp = 0;
   DateTime? lastSrReceivedAt;
 
   _RtpRecvStats(this.ssrc);
 
-  void update(int seq) {
+  void update(int seq, int payloadBytes) {
     packetsReceived++;
+    bytesReceived += payloadBytes;
     if (seq > highestSeq) highestSeq = seq;
   }
 }

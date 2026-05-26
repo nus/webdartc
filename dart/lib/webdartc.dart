@@ -25,6 +25,7 @@ export 'peer_connection/peer_connection.dart';
 export 'api/webdartc.dart';
 export 'api/setting_engine.dart';
 export 'api/media_engine.dart';
+export 'api/stats.dart';
 
 // SDP
 export 'sdp/parser.dart';

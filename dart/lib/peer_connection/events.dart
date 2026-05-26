@@ -131,10 +131,19 @@ final class RtpSender {
   String? _mid;
   int _midExtId = 0;
 
-  /// Send statistics for RTCP SR.
+  /// Send statistics for RTCP SR and `PeerConnection.getStats`.
   int _packetsSent = 0;
   int _octetsSent = 0;
   int _lastRtpTimestamp = 0;
+
+  /// Total RTP packets put on the wire from this sender. Surfaced via
+  /// `OutboundRtpStats.packetsSent`.
+  int get packetsSent => _packetsSent;
+
+  /// Total RTP payload bytes (sum of `payload.length` per `sendRtp`).
+  /// Header bytes are excluded; matches the W3C
+  /// `bytesSent`/`headerBytesSent` split (we only report payload here).
+  int get bytesSent => _octetsSent;
 
   /// W3C: The MediaStreamTrack attached to this sender.
   MediaStreamTrack? _track;

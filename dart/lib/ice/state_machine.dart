@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:typed_data';
 
 import '../core/state_machine.dart';
@@ -101,6 +102,16 @@ final class IceStateMachine implements ProtocolStateMachine {
   CandidatePair? get selectedPair => _selectedPair;
   String? get selectedRemoteIp => _selectedPair?.remote.ip.toCanonical();
   int? get selectedRemotePort => _selectedPair?.remote.port;
+
+  /// Live (unmodifiable) views of the candidate / pair tables. Used by
+  /// `PeerConnection.getStats()` to surface per-candidate stats; never
+  /// mutate from outside the state machine. Views (no copy) so a
+  /// per-snapshot getStats call doesn't allocate three list copies.
+  List<IceCandidate> get localCandidates =>
+      UnmodifiableListView(_localCandidates);
+  List<IceCandidate> get remoteCandidates =>
+      UnmodifiableListView(_remoteCandidates);
+  List<CandidatePair> get pairs => UnmodifiableListView(_pairs);
 
   // ── Public control API ───────────────────────────────────────────────────
 
