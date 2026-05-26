@@ -44,6 +44,11 @@ final class TransportController {
   /// in the dispatch path.
   final Map<(IpAddress, int), TurnAllocation> _allocations = {};
 
+  /// TCP control connections to TURN servers (RFC 5766 §2.1). Keyed by
+  /// the same `(serverIp, serverPort)` tuple as [_allocations] so the
+  /// send path can pick UDP-raw vs TCP without a second lookup.
+  final Map<(IpAddress, int), _TurnTcpConnection> _turnTcpConnections = {};
+
   /// Reverse lookup: relayed transport address → allocation. Keying by
   /// IP only is safe under the one-allocation-per-server policy
   /// (each TURN server gives back a distinct relayed IP).
@@ -209,6 +214,10 @@ final class TransportController {
     _pendingPermissions.clear();
     _peerSendCounts.clear();
     _pendingChannelBinds.clear();
+    for (final conn in _turnTcpConnections.values) {
+      conn.close();
+    }
+    _turnTcpConnections.clear();
     for (final timer in _timers.values) {
       timer.cancel();
     }
@@ -248,67 +257,145 @@ final class TransportController {
     if (_turnServers.isEmpty || _bindings.isEmpty) return;
     final host = _bindings.first;
     for (final server in _turnServers) {
-      if (server.transport != 'udp' || server.secure) {
-        // PR 3 wires UDP only; turns:/transport=tcp lands in a later PR.
+      if (server.secure) {
+        // `turns:` (TLS-over-TCP) lands in a later PR.
         continue;
       }
-      final serverIp = IpAddress.parse(server.host);
-      final endpoint = (serverIp, server.port);
-      final allocation = TurnAllocation(
-        serverIp: serverIp,
-        serverPort: server.port,
-        username: server.username,
-        password: server.password,
-      );
-      allocation.onAllocated = (relayedIp, relayedPort) {
-        _relayedAllocations[relayedIp] = allocation;
-        final res = _ice?.addLocalRelayCandidate(
-          relayedIp: relayedIp,
-          relayedPort: relayedPort,
-          relatedAddress: host.ip,
-          relatedPort: host.port,
-        );
-        if (res != null && res.isOk) {
-          _sendOutputPackets(res.value.outputPackets);
-          _scheduleTimeout(res.value.nextTimeout, 'ice-check');
-        }
-      };
-      allocation.onPeerData = (peerIp, peerPort, payload) {
-        // Re-dispatch as if direct from the peer so upper layers don't
-        // need to know it came via TURN. Loop-safe: `peerIp` ≠ TURN
-        // server, so the next `_allocations[(peerIp, peerPort)]` misses.
-        final relayedIp = allocation.relayedAddress;
-        if (relayedIp == null) return;
-        _dispatch(payload, _arrivalClock.elapsedMicroseconds, peerIp, peerPort,
-            relayedIp);
-      };
-      allocation.onPermissionResult = (peerIp, _) {
-        _pendingPermissions.remove((allocation, peerIp));
-      };
-      allocation.onChannelResult = (channel, peerIp, peerPort, bound) {
-        final key = (allocation, peerIp, peerPort);
-        _pendingChannelBinds.remove(key);
-        if (bound) {
-          // Channel is bound; `wrapSend` will pick ChannelData from now
-          // on. The counter has done its job — drop it so long-running
-          // calls with peer churn don't accumulate dead entries.
-          _peerSendCounts.remove(key);
-        } else {
-          // Server refused to bind this peer (rare: 486 quota, 437 alloc
-          // mismatch, etc.). Freeze the counter so we don't keep
-          // retrying forever; future sends stay on the heavier
-          // Send-indication path.
-          _peerSendCounts[key] = _channelBindFrozen;
-        }
-      };
-      _allocations[endpoint] = allocation;
-      final res = allocation.start();
-      if (res.isOk) {
-        _sendOutputPackets(res.value.outputPackets);
-        _scheduleTimeout(
-            res.value.nextTimeout, 'turn-${server.host}:${server.port}');
+      switch (server.transport) {
+        case 'udp':
+          _startUdpAllocation(server, host);
+        case 'tcp':
+          // Fire-and-forget: Socket.connect is async but we don't want
+          // to block sibling allocations on a slow server. Failures log
+          // and skip; the missing relay candidate is simply absent from
+          // ICE's pool.
+          unawaited(_startTcpAllocation(server, host));
       }
     }
+  }
+
+  void _startUdpAllocation(TurnServer server, HostBinding host) {
+    final serverIp = IpAddress.parse(server.host);
+    final allocation =
+        _buildAllocation(server, host, serverIp, padChannelData: false);
+    _allocations[(serverIp, server.port)] = allocation;
+    final res = allocation.start();
+    if (res.isOk) {
+      _sendOutputPackets(res.value.outputPackets);
+      _scheduleTimeout(
+          res.value.nextTimeout, 'turn-${server.host}:${server.port}');
+    }
+  }
+
+  Future<void> _startTcpAllocation(TurnServer server, HostBinding host) async {
+    final InternetAddress serverAddr;
+    final IpAddress serverIp;
+    final parsed = InternetAddress.tryParse(server.host);
+    if (parsed != null) {
+      serverAddr = parsed;
+      serverIp = IpAddress.fromBytes(parsed.rawAddress);
+    } else {
+      // Resolve hostname; reuse the existing DNS cache so we don't
+      // double-lookup if upper layers already resolved this server.
+      final resolved = await _resolveAddress(server.host);
+      if (resolved == null) {
+        if (_debug) {
+          stderr.writeln(
+              '[transport] TURN-TCP dns failed for ${server.host}');
+        }
+        return;
+      }
+      serverAddr = resolved;
+      serverIp = IpAddress.fromBytes(resolved.rawAddress);
+    }
+    final endpoint = (serverIp, server.port);
+    final allocation =
+        _buildAllocation(server, host, serverIp, padChannelData: true);
+    final _TurnTcpConnection conn;
+    try {
+      conn = await _TurnTcpConnection.connect(
+        address: serverAddr,
+        port: server.port,
+        onFrame: (frame) {
+          // Dispatch each demuxed STUN/ChannelData frame through the
+          // same allocation lookup the UDP receive path uses.
+          _dispatch(frame, _arrivalClock.elapsedMicroseconds, serverIp,
+              server.port, host.ip);
+        },
+        onClose: () {
+          _turnTcpConnections.remove(endpoint);
+          // The allocation entry stays in `_allocations` long enough
+          // for the upper layers to observe `state != allocated`; an
+          // explicit ICE candidate teardown isn't wired yet.
+        },
+      );
+    } catch (e) {
+      if (_debug) {
+        stderr.writeln('[transport] TURN-TCP connect ${server.host}:${server.port} failed: $e');
+      }
+      return;
+    }
+    _allocations[endpoint] = allocation;
+    _turnTcpConnections[endpoint] = conn;
+    final res = allocation.start();
+    if (res.isOk) {
+      _sendOutputPackets(res.value.outputPackets);
+      _scheduleTimeout(
+          res.value.nextTimeout, 'turn-${server.host}:${server.port}');
+    }
+  }
+
+  TurnAllocation _buildAllocation(TurnServer server, HostBinding host,
+      IpAddress serverIp, {required bool padChannelData}) {
+    final allocation = TurnAllocation(
+      serverIp: serverIp,
+      serverPort: server.port,
+      username: server.username,
+      password: server.password,
+      padChannelData: padChannelData,
+    );
+    allocation.onAllocated = (relayedIp, relayedPort) {
+      _relayedAllocations[relayedIp] = allocation;
+      final res = _ice?.addLocalRelayCandidate(
+        relayedIp: relayedIp,
+        relayedPort: relayedPort,
+        relatedAddress: host.ip,
+        relatedPort: host.port,
+      );
+      if (res != null && res.isOk) {
+        _sendOutputPackets(res.value.outputPackets);
+        _scheduleTimeout(res.value.nextTimeout, 'ice-check');
+      }
+    };
+    allocation.onPeerData = (peerIp, peerPort, payload) {
+      // Re-dispatch as if direct from the peer so upper layers don't
+      // need to know it came via TURN. Loop-safe: `peerIp` ≠ TURN
+      // server, so the next `_allocations[(peerIp, peerPort)]` misses.
+      final relayedIp = allocation.relayedAddress;
+      if (relayedIp == null) return;
+      _dispatch(payload, _arrivalClock.elapsedMicroseconds, peerIp, peerPort,
+          relayedIp);
+    };
+    allocation.onPermissionResult = (peerIp, _) {
+      _pendingPermissions.remove((allocation, peerIp));
+    };
+    allocation.onChannelResult = (channel, peerIp, peerPort, bound) {
+      final key = (allocation, peerIp, peerPort);
+      _pendingChannelBinds.remove(key);
+      if (bound) {
+        // Channel is bound; `wrapSend` will pick ChannelData from now
+        // on. The counter has done its job — drop it so long-running
+        // calls with peer churn don't accumulate dead entries.
+        _peerSendCounts.remove(key);
+      } else {
+        // Server refused to bind this peer (rare: 486 quota, 437 alloc
+        // mismatch, etc.). Freeze the counter so we don't keep
+        // retrying forever; future sends stay on the heavier
+        // Send-indication path.
+        _peerSendCounts[key] = _channelBindFrozen;
+      }
+    };
+    return allocation;
   }
 
   /// Start the DTLS handshake, sending the initial flight and scheduling
@@ -487,6 +574,15 @@ final class TransportController {
   /// applies the DTLS encryption layer first.
   void _sendOutputPackets(List<OutputPacket> packets) {
     for (final pkt in packets) {
+      // TURN-TCP control link short-circuits the UDP send path before
+      // hostname resolution — the connection was set up against a
+      // numeric address at allocation time, so `pkt.remoteIp` here is
+      // already canonical.
+      final tcp = _lookupTurnTcp(pkt.remoteIp, pkt.remotePort);
+      if (tcp != null) {
+        tcp.send(pkt.data);
+        continue;
+      }
       // If the IP is not a valid address (hostname), resolve it asynchronously.
       if (InternetAddress.tryParse(pkt.remoteIp) == null && !_dnsCache.containsKey(pkt.remoteIp)) {
         _resolveAndSend(pkt);
@@ -494,6 +590,13 @@ final class TransportController {
         _sendUdp(pkt.data, pkt.remoteIp, pkt.remotePort, localIp: pkt.localIp);
       }
     }
+  }
+
+  _TurnTcpConnection? _lookupTurnTcp(String ip, int port) {
+    if (_turnTcpConnections.isEmpty) return null;
+    final parsed = IpAddress.tryParse(ip);
+    if (parsed == null) return null;
+    return _turnTcpConnections[(parsed, port)];
   }
 
   Future<void> _resolveAndSend(OutputPacket pkt) async {
@@ -606,8 +709,14 @@ final class TransportController {
     final out = wrapped.value;
     // Straight to the raw send: skip the wrap-gate (this is the wrapped
     // packet on its way to the TURN server) and avoid a second
-    // `IpAddress.tryParse` on the same destination.
-    _sendUdpRaw(out.data, out.remoteIp, out.remotePort);
+    // `IpAddress.tryParse` on the same destination. TCP allocations
+    // ship the same wrapped bytes over the control connection instead.
+    final tcp = _turnTcpConnections[(allocation.serverIp, allocation.serverPort)];
+    if (tcp != null) {
+      tcp.send(out.data);
+    } else {
+      _sendUdpRaw(out.data, out.remoteIp, out.remotePort);
+    }
 
     // After enough traffic to a peer, promote from Send-indication
     // (~36 B overhead) to a bound channel (4 B). The state machine's
@@ -754,5 +863,101 @@ final class TransportController {
             res.value.nextTimeout, 'turn-${entry.key.$1}:${entry.key.$2}');
       }
     }
+  }
+}
+
+/// TCP control connection to a single TURN server (RFC 5766 §2.1).
+///
+/// STUN messages and ChannelData frames have self-describing length
+/// fields, so the wire is just a stream of those frames back-to-back
+/// (RFC 5766 §11.5 requires ChannelData to be padded to a 4-byte
+/// boundary on TCP so the next frame stays aligned). [onFrame] fires
+/// once per complete frame extracted from the receive buffer.
+final class _TurnTcpConnection {
+  final Socket _socket;
+  final void Function(Uint8List frame) onFrame;
+  final void Function() onClose;
+  Uint8List _buffer = Uint8List(0);
+  bool _closed = false;
+
+  _TurnTcpConnection._(this._socket, this.onFrame, this.onClose) {
+    _socket.listen(_onBytes, onError: _onError, onDone: _onDone);
+  }
+
+  static Future<_TurnTcpConnection> connect({
+    required InternetAddress address,
+    required int port,
+    required void Function(Uint8List frame) onFrame,
+    required void Function() onClose,
+  }) async {
+    // ignore: close_sinks  — owned by the returned _TurnTcpConnection.
+    final socket = await Socket.connect(address, port);
+    // STUN retransmits over TCP are managed by the protocol layer; the
+    // 200 ms Nagle delay just inflates handshake RTT.
+    socket.setOption(SocketOption.tcpNoDelay, true);
+    return _TurnTcpConnection._(socket, onFrame, onClose);
+  }
+
+  void send(Uint8List data) {
+    if (_closed) return;
+    _socket.add(data);
+  }
+
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    _socket.destroy();
+  }
+
+  void _onBytes(Uint8List chunk) {
+    if (_buffer.isEmpty) {
+      _buffer = Uint8List.fromList(chunk);
+    } else {
+      final next = Uint8List(_buffer.length + chunk.length)
+        ..setRange(0, _buffer.length, _buffer)
+        ..setRange(_buffer.length, _buffer.length + chunk.length, chunk);
+      _buffer = next;
+    }
+    _drain();
+  }
+
+  void _drain() {
+    while (_buffer.length >= 4) {
+      final b0 = _buffer[0];
+      final int total;
+      if ((b0 & 0xC0) == 0x00) {
+        // STUN: fixed 20-byte header, body length in bytes 2-3.
+        final bodyLen = (_buffer[2] << 8) | _buffer[3];
+        total = 20 + bodyLen;
+      } else if ((b0 & 0xC0) == 0x40) {
+        // ChannelData: 4-byte header + body length, padded to 4-byte
+        // multiple on TCP per RFC 5766 §11.5.
+        final bodyLen = (_buffer[2] << 8) | _buffer[3];
+        total = (4 + bodyLen + 3) & ~3;
+      } else {
+        // Garbage — the server got out of sync with framing. Close so
+        // the upper layer can rebuild the allocation if it cares.
+        _onError('TURN-TCP: out-of-band byte 0x${b0.toRadixString(16)}');
+        return;
+      }
+      if (_buffer.length < total) return;
+      onFrame(Uint8List.sublistView(_buffer, 0, total));
+      _buffer = _buffer.length == total
+          ? Uint8List(0)
+          : Uint8List.fromList(Uint8List.sublistView(_buffer, total));
+    }
+  }
+
+  void _onError(Object err, [StackTrace? st]) {
+    if (_closed) return;
+    _closed = true;
+    _socket.destroy();
+    onClose();
+  }
+
+  void _onDone() {
+    if (_closed) return;
+    _closed = true;
+    onClose();
   }
 }

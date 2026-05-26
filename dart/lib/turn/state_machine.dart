@@ -123,6 +123,11 @@ final class TurnAllocation implements ProtocolStateMachine {
   /// the refresh timer.
   final int requestedLifetime;
 
+  /// Pad ChannelData frames to a 4-byte boundary. Required on TCP/TLS
+  /// per RFC 5766 §11.5 to keep subsequent frames aligned; optional on
+  /// UDP where each datagram is its own frame.
+  final bool padChannelData;
+
   TurnState _state = TurnState.idle;
   IpAddress? _relayedAddress;
   int? _relayedPort;
@@ -155,6 +160,7 @@ final class TurnAllocation implements ProtocolStateMachine {
     required this.username,
     required this.password,
     this.requestedLifetime = turnDefaultLifetimeSeconds,
+    this.padChannelData = false,
   });
 
   TurnState get state => _state;
@@ -220,7 +226,8 @@ final class TurnAllocation implements ProtocolStateMachine {
     }
     final channel = _peerToChannel[(peerIp, peerPort)];
     if (channel != null) {
-      return Ok(_toServer(buildChannelData(channel, payload)));
+      return Ok(_toServer(
+          buildChannelData(channel, payload, pad: padChannelData)));
     }
     if (!_permissions.contains(peerIp)) {
       return Err(StateError(
