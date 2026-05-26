@@ -191,11 +191,17 @@ StreamSubscription<PeerConnectionIceEvent> forwardIceCandidates(
 /// to reach `connected`. Used by the coturn relay-traffic / TCP / TLS
 /// tests so each one only differs in the [iceServers] entry (and
 /// optional [settingEngine] for TLS cert callbacks).
+///
+/// [whileConnected], if supplied, fires once both PCs are connected,
+/// before they're torn down — handy for poking at `getStats`,
+/// `turnAllocations`, etc. without re-running the handshake.
 Future<void> runRelayHandshake({
   required List<IceServer> iceServers,
   required String dataChannelLabel,
   SettingEngine? settingEngine,
   Duration connectedTimeout = const Duration(seconds: 25),
+  Future<void> Function(PeerConnection pcA, PeerConnection pcB)?
+      whileConnected,
 }) async {
   final config = PeerConnectionConfiguration(
     iceServers: iceServers,
@@ -236,6 +242,10 @@ Future<void> runRelayHandshake({
         throw StateError(
             'expected 1 allocation, got ${pc.turnAllocations.length}');
       }
+    }
+
+    if (whileConnected != null) {
+      await whileConnected(pcA, pcB);
     }
   } finally {
     await pcA.close();
