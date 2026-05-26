@@ -543,7 +543,11 @@ final class PeerConnection {
   ///
   /// Returned counters are monotonic; callers compute deltas across
   /// snapshots themselves.
-  Future<RtcStatsReport> getStats() async {
+  Future<RtcStatsReport> getStats() {
+    // Body is synchronous: no awaits, just assembling counter snapshots
+    // into typed entries. Returning via `Future.value` keeps the W3C
+    // Promise-shaped API without forcing the extra microtask `async`
+    // would queue per call.
     final now = DateTime.now();
     final entries = <String, RtcStats>{};
     var dcOpened = 0;
@@ -566,8 +570,8 @@ final class PeerConnection {
 
     String? selectedPairId;
     for (final pair in _ice.pairs) {
-      final localId = _candidateId(pair.local, isLocal: true);
-      final remoteId = _candidateId(pair.remote, isLocal: false);
+      final localId = pair.local.statsId(isLocal: true);
+      final remoteId = pair.remote.statsId(isLocal: false);
       final pairId = 'pair-$localId-$remoteId';
       final isSelected = identical(_ice.selectedPair, pair);
       if (isSelected) selectedPairId = pairId;
@@ -581,7 +585,7 @@ final class PeerConnection {
       );
     }
     for (final c in _ice.localCandidates) {
-      final id = _candidateId(c, isLocal: true);
+      final id = c.statsId(isLocal: true);
       entries[id] = CandidateStats(
         id: id,
         type: RtcStatsType.localCandidate,
@@ -594,7 +598,7 @@ final class PeerConnection {
       );
     }
     for (final c in _ice.remoteCandidates) {
-      final id = _candidateId(c, isLocal: false);
+      final id = c.statsId(isLocal: false);
       entries[id] = CandidateStats(
         id: id,
         type: RtcStatsType.remoteCandidate,
@@ -653,15 +657,7 @@ final class PeerConnection {
       dataChannelsClosed: dcClosed,
     );
 
-    return RtcStatsReport(entries);
-  }
-
-  /// Build a stat ID stable across `getStats` calls for the same
-  /// candidate. Foundation isn't unique (relay candidates share it
-  /// with their related host) so include type + ip:port too.
-  static String _candidateId(IceCandidate c, {required bool isLocal}) {
-    final prefix = isLocal ? 'local' : 'remote';
-    return '$prefix-${c.type.name}-${c.ip.toCanonical()}:${c.port}';
+    return Future.value(RtcStatsReport(entries));
   }
 
   /// Close the connection.

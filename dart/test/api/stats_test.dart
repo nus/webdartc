@@ -3,6 +3,22 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart' hide Timeout;
 
+/// Wire bidirectional trickle-ICE forwarding between two loopback PCs.
+/// The bodies of the multi-PC tests collapsed to nearly the same six
+/// lines; this helper keeps the focus on the actual stats assertions.
+void _wireTrickle(PeerConnection pcA, PeerConnection pcB) {
+  pcA.onIceCandidate.listen((evt) => pcB.addIceCandidate(IceCandidateInit(
+        candidate: evt.candidate,
+        sdpMid: evt.sdpMid,
+        sdpMLineIndex: evt.sdpMLineIndex,
+      )));
+  pcB.onIceCandidate.listen((evt) => pcA.addIceCandidate(IceCandidateInit(
+        candidate: evt.candidate,
+        sdpMid: evt.sdpMid,
+        sdpMLineIndex: evt.sdpMLineIndex,
+      )));
+}
+
 void main() {
   group('PeerConnection.getStats', () {
     test('fresh PC returns transport + peer-connection entries with zeros',
@@ -71,16 +87,7 @@ void main() {
       );
 
       try {
-        pcA.onIceCandidate.listen((evt) => pcB.addIceCandidate(IceCandidateInit(
-              candidate: evt.candidate,
-              sdpMid: evt.sdpMid,
-              sdpMLineIndex: evt.sdpMLineIndex,
-            )));
-        pcB.onIceCandidate.listen((evt) => pcA.addIceCandidate(IceCandidateInit(
-              candidate: evt.candidate,
-              sdpMid: evt.sdpMid,
-              sdpMLineIndex: evt.sdpMLineIndex,
-            )));
+        _wireTrickle(pcA, pcB);
 
         // A data channel is needed so an SCTP m-line is present in the
         // SDP; ICE doesn't form pairs without one.
@@ -167,16 +174,7 @@ void main() {
       );
 
       try {
-        pcA.onIceCandidate.listen((evt) => pcB.addIceCandidate(IceCandidateInit(
-              candidate: evt.candidate,
-              sdpMid: evt.sdpMid,
-              sdpMLineIndex: evt.sdpMLineIndex,
-            )));
-        pcB.onIceCandidate.listen((evt) => pcA.addIceCandidate(IceCandidateInit(
-              candidate: evt.candidate,
-              sdpMid: evt.sdpMid,
-              sdpMLineIndex: evt.sdpMLineIndex,
-            )));
+        _wireTrickle(pcA, pcB);
 
         pcA.addTransceiver('audio', direction: 'sendrecv');
         pcB.addTransceiver('audio', direction: 'sendrecv');

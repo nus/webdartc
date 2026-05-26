@@ -54,6 +54,14 @@ final class IceCandidate {
     }
     return sb.toString();
   }
+
+  /// Stable identifier for `PeerConnection.getStats()`. Side-tagged
+  /// (`local-` / `remote-`) so the same `(type, ip, port)` candidate
+  /// observed on both peers gets distinct stat entries; `foundation`
+  /// isn't included because relay candidates share it with their
+  /// `relatedAddress` host pair.
+  String statsId({required bool isLocal}) =>
+      '${isLocal ? 'local' : 'remote'}-${type.name}-${ip.toCanonical()}:$port';
 }
 
 enum IceCandidateType { host, srflx, prflx, relay }

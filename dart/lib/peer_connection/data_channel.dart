@@ -19,10 +19,14 @@ final class DataChannel {
   /// "messages" count is one per `send`/`sendBinary` call; "bytes" is
   /// the payload size handed to / received from the application
   /// (post-SCTP demux, no DCEP/SCTP framing overhead).
-  int messagesSent = 0;
-  int bytesSent = 0;
-  int messagesReceived = 0;
-  int bytesReceived = 0;
+  int get messagesSent => _messagesSent;
+  int get bytesSent => _bytesSent;
+  int get messagesReceived => _messagesReceived;
+  int get bytesReceived => _bytesReceived;
+  int _messagesSent = 0;
+  int _bytesSent = 0;
+  int _messagesReceived = 0;
+  int _bytesReceived = 0;
 
   final _messageController = StreamController<DataChannelMessageEvent>.broadcast();
   final _openController = StreamController<void>.broadcast();
@@ -61,16 +65,16 @@ final class DataChannel {
     _assertOpen();
     final bytes = Uint8List.fromList(data.codeUnits);
     _sendCallback?.call(bytes, binary: false);
-    messagesSent++;
-    bytesSent += bytes.length;
+    _messagesSent++;
+    _bytesSent += bytes.length;
   }
 
   /// Send binary data.
   void sendBinary(Uint8List data) {
     _assertOpen();
     _sendCallback?.call(data, binary: true);
-    messagesSent++;
-    bytesSent += data.length;
+    _messagesSent++;
+    _bytesSent += data.length;
   }
 
   void close() {
@@ -96,8 +100,8 @@ final class DataChannel {
 
   void _deliverMessage(Uint8List data, bool isBinary) {
     if (_readyState != DataChannelState.open) return;
-    messagesReceived++;
-    bytesReceived += data.length;
+    _messagesReceived++;
+    _bytesReceived += data.length;
     _messageController.add(DataChannelMessageEvent(data: data, isBinary: isBinary));
   }
 

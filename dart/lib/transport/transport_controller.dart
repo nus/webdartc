@@ -354,18 +354,16 @@ final class TransportController {
         // for the upper layers to observe `state != allocated`; an
         // explicit ICE candidate teardown isn't wired yet.
       },
-      onWireBytes: (sent, received) {
-        // TLS path: `sent`/`received` are post-TLS plaintext bytes.
-        // Packet count is approximate — one per TCP chunk on receive,
-        // one per `send` on transmit. Good enough for the stats.
-        if (sent > 0) {
-          _bytesSent += sent;
-          _packetsSent++;
-        }
-        if (received > 0) {
-          _bytesReceived += received;
-          _packetsReceived++;
-        }
+      // TLS path: byte counts are post-TLS plaintext. Packet count is
+      // approximate — one per `send` on transmit, one per TCP chunk
+      // on receive. Good enough for the stats.
+      onBytesSent: (bytes) {
+        _bytesSent += bytes;
+        _packetsSent++;
+      },
+      onBytesReceived: (bytes) {
+        _bytesReceived += bytes;
+        _packetsReceived++;
       },
     );
 
@@ -918,7 +916,17 @@ final class _TurnTcpConnection {
   final Socket _socket;
   final void Function(Uint8List frame) onFrame;
   final void Function() onClose;
-  final void Function(int sent, int received) onWireBytes;
+
+  /// Per-`send` callback: feeds the outer transport's `bytesSent` /
+  /// `packetsSent` counters. Post-TLS-decrypt bytes (one frame per
+  /// call). Decoupled from [onBytesReceived] so neither path carries
+  /// a dead-zero argument.
+  final void Function(int bytes) onBytesSent;
+
+  /// Per-chunk callback: one invocation per TCP read of decrypted
+  /// bytes off the wire.
+  final void Function(int bytes) onBytesReceived;
+
   Uint8List _buffer = Uint8List(0);
   bool _closed = false;
 
@@ -926,14 +934,12 @@ final class _TurnTcpConnection {
   /// `SecureSocket` extends [Socket] so the same demux applies). The
   /// caller is responsible for the actual `Socket.connect` /
   /// `SecureSocket.connect` so it can pass through TLS-specific knobs
-  /// without leaking them into this class. [onWireBytes] fires once
-  /// per outbound `send` and once per inbound chunk, with `sent` and
-  /// `received` being the byte counts at this layer (post-TLS-decrypt
-  /// when applicable) — used by the outer transport's stats counters.
+  /// without leaking them into this class.
   _TurnTcpConnection(this._socket,
       {required this.onFrame,
       required this.onClose,
-      required this.onWireBytes}) {
+      required this.onBytesSent,
+      required this.onBytesReceived}) {
     // STUN retransmits over TCP are managed by the protocol layer; the
     // 200 ms Nagle delay just inflates handshake RTT.
     _socket.setOption(SocketOption.tcpNoDelay, true);
@@ -945,7 +951,7 @@ final class _TurnTcpConnection {
   void send(Uint8List data) {
     if (_closed) return;
     _socket.add(data);
-    onWireBytes(data.length, 0);
+    onBytesSent(data.length);
   }
 
   void close() {
@@ -955,7 +961,7 @@ final class _TurnTcpConnection {
   }
 
   void _onBytes(Uint8List chunk) {
-    onWireBytes(0, chunk.length);
+    onBytesReceived(chunk.length);
     if (_buffer.isEmpty) {
       _buffer = Uint8List.fromList(chunk);
     } else {
