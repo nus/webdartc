@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import '../api/media_engine.dart';
 import '../api/setting_engine.dart';
+import '../api/stats.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
 import '../dtls/state_machine.dart';
@@ -537,8 +538,102 @@ final class PeerConnection {
     _transport.sendRtp(srtp.encryptRtp(rtpPacket));
   }
 
-  /// Get statistics (stub — returns empty).
-  Future<Map<String, dynamic>> getStats() async => {};
+  /// Snapshot of stats across this PeerConnection's transport, ICE
+  /// agent, and data channels. W3C §8 `RTCStatsReport`.
+  ///
+  /// Returned counters are monotonic; callers compute deltas across
+  /// snapshots themselves.
+  Future<RtcStatsReport> getStats() async {
+    final now = DateTime.now();
+    final entries = <String, RtcStats>{};
+    var dcOpened = 0;
+    var dcClosed = 0;
+    for (final dc in _dataChannels.values) {
+      if (dc.readyState == DataChannelState.open) dcOpened++;
+      if (dc.readyState == DataChannelState.closed) dcClosed++;
+      final id = 'dc-${dc.id}';
+      entries[id] = DataChannelStats(
+        id: id,
+        timestamp: now,
+        label: dc.label,
+        state: dc.readyState.name,
+        messagesSent: dc.messagesSent,
+        bytesSent: dc.bytesSent,
+        messagesReceived: dc.messagesReceived,
+        bytesReceived: dc.bytesReceived,
+      );
+    }
+
+    String? selectedPairId;
+    for (final pair in _ice.pairs) {
+      final localId = _candidateId(pair.local, isLocal: true);
+      final remoteId = _candidateId(pair.remote, isLocal: false);
+      final pairId = 'pair-$localId-$remoteId';
+      final isSelected = identical(_ice.selectedPair, pair);
+      if (isSelected) selectedPairId = pairId;
+      entries[pairId] = CandidatePairStats(
+        id: pairId,
+        timestamp: now,
+        localCandidateId: localId,
+        remoteCandidateId: remoteId,
+        state: pair.state.name,
+        nominated: pair.nominated,
+      );
+    }
+    for (final c in _ice.localCandidates) {
+      final id = _candidateId(c, isLocal: true);
+      entries[id] = CandidateStats(
+        id: id,
+        type: RtcStatsType.localCandidate,
+        timestamp: now,
+        ip: c.ip.toCanonical(),
+        port: c.port,
+        protocol: c.transport,
+        candidateType: c.type,
+        priority: c.priority,
+      );
+    }
+    for (final c in _ice.remoteCandidates) {
+      final id = _candidateId(c, isLocal: false);
+      entries[id] = CandidateStats(
+        id: id,
+        type: RtcStatsType.remoteCandidate,
+        timestamp: now,
+        ip: c.ip.toCanonical(),
+        port: c.port,
+        protocol: c.transport,
+        candidateType: c.type,
+        priority: c.priority,
+      );
+    }
+
+    entries['transport'] = TransportStats(
+      id: 'transport',
+      timestamp: now,
+      bytesSent: _transport.bytesSent,
+      bytesReceived: _transport.bytesReceived,
+      packetsSent: _transport.packetsSent,
+      packetsReceived: _transport.packetsReceived,
+      selectedCandidatePairId: selectedPairId,
+    );
+
+    entries['pc'] = PeerConnectionStats(
+      id: 'pc',
+      timestamp: now,
+      dataChannelsOpened: dcOpened,
+      dataChannelsClosed: dcClosed,
+    );
+
+    return RtcStatsReport(entries);
+  }
+
+  /// Build a stat ID stable across `getStats` calls for the same
+  /// candidate. Foundation isn't unique (relay candidates share it
+  /// with their related host) so include type + ip:port too.
+  static String _candidateId(IceCandidate c, {required bool isLocal}) {
+    final prefix = isLocal ? 'local' : 'remote';
+    return '$prefix-${c.type.name}-${c.ip.toCanonical()}:${c.port}';
+  }
 
   /// Close the connection.
   Future<void> close() async {

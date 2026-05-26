@@ -15,6 +15,15 @@ final class DataChannel {
 
   DataChannelState _readyState = DataChannelState.connecting;
 
+  /// Monotonic counters reported via `PeerConnection.getStats()`. The
+  /// "messages" count is one per `send`/`sendBinary` call; "bytes" is
+  /// the payload size handed to / received from the application
+  /// (post-SCTP demux, no DCEP/SCTP framing overhead).
+  int messagesSent = 0;
+  int bytesSent = 0;
+  int messagesReceived = 0;
+  int bytesReceived = 0;
+
   final _messageController = StreamController<DataChannelMessageEvent>.broadcast();
   final _openController = StreamController<void>.broadcast();
   final _closeController = StreamController<void>.broadcast();
@@ -50,13 +59,18 @@ final class DataChannel {
   /// Send a string message.
   void send(String data) {
     _assertOpen();
-    _sendCallback?.call(Uint8List.fromList(data.codeUnits), binary: false);
+    final bytes = Uint8List.fromList(data.codeUnits);
+    _sendCallback?.call(bytes, binary: false);
+    messagesSent++;
+    bytesSent += bytes.length;
   }
 
   /// Send binary data.
   void sendBinary(Uint8List data) {
     _assertOpen();
     _sendCallback?.call(data, binary: true);
+    messagesSent++;
+    bytesSent += data.length;
   }
 
   void close() {
@@ -82,6 +96,8 @@ final class DataChannel {
 
   void _deliverMessage(Uint8List data, bool isBinary) {
     if (_readyState != DataChannelState.open) return;
+    messagesReceived++;
+    bytesReceived += data.length;
     _messageController.add(DataChannelMessageEvent(data: data, isBinary: isBinary));
   }
 

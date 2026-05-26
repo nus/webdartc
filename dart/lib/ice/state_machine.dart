@@ -102,6 +102,14 @@ final class IceStateMachine implements ProtocolStateMachine {
   String? get selectedRemoteIp => _selectedPair?.remote.ip.toCanonical();
   int? get selectedRemotePort => _selectedPair?.remote.port;
 
+  /// Live (unmodifiable) views of the candidate / pair tables. Used by
+  /// `PeerConnection.getStats()` to surface per-candidate stats; never
+  /// mutate from outside the state machine.
+  List<IceCandidate> get localCandidates => List.unmodifiable(_localCandidates);
+  List<IceCandidate> get remoteCandidates =>
+      List.unmodifiable(_remoteCandidates);
+  List<CandidatePair> get pairs => List.unmodifiable(_pairs);
+
   // ── Public control API ───────────────────────────────────────────────────
 
   /// Start ICE gathering. One host candidate is emitted per [hosts]
