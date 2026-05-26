@@ -90,20 +90,12 @@ final class TransportController {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-  /// Last [SettingEngine] passed to [start], stashed so async helpers
-  /// (notably [_startTcpAllocation], which only fires after `Socket
-  /// .connect` resolves) can reach hooks like [SettingEngine
-  /// .onBadTurnCertificate] without re-threading the argument through
-  /// every caller.
-  SettingEngine _settingEngine = const SettingEngine();
-
   /// Bind UDP sockets and start receiving packets. One socket per IP
   /// resolved by [_resolveBindAddresses].
   Future<void> start({
     SettingEngine settingEngine = const SettingEngine(),
     int port = 0,
   }) async {
-    _settingEngine = settingEngine;
     final bindIps = await _resolveBindAddresses(settingEngine);
 
     if (bindIps.isEmpty) {
@@ -118,7 +110,7 @@ final class TransportController {
       );
       _sockets[bindIp] = socket;
       _bindings = [(ip: await _findLocalIpv4(), port: socket.port)];
-      _startTurnAllocations();
+      _startTurnAllocations(settingEngine);
       return;
     }
 
@@ -138,7 +130,7 @@ final class TransportController {
       bindings.add((ip: ip, port: socket.port));
     }
     _bindings = bindings;
-    _startTurnAllocations();
+    _startTurnAllocations(settingEngine);
   }
 
   /// Resolves the IPs the transport will bind to from a [SettingEngine].
@@ -262,7 +254,7 @@ final class TransportController {
     _turnServers = servers;
   }
 
-  void _startTurnAllocations() {
+  void _startTurnAllocations(SettingEngine settingEngine) {
     if (_turnServers.isEmpty || _bindings.isEmpty) return;
     final host = _bindings.first;
     for (final server in _turnServers) {
@@ -280,7 +272,8 @@ final class TransportController {
           // to block sibling allocations on a slow server. Failures log
           // and skip; the missing relay candidate is simply absent from
           // ICE's pool.
-          unawaited(_startTcpAllocation(server, host));
+          unawaited(_startTcpAllocation(
+              server, host, settingEngine.onBadTurnCertificate));
       }
     }
   }
@@ -298,7 +291,10 @@ final class TransportController {
     }
   }
 
-  Future<void> _startTcpAllocation(TurnServer server, HostBinding host) async {
+  Future<void> _startTcpAllocation(
+      TurnServer server,
+      HostBinding host,
+      bool Function(X509Certificate)? onBadCertificate) async {
     // Connect first; pass the original `server.host` string so both
     // plain TCP and TLS see the same hostname (TLS needs it for SNI +
     // certificate validation). The kernel resolves it for us — we
@@ -310,7 +306,7 @@ final class TransportController {
           ? await SecureSocket.connect(
               server.host,
               server.port,
-              onBadCertificate: _settingEngine.onBadTurnCertificate,
+              onBadCertificate: onBadCertificate,
             )
           : await Socket.connect(server.host, server.port);
     } catch (e) {
@@ -323,6 +319,11 @@ final class TransportController {
     }
 
     final serverIp = IpAddress.fromBytes(socket.remoteAddress.rawAddress);
+    // Cache the hostname → InternetAddress mapping the kernel just
+    // resolved so any subsequent UDP send to the same host (e.g. a
+    // second `iceServers` entry or an unrelated STUN URI) skips its
+    // own DNS lookup.
+    _dnsCache[server.host] = socket.remoteAddress;
     final endpoint = (serverIp, server.port);
     final allocation =
         _buildAllocation(server, host, serverIp, padChannelData: true);

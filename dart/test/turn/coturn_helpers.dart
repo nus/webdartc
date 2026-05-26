@@ -22,13 +22,13 @@ class CoturnInstance {
   /// TLS-over-TCP on this separate port.
   final int? tlsPort;
 
-  /// Self-signed certificate / key paths the spawned coturn loaded.
-  /// `null` when `withTls: false`.
-  final String? certPath;
-  final String? keyPath;
+  /// Self-signed certificate / key directory the spawned coturn loaded.
+  /// `null` when `withTls: false`. Removed recursively on [stop].
+  final Directory? certDir;
+  String? get certPath => certDir == null ? null : '${certDir!.path}/cert.pem';
+  String? get keyPath => certDir == null ? null : '${certDir!.path}/key.pem';
 
-  CoturnInstance._(this.process, this.port,
-      {this.tlsPort, this.certPath, this.keyPath});
+  CoturnInstance._(this.process, this.port, {this.tlsPort, this.certDir});
 
   Future<void> stop() async {
     process.kill(ProcessSignal.sigterm);
@@ -38,23 +38,19 @@ class CoturnInstance {
       process.kill(ProcessSignal.sigkill);
       await process.exitCode;
     }
-    if (certPath != null) {
+    if (certDir != null) {
       try {
-        File(certPath!).deleteSync();
-      } catch (_) {}
-    }
-    if (keyPath != null) {
-      try {
-        File(keyPath!).deleteSync();
+        certDir!.deleteSync(recursive: true);
       } catch (_) {}
     }
   }
 }
 
-/// Pick a port the OS just confirmed was free. There's a tiny race
-/// window between close + coturn's bind, but it's vanishingly small for
-/// localhost test runs.
-Future<int> _freeUdpPort() async {
+/// Pick a loopback port the OS just confirmed was free. There's a tiny
+/// race window between close + coturn's bind, but it's vanishingly
+/// small for localhost test runs. Works for both UDP and TCP picks —
+/// the ephemeral-port pools don't collide.
+Future<int> _freePort() async {
   final probe = await RawDatagramSocket.bind(InternetAddress.loopbackIPv4, 0);
   final port = probe.port;
   probe.close();
@@ -73,28 +69,27 @@ Future<CoturnInstance> startCoturn({
   Duration timeout = const Duration(seconds: 15),
   bool withTls = false,
 }) async {
-  if (!_hasTurnserver()) {
+  if (!_hasBinary('turnserver')) {
     throw StateError(
         'turnserver binary not found in PATH — install coturn '
         '(`brew install coturn` on macOS, `apt-get install coturn` on '
         'Linux) to run this test.');
   }
 
-  final port = await _freeUdpPort();
+  final port = await _freePort();
   int? tlsPort;
-  String? certPath;
-  String? keyPath;
+  Directory? certDir;
   if (withTls) {
-    if (!_hasOpenssl()) {
+    if (!_hasBinary('openssl')) {
       throw StateError(
           'openssl binary not found in PATH — needed to generate the '
           'self-signed coturn cert for TLS tests.');
     }
-    tlsPort = await _freeUdpPort();
-    final paths = _generateSelfSignedCert();
-    certPath = paths.cert;
-    keyPath = paths.key;
+    tlsPort = await _freePort();
+    certDir = _generateSelfSignedCert();
   }
+  final certPath = certDir == null ? null : '${certDir.path}/cert.pem';
+  final keyPath = certDir == null ? null : '${certDir.path}/key.pem';
 
   final process = await Process.start('turnserver', [
     if (!withTls) '--no-tls',
@@ -145,46 +140,37 @@ Future<CoturnInstance> startCoturn({
         '--- end coturn output ---');
   }
   return CoturnInstance._(process, port,
-      tlsPort: tlsPort, certPath: certPath, keyPath: keyPath);
+      tlsPort: tlsPort, certDir: certDir);
 }
 
-bool _hasTurnserver() {
+bool _hasBinary(String name) {
   try {
-    final r = Process.runSync('which', ['turnserver']);
-    return r.exitCode == 0;
-  } catch (_) {
-    return false;
-  }
-}
-
-bool _hasOpenssl() {
-  try {
-    final r = Process.runSync('which', ['openssl']);
-    return r.exitCode == 0;
+    return Process.runSync('which', [name]).exitCode == 0;
   } catch (_) {
     return false;
   }
 }
 
 /// Generate a throwaway self-signed cert/key pair so coturn can serve
-/// TLS in tests. Files are written to the system temp dir and deleted
-/// when the [CoturnInstance] is stopped. The subject is `localhost`
-/// even though we connect via `127.0.0.1` — production code should
-/// rely on platform trust roots, but the test passes
-/// `onBadTurnCertificate: (_) =&gt; true` so the mismatch doesn't matter.
-({String cert, String key}) _generateSelfSignedCert() {
-  final tmp = Directory.systemTemp.createTempSync('coturn-tls-');
-  final cert = '${tmp.path}/cert.pem';
-  final key = '${tmp.path}/key.pem';
+/// TLS in tests. Returns the temp directory holding `cert.pem` /
+/// `key.pem`; the directory is deleted recursively when the
+/// [CoturnInstance] is stopped. The subject is `localhost` even though
+/// we connect via `127.0.0.1` — production code should rely on
+/// platform trust roots, but the test passes
+/// `onBadTurnCertificate: (_) => true` so the mismatch doesn't matter.
+Directory _generateSelfSignedCert() {
+  final dir = Directory.systemTemp.createTempSync('coturn-tls-');
   final r = Process.runSync('openssl', [
     'req', '-x509', '-newkey', 'rsa:2048', '-days', '1', '-nodes',
-    '-keyout', key, '-out', cert,
+    '-keyout', '${dir.path}/key.pem',
+    '-out', '${dir.path}/cert.pem',
     '-subj', '/CN=localhost',
   ]);
   if (r.exitCode != 0) {
+    dir.deleteSync(recursive: true);
     throw StateError('openssl req failed: ${r.stderr}');
   }
-  return (cert: cert, key: key);
+  return dir;
 }
 
 /// Wire trickled candidates from [from] to [to]. Returns the
@@ -198,6 +184,63 @@ StreamSubscription<PeerConnectionIceEvent> forwardIceCandidates(
       sdpMLineIndex: evt.sdpMLineIndex,
     ));
   });
+}
+
+/// Stand up two relay-only [PeerConnection]s against [iceServers], run
+/// the offer/answer dance with trickle forwarding, and wait for both
+/// to reach `connected`. Used by the coturn relay-traffic / TCP / TLS
+/// tests so each one only differs in the [iceServers] entry (and
+/// optional [settingEngine] for TLS cert callbacks).
+Future<void> runRelayHandshake({
+  required List<IceServer> iceServers,
+  required String dataChannelLabel,
+  SettingEngine? settingEngine,
+  Duration connectedTimeout = const Duration(seconds: 25),
+}) async {
+  final config = PeerConnectionConfiguration(
+    iceServers: iceServers,
+    iceTransportPolicy: IceTransportPolicy.relay,
+  );
+  final pcA = PeerConnection(
+      configuration: config,
+      settingEngine: settingEngine ?? const SettingEngine());
+  final pcB = PeerConnection(
+      configuration: config,
+      settingEngine: settingEngine ?? const SettingEngine());
+
+  try {
+    forwardIceCandidates(pcA, pcB);
+    forwardIceCandidates(pcB, pcA);
+
+    pcA.createDataChannel(dataChannelLabel);
+
+    final offer = await pcA.createOffer();
+    await pcA.setLocalDescription(offer);
+    await pcB.setRemoteDescription(offer);
+    final answer = await pcB.createAnswer();
+    await pcB.setLocalDescription(answer);
+    await pcA.setRemoteDescription(answer);
+
+    await Future.wait([
+      pcA.onConnectionStateChange
+          .firstWhere((s) => s == PeerConnectionState.connected),
+      pcB.onConnectionStateChange
+          .firstWhere((s) => s == PeerConnectionState.connected),
+    ]).timeout(connectedTimeout);
+
+    // The relay-only policy means the only candidate ICE could have
+    // nominated is the TURN-derived relay; both PCs should hold a
+    // single allocation against the configured server.
+    for (final pc in [pcA, pcB]) {
+      if (pc.turnAllocations.length != 1) {
+        throw StateError(
+            'expected 1 allocation, got ${pc.turnAllocations.length}');
+      }
+    }
+  } finally {
+    await pcA.close();
+    await pcB.close();
+  }
 }
 
 /// Send a STUN Binding request and wait for any response — the simplest
