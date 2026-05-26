@@ -150,6 +150,46 @@ final class CandidateStats extends RtcStats {
   });
 }
 
+/// Per-SSRC stats for an RTP stream this connection is sending.
+/// W3C `RTCOutboundRtpStreamStats`.
+final class OutboundRtpStats extends RtcStats {
+  final int ssrc;
+  final String kind; // "audio" | "video"
+  final int packetsSent;
+
+  /// Total RTP payload bytes sent for this SSRC (does not include the
+  /// RTP header). Matches the `_octetsSent` count `RtpSender` keeps
+  /// for RTCP SR.
+  final int bytesSent;
+
+  const OutboundRtpStats({
+    required super.id,
+    required super.timestamp,
+    required this.ssrc,
+    required this.kind,
+    required this.packetsSent,
+    required this.bytesSent,
+  }) : super(type: RtcStatsType.outboundRtp);
+}
+
+/// Per-SSRC stats for an RTP stream this connection is receiving.
+/// W3C `RTCInboundRtpStreamStats`.
+final class InboundRtpStats extends RtcStats {
+  final int ssrc;
+  final int packetsReceived;
+
+  /// Total RTP payload bytes received for this SSRC (no RTP header).
+  final int bytesReceived;
+
+  const InboundRtpStats({
+    required super.id,
+    required super.timestamp,
+    required this.ssrc,
+    required this.packetsReceived,
+    required this.bytesReceived,
+  }) : super(type: RtcStatsType.inboundRtp);
+}
+
 /// One open / opening DataChannel.
 final class DataChannelStats extends RtcStats {
   final String label;

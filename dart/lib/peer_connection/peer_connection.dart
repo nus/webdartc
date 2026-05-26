@@ -607,6 +607,35 @@ final class PeerConnection {
       );
     }
 
+    for (final t in _transceivers) {
+      final sender = t.sender;
+      if (sender == null) continue;
+      final id = 'outbound-rtp-${sender.ssrc}';
+      entries[id] = OutboundRtpStats(
+        id: id,
+        timestamp: now,
+        ssrc: sender.ssrc,
+        kind: sender.kind,
+        packetsSent: sender.packetsSent,
+        bytesSent: sender.bytesSent,
+      );
+    }
+    for (final s in _rtpRecvStats.values) {
+      // Skip the placeholder entry created for the local sender's
+      // SSRC in `setRemoteDescription` (line ~369) — it never gets a
+      // packet, so emitting it would falsely suggest a paired inbound
+      // stream that doesn't exist.
+      if (s.packetsReceived == 0) continue;
+      final id = 'inbound-rtp-${s.ssrc}';
+      entries[id] = InboundRtpStats(
+        id: id,
+        timestamp: now,
+        ssrc: s.ssrc,
+        packetsReceived: s.packetsReceived,
+        bytesReceived: s.bytesReceived,
+      );
+    }
+
     entries['transport'] = TransportStats(
       id: 'transport',
       timestamp: now,
@@ -917,9 +946,9 @@ final class PeerConnection {
     final ssrc = rtp.ssrc;
     if (_debug) _log('[pc] RTP received: ssrc=$ssrc pt=${rtp.payloadType} seq=${rtp.sequenceNumber}');
 
-    // Update reception stats for RTCP RR
+    // Update reception stats for RTCP RR + getStats inboundRtp.
     final stats = _rtpRecvStats.putIfAbsent(ssrc, () => _RtpRecvStats(ssrc));
-    stats.update(rtp.sequenceNumber);
+    stats.update(rtp.sequenceNumber, rtp.payload.length);
 
     // Extract transport-cc sequence number from header extension
     if (_twccExtId > 0) {
@@ -1236,13 +1265,15 @@ final class _RtpRecvStats {
   final int ssrc;
   int highestSeq = 0;
   int packetsReceived = 0;
+  int bytesReceived = 0;
   int lastSrNtp = 0;
   DateTime? lastSrReceivedAt;
 
   _RtpRecvStats(this.ssrc);
 
-  void update(int seq) {
+  void update(int seq, int payloadBytes) {
     packetsReceived++;
+    bytesReceived += payloadBytes;
     if (seq > highestSeq) highestSeq = seq;
   }
 }

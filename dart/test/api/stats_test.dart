@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart' hide Timeout;
 
@@ -143,6 +145,105 @@ void main() {
         // Stable id: the selected pair id is the same across snapshots.
         expect(transportA2.selectedCandidatePairId,
             transportA.selectedCandidatePairId);
+      } finally {
+        await pcA.close();
+        await pcB.close();
+      }
+    }, timeout: const Timeout(Duration(seconds: 45)));
+
+    test('media RTP flow produces outbound-rtp + inbound-rtp entries',
+        () async {
+      const setting = SettingEngine(
+        bindAddresses: ['127.0.0.1'],
+        includeLoopbackCandidate: true,
+      );
+      final pcA = PeerConnection(
+        configuration: PeerConnectionConfiguration(),
+        settingEngine: setting,
+      );
+      final pcB = PeerConnection(
+        configuration: PeerConnectionConfiguration(),
+        settingEngine: setting,
+      );
+
+      try {
+        pcA.onIceCandidate.listen((evt) => pcB.addIceCandidate(IceCandidateInit(
+              candidate: evt.candidate,
+              sdpMid: evt.sdpMid,
+              sdpMLineIndex: evt.sdpMLineIndex,
+            )));
+        pcB.onIceCandidate.listen((evt) => pcA.addIceCandidate(IceCandidateInit(
+              candidate: evt.candidate,
+              sdpMid: evt.sdpMid,
+              sdpMLineIndex: evt.sdpMLineIndex,
+            )));
+
+        pcA.addTransceiver('audio', direction: 'sendrecv');
+        pcB.addTransceiver('audio', direction: 'sendrecv');
+
+        final offer = await pcA.createOffer();
+        await pcA.setLocalDescription(offer);
+        await pcB.setRemoteDescription(offer);
+        final answer = await pcB.createAnswer();
+        await pcB.setLocalDescription(answer);
+        await pcA.setRemoteDescription(answer);
+
+        await Future.wait([
+          pcA.onConnectionStateChange
+              .firstWhere((s) => s == PeerConnectionState.connected),
+          pcB.onConnectionStateChange
+              .firstWhere((s) => s == PeerConnectionState.connected),
+        ]).timeout(const Duration(seconds: 20));
+
+        // Drive a handful of RTP packets through pcA's sender. The
+        // payload is opaque to the test — it's only proving the SRTP
+        // encrypt / decrypt round-trip increments getStats counters
+        // for the same SSRC on both ends.
+        final senderA = pcA.getSenders().single;
+        final payload = Uint8List.fromList(List.generate(100, (i) => i & 0xFF));
+        const packetCount = 5;
+        for (var i = 0; i < packetCount; i++) {
+          senderA.sendRtp(payload);
+        }
+        // UDP loopback is fire-and-forget; let the event loop drain.
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+
+        final reportA = await pcA.getStats();
+        final reportB = await pcB.getStats();
+
+        // Outbound on the sender side: one entry, ssrc matching the
+        // sender, counters matching what we just pushed.
+        final outboundA = reportA
+            .ofType<OutboundRtpStats>(RtcStatsType.outboundRtp)
+            .single;
+        expect(outboundA.ssrc, senderA.ssrc);
+        expect(outboundA.kind, 'audio');
+        expect(outboundA.packetsSent, packetCount);
+        expect(outboundA.bytesSent, packetCount * payload.length);
+        expect(outboundA.id, 'outbound-rtp-${senderA.ssrc}');
+
+        // Inbound on the receiver side: keyed by the same SSRC.
+        final inboundB = reportB
+            .ofType<InboundRtpStats>(RtcStatsType.inboundRtp)
+            .singleWhere((s) => s.ssrc == senderA.ssrc);
+        expect(inboundB.packetsReceived, packetCount);
+        expect(inboundB.bytesReceived, packetCount * payload.length);
+        expect(inboundB.id, 'inbound-rtp-${senderA.ssrc}');
+
+        // The receiver hasn't sent anything, so its outbound entry
+        // (for its own SSRC) stays at zero. Confirm the counters
+        // actually distinguish directions per SSRC.
+        final outboundB = reportB
+            .ofType<OutboundRtpStats>(RtcStatsType.outboundRtp)
+            .single;
+        expect(outboundB.packetsSent, 0);
+        expect(outboundB.bytesSent, 0);
+        expect(outboundB.ssrc, isNot(senderA.ssrc));
+
+        // pcA never received the inverse direction's RTP (pcB never
+        // called sendRtp), so it has no inbound-rtp entry.
+        expect(
+            reportA.ofType<InboundRtpStats>(RtcStatsType.inboundRtp), isEmpty);
       } finally {
         await pcA.close();
         await pcB.close();
