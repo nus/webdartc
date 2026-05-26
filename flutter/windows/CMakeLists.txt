@@ -105,6 +105,10 @@ if (${include_${PROJECT_NAME}_tests})
   )
 
   include(GoogleTest)
-  gtest_discover_tests(${TEST_RUNNER})
+  # 60 s instead of CMake's 5 s default: on hosted windows-2025 runners
+  # the freshly linked test exe is scanned by Defender on first launch
+  # and `--gtest_list_tests` can take 10–15 s, which trips the default
+  # and fails the build PostBuildEvent with a confusing MSB3073.
+  gtest_discover_tests(${TEST_RUNNER} DISCOVERY_TIMEOUT 60)
 endif()
 

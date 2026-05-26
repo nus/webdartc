@@ -14,8 +14,7 @@ import 'dart:typed_data';
 
 import 'package:webdartc/webdartc.dart';
 
-// See webdartc_offerer_helper.dart for the loopback-only rationale.
-const _kE2ESettings = SettingEngine(includeLoopbackCandidate: true);
+import 'e2e_settings.dart';
 
 // ── Minimal WebSocket client ────────────────────────────────────────────────
 
@@ -146,7 +145,7 @@ Future<int> _run(int sigPort) async {
 
   final pc = PeerConnection(
     configuration: const PeerConnectionConfiguration(),
-    settingEngine: _kE2ESettings,
+    settingEngine: e2eSettings,
   );
   pc.onIceConnectionStateChange.listen((state) {
     stderr.writeln('[echo] ICE state: $state');

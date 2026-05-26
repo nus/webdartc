@@ -14,15 +14,7 @@ import 'dart:typed_data';
 
 import 'package:webdartc/webdartc.dart';
 
-// E2E helpers always co-host with the peer (Chrome / Firefox / another
-// helper) on the same machine. Including loopback as a host candidate
-// gives ICE a `127.0.0.1 ↔ 127.0.0.1` pair to try alongside the
-// non-loopback ones — important on Windows, where sending UDP from a
-// non-loopback NIC back to the same NIC fails with errno 1214
-// (ERROR_BAD_NET_NAME). Firefox doesn't pair to loopback by default,
-// so the non-loopback candidates stay in the set for Firefox tests
-// to use.
-const _kE2ESettings = SettingEngine(includeLoopbackCandidate: true);
+import 'e2e_settings.dart';
 
 // ── Minimal WebSocket client (stdlib only) ────────────────────────────────────
 
@@ -192,7 +184,7 @@ Future<int> _run(int sigPort, {int timeoutSec = 30}) async {
 
   final pc = PeerConnection(
     configuration: const PeerConnectionConfiguration(),
-    settingEngine: _kE2ESettings,
+    settingEngine: e2eSettings,
   );
   pc.onIceConnectionStateChange.listen((state) {
     stderr.writeln('[offerer] ICE state: $state');
