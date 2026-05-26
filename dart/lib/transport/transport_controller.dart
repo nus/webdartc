@@ -11,6 +11,7 @@ import '../rtp/parser.dart';
 import '../sctp/state_machine.dart';
 import '../srtp/context.dart';
 import '../stun/parser.dart';
+import '../turn/channel_data.dart';
 import '../turn/state_machine.dart';
 
 /// The only module in webdartc that uses dart:io.
@@ -922,29 +923,24 @@ final class _TurnTcpConnection {
   }
 
   void _drain() {
-    while (_buffer.length >= 4) {
-      final b0 = _buffer[0];
-      final int total;
-      if ((b0 & 0xC0) == 0x00) {
-        // STUN: fixed 20-byte header, body length in bytes 2-3.
-        final bodyLen = (_buffer[2] << 8) | _buffer[3];
-        total = 20 + bodyLen;
-      } else if ((b0 & 0xC0) == 0x40) {
-        // ChannelData: 4-byte header + body length, padded to 4-byte
-        // multiple on TCP per RFC 5766 §11.5.
-        final bodyLen = (_buffer[2] << 8) | _buffer[3];
-        total = (4 + bodyLen + 3) & ~3;
-      } else {
-        // Garbage — the server got out of sync with framing. Close so
-        // the upper layer can rebuild the allocation if it cares.
-        _onError('TURN-TCP: out-of-band byte 0x${b0.toRadixString(16)}');
-        return;
+    while (true) {
+      final next = turnTcpFrameLength(_buffer);
+      switch (next) {
+        case TurnTcpFrameLengthNeedMore():
+          return;
+        case TurnTcpFrameLengthMalformed():
+          // The server got out of sync with framing. Close so the upper
+          // layer can rebuild the allocation if it cares.
+          _onError('TURN-TCP: out-of-band byte 0x${_buffer[0].toRadixString(16)}');
+          return;
+        case TurnTcpFrameLengthKnown(:final totalBytes):
+          if (_buffer.length < totalBytes) return;
+          onFrame(Uint8List.sublistView(_buffer, 0, totalBytes));
+          _buffer = _buffer.length == totalBytes
+              ? Uint8List(0)
+              : Uint8List.fromList(
+                  Uint8List.sublistView(_buffer, totalBytes));
       }
-      if (_buffer.length < total) return;
-      onFrame(Uint8List.sublistView(_buffer, 0, total));
-      _buffer = _buffer.length == total
-          ? Uint8List(0)
-          : Uint8List.fromList(Uint8List.sublistView(_buffer, total));
     }
   }
 

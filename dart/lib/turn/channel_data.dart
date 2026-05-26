@@ -43,6 +43,56 @@ Uint8List buildChannelData(int channel, Uint8List payload, {bool pad = false}) {
   return out;
 }
 
+/// Result of inspecting the head of a TURN-over-TCP receive buffer
+/// (RFC 5766 §11.5). The wire is a back-to-back stream of STUN messages
+/// and ChannelData frames, each with a self-describing length; the
+/// receiver peels them off using only the first four bytes plus the
+/// declared length.
+sealed class TurnTcpFrameLength {
+  const TurnTcpFrameLength();
+}
+
+/// Buffer is too short to decide; caller should wait for more bytes.
+final class TurnTcpFrameLengthNeedMore extends TurnTcpFrameLength {
+  const TurnTcpFrameLengthNeedMore();
+}
+
+/// Buffer's leading bytes form a complete frame header. [totalBytes] is
+/// the total length the frame occupies on the wire (including any
+/// 4-byte ChannelData alignment padding); caller still has to wait
+/// until the buffer holds at least that many bytes before slicing.
+final class TurnTcpFrameLengthKnown extends TurnTcpFrameLength {
+  final int totalBytes;
+  const TurnTcpFrameLengthKnown(this.totalBytes);
+}
+
+/// Leading byte matches neither STUN (`(b0 & 0xC0) == 0x00`) nor
+/// ChannelData (`(b0 & 0xC0) == 0x40`) — the stream is out of sync and
+/// the only safe action is for the caller to drop the connection.
+final class TurnTcpFrameLengthMalformed extends TurnTcpFrameLength {
+  const TurnTcpFrameLengthMalformed();
+}
+
+/// Decide how many bytes the next complete frame in a TURN-over-TCP
+/// byte stream will occupy. Pure; never throws.
+TurnTcpFrameLength turnTcpFrameLength(Uint8List buffer) {
+  if (buffer.length < 4) return const TurnTcpFrameLengthNeedMore();
+  final b0 = buffer[0];
+  final top2 = b0 & 0xC0;
+  if (top2 == 0x00) {
+    // STUN: fixed 20-byte header, body length in bytes 2-3.
+    final bodyLen = (buffer[2] << 8) | buffer[3];
+    return TurnTcpFrameLengthKnown(20 + bodyLen);
+  }
+  if (top2 == 0x40) {
+    // ChannelData: 4-byte header + body length, padded to 4-byte
+    // multiple on TCP per RFC 5766 §11.5.
+    final bodyLen = (buffer[2] << 8) | buffer[3];
+    return TurnTcpFrameLengthKnown((4 + bodyLen + 3) & ~3);
+  }
+  return const TurnTcpFrameLengthMalformed();
+}
+
 /// Parse a ChannelData frame. Returns null when the input is malformed
 /// or the channel number is outside the valid application range.
 ChannelDataFrame? parseChannelData(Uint8List raw) {
