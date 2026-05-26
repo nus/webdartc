@@ -521,23 +521,27 @@ void main() {
     });
 
     test('turnTcpFrameLength always returns non-negative totals', () {
+      // Smallest possible frame: ChannelData with an empty payload
+      // (4-byte header, zero pad) — anything STUN-class is at least
+      // 20 bytes. Largest possible: a STUN body of 0xFFFF on top of
+      // the 20-byte header.
+      const minTotal = 4;
+      const maxBodyLen = 0xFFFF;
+      const maxTotal = stunHeaderBytes + maxBodyLen;
       for (var i = 0; i < _iterations; i++) {
         final r = turnTcpFrameLength(_randomPacket());
         if (r is TurnTcpFrameLengthKnown) {
-          // 4 = ChannelData with empty payload (zero pad). Otherwise
-          // STUN-header (20) + body-len, or ChannelData header + body
-          // padded — all by construction ≥ 4.
-          expect(r.totalBytes, greaterThanOrEqualTo(4));
-          // 65535 is the largest body length the 16-bit field can
-          // describe; STUN tops out at 20 + 65535 = 65555 and
-          // ChannelData at (4 + 65535 + 3) & ~3 = 65540.
-          expect(r.totalBytes, lessThanOrEqualTo(65555));
+          expect(r.totalBytes, greaterThanOrEqualTo(minTotal));
+          expect(r.totalBytes, lessThanOrEqualTo(maxTotal));
         }
       }
     });
 
     test('turnTcpFrameLength handles empty + sub-header buffers', () {
-      for (var len = 0; len < 4; len++) {
+      // The smallest frame possible is 4 bytes (ChannelData header);
+      // any buffer shorter than that can't carry a length field yet.
+      const minFrameBytes = 4;
+      for (var len = 0; len < minFrameBytes; len++) {
         expect(turnTcpFrameLength(_randomBytes(len)),
             isA<TurnTcpFrameLengthNeedMore>());
       }

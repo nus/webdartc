@@ -10,6 +10,25 @@ import 'dart:typed_data';
 const int channelNumberMin = 0x4000;
 const int channelNumberMax = 0x7FFF;
 
+/// STUN message header length (RFC 5389 §6) — fixed at 20 bytes
+/// (type 2 + length 2 + magic cookie 4 + transaction id 12).
+const int stunHeaderBytes = 20;
+
+/// Top two bits of the first byte distinguish framing classes on a
+/// TURN-TCP stream:
+///   * `00` — STUN (`stunHeaderBytes` + body length).
+///   * `01` — ChannelData (4-byte header + body, padded to 4-byte
+///     multiple on TCP per RFC 5766 §11.5).
+/// Anything else means the byte stream is out of sync.
+const int _turnTcpClassMask = 0xC0;
+const int _turnTcpStunClass = 0x00;
+const int _turnTcpChannelDataClass = 0x40;
+
+/// ChannelData header is 4 bytes; bodies on TCP pad to the next 4-byte
+/// boundary. The mask is `align - 1` so `(x + mask) & ~mask` rounds up.
+const int _channelDataHeaderBytes = 4;
+const int _channelDataAlignmentMask = 3;
+
 bool isValidChannelNumber(int n) =>
     n >= channelNumberMin && n <= channelNumberMax;
 
@@ -76,19 +95,18 @@ final class TurnTcpFrameLengthMalformed extends TurnTcpFrameLength {
 /// Decide how many bytes the next complete frame in a TURN-over-TCP
 /// byte stream will occupy. Pure; never throws.
 TurnTcpFrameLength turnTcpFrameLength(Uint8List buffer) {
-  if (buffer.length < 4) return const TurnTcpFrameLengthNeedMore();
-  final b0 = buffer[0];
-  final top2 = b0 & 0xC0;
-  if (top2 == 0x00) {
-    // STUN: fixed 20-byte header, body length in bytes 2-3.
-    final bodyLen = (buffer[2] << 8) | buffer[3];
-    return TurnTcpFrameLengthKnown(20 + bodyLen);
+  if (buffer.length < _channelDataHeaderBytes) {
+    return const TurnTcpFrameLengthNeedMore();
   }
-  if (top2 == 0x40) {
-    // ChannelData: 4-byte header + body length, padded to 4-byte
-    // multiple on TCP per RFC 5766 §11.5.
-    final bodyLen = (buffer[2] << 8) | buffer[3];
-    return TurnTcpFrameLengthKnown((4 + bodyLen + 3) & ~3);
+  final framingClass = buffer[0] & _turnTcpClassMask;
+  final bodyLen = (buffer[2] << 8) | buffer[3];
+  if (framingClass == _turnTcpStunClass) {
+    return TurnTcpFrameLengthKnown(stunHeaderBytes + bodyLen);
+  }
+  if (framingClass == _turnTcpChannelDataClass) {
+    return TurnTcpFrameLengthKnown(
+        (_channelDataHeaderBytes + bodyLen + _channelDataAlignmentMask) &
+            ~_channelDataAlignmentMask);
   }
   return const TurnTcpFrameLengthMalformed();
 }
