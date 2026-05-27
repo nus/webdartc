@@ -19,6 +19,50 @@ void _wireTrickle(PeerConnection pcA, PeerConnection pcB) {
       )));
 }
 
+/// Settings for the loopback handshake helper below. All stats tests
+/// want the same shape: bind to `127.0.0.1`, allow loopback host
+/// candidates, no STUN/TURN.
+const _kLoopbackSetting = SettingEngine(
+  bindAddresses: ['127.0.0.1'],
+  includeLoopbackCandidate: true,
+);
+
+/// Construct two PCs, wire trickle forwarding, run the offer/answer
+/// dance, and wait until both reach `connected`. Optional callbacks
+/// let the caller mutate each PC before the SDP exchange — separate
+/// for A and B so an asymmetric setup (e.g. DataChannel on offerer
+/// only) is expressible.
+Future<(PeerConnection, PeerConnection)> _handshakeLoopback({
+  void Function(PeerConnection pc)? configureA,
+  void Function(PeerConnection pc)? configureB,
+  Duration connectedTimeout = const Duration(seconds: 20),
+}) async {
+  final pcA = PeerConnection(
+    configuration: PeerConnectionConfiguration(),
+    settingEngine: _kLoopbackSetting,
+  );
+  final pcB = PeerConnection(
+    configuration: PeerConnectionConfiguration(),
+    settingEngine: _kLoopbackSetting,
+  );
+  _wireTrickle(pcA, pcB);
+  if (configureA != null) configureA(pcA);
+  if (configureB != null) configureB(pcB);
+  final offer = await pcA.createOffer();
+  await pcA.setLocalDescription(offer);
+  await pcB.setRemoteDescription(offer);
+  final answer = await pcB.createAnswer();
+  await pcB.setLocalDescription(answer);
+  await pcA.setRemoteDescription(answer);
+  await Future.wait([
+    pcA.onConnectionStateChange
+        .firstWhere((s) => s == PeerConnectionState.connected),
+    pcB.onConnectionStateChange
+        .firstWhere((s) => s == PeerConnectionState.connected),
+  ]).timeout(connectedTimeout);
+  return (pcA, pcB);
+}
+
 void main() {
   group('PeerConnection.getStats', () {
     test('fresh PC returns transport + peer-connection entries with zeros',
@@ -73,40 +117,13 @@ void main() {
 
     test('two loopback PCs accumulate transport bytes and surface ICE pairs',
         () async {
-      const setting = SettingEngine(
-        bindAddresses: ['127.0.0.1'],
-        includeLoopbackCandidate: true,
-      );
-      final pcA = PeerConnection(
-        configuration: PeerConnectionConfiguration(),
-        settingEngine: setting,
-      );
-      final pcB = PeerConnection(
-        configuration: PeerConnectionConfiguration(),
-        settingEngine: setting,
+      // A data channel is needed so an SCTP m-line is present in the
+      // SDP; ICE doesn't form pairs without one.
+      final (pcA, pcB) = await _handshakeLoopback(
+        configureA: (pc) => pc.createDataChannel('stats-probe'),
       );
 
       try {
-        _wireTrickle(pcA, pcB);
-
-        // A data channel is needed so an SCTP m-line is present in the
-        // SDP; ICE doesn't form pairs without one.
-        pcA.createDataChannel('stats-probe');
-
-        final offer = await pcA.createOffer();
-        await pcA.setLocalDescription(offer);
-        await pcB.setRemoteDescription(offer);
-        final answer = await pcB.createAnswer();
-        await pcB.setLocalDescription(answer);
-        await pcA.setRemoteDescription(answer);
-
-        await Future.wait([
-          pcA.onConnectionStateChange
-              .firstWhere((s) => s == PeerConnectionState.connected),
-          pcB.onConnectionStateChange
-              .firstWhere((s) => s == PeerConnectionState.connected),
-        ]).timeout(const Duration(seconds: 20));
-
         final reportA = await pcA.getStats();
         final reportB = await pcB.getStats();
 
@@ -160,39 +177,14 @@ void main() {
 
     test('media RTP flow produces outbound-rtp + inbound-rtp entries',
         () async {
-      const setting = SettingEngine(
-        bindAddresses: ['127.0.0.1'],
-        includeLoopbackCandidate: true,
-      );
-      final pcA = PeerConnection(
-        configuration: PeerConnectionConfiguration(),
-        settingEngine: setting,
-      );
-      final pcB = PeerConnection(
-        configuration: PeerConnectionConfiguration(),
-        settingEngine: setting,
+      void addAudio(PeerConnection pc) =>
+          pc.addTransceiver('audio', direction: 'sendrecv');
+      final (pcA, pcB) = await _handshakeLoopback(
+        configureA: addAudio,
+        configureB: addAudio,
       );
 
       try {
-        _wireTrickle(pcA, pcB);
-
-        pcA.addTransceiver('audio', direction: 'sendrecv');
-        pcB.addTransceiver('audio', direction: 'sendrecv');
-
-        final offer = await pcA.createOffer();
-        await pcA.setLocalDescription(offer);
-        await pcB.setRemoteDescription(offer);
-        final answer = await pcB.createAnswer();
-        await pcB.setLocalDescription(answer);
-        await pcA.setRemoteDescription(answer);
-
-        await Future.wait([
-          pcA.onConnectionStateChange
-              .firstWhere((s) => s == PeerConnectionState.connected),
-          pcB.onConnectionStateChange
-              .firstWhere((s) => s == PeerConnectionState.connected),
-        ]).timeout(const Duration(seconds: 20));
-
         // Drive a handful of RTP packets through pcA's sender. The
         // payload is opaque to the test — it's only proving the SRTP
         // encrypt / decrypt round-trip increments getStats counters
@@ -251,38 +243,14 @@ void main() {
     test(
         'RTCP feedback surfaces remote-inbound-rtp + candidate-pair RTT',
         () async {
-      const setting = SettingEngine(
-        bindAddresses: ['127.0.0.1'],
-        includeLoopbackCandidate: true,
-      );
-      final pcA = PeerConnection(
-        configuration: PeerConnectionConfiguration(),
-        settingEngine: setting,
-      );
-      final pcB = PeerConnection(
-        configuration: PeerConnectionConfiguration(),
-        settingEngine: setting,
+      void addAudio(PeerConnection pc) =>
+          pc.addTransceiver('audio', direction: 'sendrecv');
+      final (pcA, pcB) = await _handshakeLoopback(
+        configureA: addAudio,
+        configureB: addAudio,
       );
 
       try {
-        _wireTrickle(pcA, pcB);
-        pcA.addTransceiver('audio', direction: 'sendrecv');
-        pcB.addTransceiver('audio', direction: 'sendrecv');
-
-        final offer = await pcA.createOffer();
-        await pcA.setLocalDescription(offer);
-        await pcB.setRemoteDescription(offer);
-        final answer = await pcB.createAnswer();
-        await pcB.setLocalDescription(answer);
-        await pcA.setRemoteDescription(answer);
-
-        await Future.wait([
-          pcA.onConnectionStateChange
-              .firstWhere((s) => s == PeerConnectionState.connected),
-          pcB.onConnectionStateChange
-              .firstWhere((s) => s == PeerConnectionState.connected),
-        ]).timeout(const Duration(seconds: 20));
-
         // Push some RTP so pcA's RTCP timer has something to put in
         // the next SR. The RR loop is: pcA SR → pcB consumes lastSr →
         // pcB next RR carries dlsr → pcA computes RTT. The RTCP timer

@@ -63,14 +63,24 @@ int compactNtpOf(int ntpSecs, int ntpFrac) =>
     ((ntpSecs & _compactNtpHalfMask) << 16) |
     ((ntpFrac >> 16) & _compactNtpHalfMask);
 
-/// Current wall clock expressed as compact NTP. Combines [DateTime.now]
-/// with [ntpEpochOffsetSeconds] / [ntpFracUnitsPerSecond] to produce
-/// the same shape that goes on the wire in SR / RR blocks.
-int currentCompactNtp() {
-  final nowMs = DateTime.now().millisecondsSinceEpoch;
-  final ntpSecs = (nowMs ~/ 1000) + ntpEpochOffsetSeconds;
-  final ntpFrac = ((nowMs % 1000) * ntpFracUnitsPerSecond) ~/ 1000;
-  return compactNtpOf(ntpSecs, ntpFrac);
+/// [now] expressed as a 64-bit NTP timestamp split into 32-bit
+/// seconds (`high`) and 32-bit fractional (`low`) halves — the wire
+/// format SR carries. Pure — callers pass `DateTime.now()` from the
+/// I/O layer; tests can pin to a fixed instant. Each half is masked
+/// to 32 bits so the seconds field wraps cleanly at the NTP epoch
+/// rollover (RFC 5905 §6, the year-2036 wrap).
+({int high, int low}) ntpTimestampOf(DateTime now) {
+  final nowMs = now.millisecondsSinceEpoch;
+  final high = ((nowMs ~/ 1000) + ntpEpochOffsetSeconds) & _mask32;
+  final low = (((nowMs % 1000) * ntpFracUnitsPerSecond) ~/ 1000) & _mask32;
+  return (high: high, low: low);
+}
+
+/// [now] expressed as compact NTP — convenience wrapper around
+/// [ntpTimestampOf] that collapses the two halves via [compactNtpOf].
+int currentCompactNtp(DateTime now) {
+  final ts = ntpTimestampOf(now);
+  return compactNtpOf(ts.high, ts.low);
 }
 
 /// Compute the round-trip time between sending a Sender Report and
@@ -97,8 +107,10 @@ double? rttSeconds({
   if (lastSr == 0) return null;
   final delta = (nowCompactNtp - lastSr - dlsrNtp) & _mask32;
   // Treat the upper half of the 32-bit space as "negative" — either
-  // clock skew or an outright wrap-around. RFC 3550 doesn't say what
-  // to do, so we conservatively decline to report.
+  // clock skew or an outright wrap-around. Matches the spirit of
+  // RFC 3550 §A.7 (which casts the delta to signed and treats
+  // negatives as unmeasurable); we report `null` where libwebrtc
+  // reports `0`. W3C allows either.
   if (delta >= _signBit32) return null;
   return delta / _compactNtpTicksPerSecond;
 }

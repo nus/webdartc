@@ -583,7 +583,8 @@ final class PeerConnection {
       // CandidatePair instances with the same coordinates (e.g. a
       // host pair plus a prflx-triggered pair to the same address),
       // and we want each one's state visible — not a single survivor
-      // overwriting the rest.
+      // overwriting the rest. TODO(ice): dedupe at `_addPair` time
+      // and switch back to a structured pair id.
       final pairId =
           'pair-${identityHashCode(pair).toRadixString(16)}';
       final isSelected = identical(_ice.selectedPair, pair);
@@ -1064,11 +1065,19 @@ final class PeerConnection {
   /// RFC 3550 §6.4.1: RR/SR report blocks describe how the *remote*
   /// peer is receiving one of our outbound SSRCs. Store the latest
   /// snapshot per SSRC, plus a freshly-computed RTT when the remote
-  /// has echoed a non-zero `lastSr`.
+  /// has echoed a non-zero `lastSr`. Blocks naming an SSRC we don't
+  /// own are dropped — without that gate a misbehaving peer can grow
+  /// the map without bound by flooding RRs with random SSRCs.
   void _ingestReportBlocks(List<RtcpReportBlock> blocks) {
     if (blocks.isEmpty) return;
-    final nowCompact = currentCompactNtp();
+    final knownSsrcs = {
+      for (final t in _transceivers)
+        if (t.sender != null) t.sender!.ssrc,
+    };
+    if (knownSsrcs.isEmpty) return;
+    final nowCompact = currentCompactNtp(DateTime.now());
     for (final b in blocks) {
+      if (!knownSsrcs.contains(b.ssrc)) continue;
       final s = _remoteInboundStats.putIfAbsent(b.ssrc, _RemoteInboundStats.new);
       s.packetsLost = sext24(b.cumulativeLost);
       s.fractionLost = b.fractionLost / rtcpFractionLostScale;
@@ -1142,15 +1151,11 @@ final class PeerConnection {
           ? activeSenders.where((s) => s.kind == 'video').firstOrNull
           : null) ?? activeSenders.first;
       compoundSsrc = sender.ssrc;
-      final nowMs = DateTime.now().millisecondsSinceEpoch;
-      final ntpSecs =
-          ((nowMs ~/ 1000) + ntpEpochOffsetSeconds) & 0xFFFFFFFF;
-      final ntpFrac =
-          (((nowMs % 1000) * ntpFracUnitsPerSecond) ~/ 1000) & 0xFFFFFFFF;
+      final ntp = ntpTimestampOf(DateTime.now());
       compound.addAll(RtcpSenderReport(
         ssrc: compoundSsrc,
-        ntpTimestampHigh: ntpSecs,
-        ntpTimestampLow: ntpFrac,
+        ntpTimestampHigh: ntp.high,
+        ntpTimestampLow: ntp.low,
         rtpTimestamp: sender._lastRtpTimestamp,
         packetCount: sender._packetsSent,
         octetCount: sender._octetsSent,
