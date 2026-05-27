@@ -12,6 +12,7 @@ import '../ice/state_machine.dart';
 import '../media/media_stream.dart';
 import '../media/media_stream_track.dart';
 import '../rtp/parser.dart';
+import '../rtp/rtcp_math.dart';
 import '../rtp/rtp_transport.dart';
 import '../sctp/state_machine.dart';
 import '../sdp/parser.dart';
@@ -1076,25 +1077,17 @@ final class PeerConnection {
 
     for (final b in blocks) {
       final s = _remoteInboundStats.putIfAbsent(b.ssrc, _RemoteInboundStats.new);
-      s.packetsLost = _sext24(b.cumulativeLost);
+      s.packetsLost = sext24(b.cumulativeLost);
       s.fractionLost = b.fractionLost / 256.0;
       s.jitterRtpUnits = b.jitter;
-      // RTT can only be derived once the remote has both received one
-      // of our SRs and reflected its compact NTP in `lastSr`.
-      if (b.lastSr != 0) {
-        final rtt = (nowCompact - b.lastSr - b.delaySinceLastSr) & 0xFFFFFFFF;
-        // Treat absurdly large deltas as clock skew / first-cycle
-        // wrap-around; only adopt a sane positive value.
-        if (rtt < 0x80000000) {
-          s.roundTripTimeSeconds = rtt / 65536.0;
-        }
-      }
+      final rtt = rttSeconds(
+        nowCompactNtp: nowCompact,
+        lastSr: b.lastSr,
+        dlsrNtp: b.delaySinceLastSr,
+      );
+      if (rtt != null) s.roundTripTimeSeconds = rtt;
     }
   }
-
-  /// RFC 3550 cumulative-lost is 24-bit signed; sign-extend so `getStats`
-  /// reports the correct value when the remote saw duplicates.
-  static int _sext24(int v) => (v & 0x800000) != 0 ? v | ~0xFFFFFF : v;
 
   void _sendPli(int mediaSourceSsrc) {
     // Queue PLI to be included in the next periodic compound RTCP that uses

@@ -12,6 +12,7 @@ import 'package:webdartc/webdartc.dart';
 
 // Not exported via webdartc.dart — import directly.
 import 'package:webdartc/dtls/record.dart';
+import 'package:webdartc/rtp/rtcp_math.dart';
 import 'package:webdartc/sctp/chunk.dart';
 import 'package:webdartc/turn/channel_data.dart';
 
@@ -647,6 +648,130 @@ void main() {
       ));
       for (var i = 0; i < _iterations; i++) {
         StunParser.parse(_mutate(dataInd));
+      }
+    });
+  });
+
+  // ── RTCP math (RFC 3550 §6.4.1 interpretation) ────────────────────────────
+  //
+  // `sext24` and `rttSeconds` run on every RR/SR report block a peer
+  // sends us — they have to stay total: no exceptions, no NaN, no
+  // negatives leaking out of `rttSeconds`. A malicious server should
+  // never crash the client by feeding bogus RR report blocks.
+
+  group('Fuzz: RTCP math', () {
+    test('sext24 is total over the full int range', () {
+      for (var i = 0; i < _iterations; i++) {
+        sext24(_rng.nextInt(0x100000000));
+      }
+    });
+
+    test('sext24 round-trips 24-bit values', () {
+      // For any 24-bit input the sign-extended output, masked back to
+      // 24 bits, must equal the input. Catches a bug where the
+      // sign-extension would corrupt the low 24 bits.
+      for (var i = 0; i < _iterations; i++) {
+        final v = _rng.nextInt(0x1000000);
+        expect(sext24(v) & 0xFFFFFF, equals(v));
+      }
+    });
+
+    test('sext24 produces a value in the 24-bit two\'s-complement range', () {
+      const minVal = -0x800000;
+      const maxVal = 0x7FFFFF;
+      for (var i = 0; i < _iterations; i++) {
+        final r = sext24(_rng.nextInt(0x1000000));
+        expect(r, greaterThanOrEqualTo(minVal));
+        expect(r, lessThanOrEqualTo(maxVal));
+      }
+    });
+
+    test('sext24 on boundary values', () {
+      // Pinned: zero, max positive, sign-bit boundary, max negative,
+      // and all-ones (= -1).
+      expect(sext24(0), 0);
+      expect(sext24(0x7FFFFF), 0x7FFFFF);
+      expect(sext24(0x800000), -0x800000);
+      expect(sext24(0xFFFFFF), -1);
+    });
+
+    test('rttSeconds never throws on random 32-bit inputs', () {
+      for (var i = 0; i < _iterations; i++) {
+        rttSeconds(
+          nowCompactNtp: _rng.nextInt(0x100000000),
+          lastSr: _rng.nextInt(0x100000000),
+          dlsrNtp: _rng.nextInt(0x100000000),
+        );
+      }
+    });
+
+    test('rttSeconds is null when lastSr is 0', () {
+      // No SR has been echoed yet; per RFC there's no way to compute
+      // RTT. Verified across random nowCompactNtp / dlsrNtp pairs.
+      for (var i = 0; i < _iterations; i++) {
+        expect(
+            rttSeconds(
+              nowCompactNtp: _rng.nextInt(0x100000000),
+              lastSr: 0,
+              dlsrNtp: _rng.nextInt(0x100000000),
+            ),
+            isNull);
+      }
+    });
+
+    test('rttSeconds output is always non-negative when not null', () {
+      for (var i = 0; i < _iterations; i++) {
+        final r = rttSeconds(
+          nowCompactNtp: _rng.nextInt(0x100000000),
+          lastSr: _rng.nextInt(0x100000000),
+          dlsrNtp: _rng.nextInt(0x100000000),
+        );
+        if (r != null) expect(r, greaterThanOrEqualTo(0.0));
+      }
+    });
+
+    test('rttSeconds on a synthesized successful round-trip', () {
+      // Pick a sender-side RTT in milliseconds, encode the timestamps
+      // exactly how the RR exchange would, and verify the helper
+      // recovers the same RTT within 1/65536-second precision.
+      for (var i = 0; i < 1000; i++) {
+        final rttMs = _rng.nextInt(5000); // 0–5 s
+        final dlsrMs = _rng.nextInt(2000); // 0–2 s
+        // sender SR sent at t=0 (lastSr=1 so it's non-zero), receiver
+        // processed at t=rttMs/2, replied at t=rttMs/2+dlsrMs, so
+        // nowCompactNtp = lastSr + rttMs + dlsrMs (all in 1/65536-sec
+        // ticks).
+        const lastSr = 0x12345678;
+        final dlsrNtp = (dlsrMs * 65536) ~/ 1000;
+        final rttNtp = (rttMs * 65536) ~/ 1000;
+        final now = (lastSr + rttNtp + dlsrNtp) & 0xFFFFFFFF;
+        final r = rttSeconds(
+          nowCompactNtp: now,
+          lastSr: lastSr,
+          dlsrNtp: dlsrNtp,
+        );
+        expect(r, isNotNull);
+        // Allow 1/65536 sec slop from integer division.
+        expect((r! - rttMs / 1000).abs(), lessThan(1 / 65536));
+      }
+    });
+
+    test('rttSeconds returns null on wrap-around / negative deltas', () {
+      // When lastSr is "in the future" relative to nowCompactNtp the
+      // subtraction goes negative — interpreted by the helper as a
+      // wrap-around it shouldn't trust. Specifically: any case where
+      // (lastSr + dlsr) > now produces a 32-bit-unsigned delta whose
+      // high bit is set, which the helper drops.
+      for (var i = 0; i < 1000; i++) {
+        final now = _rng.nextInt(0x80000000); // low half of the space
+        final lastSr = now + 1 + _rng.nextInt(0x40000000); // strictly later
+        expect(
+            rttSeconds(
+              nowCompactNtp: now,
+              lastSr: lastSr,
+              dlsrNtp: 0,
+            ),
+            isNull);
       }
     });
   });
