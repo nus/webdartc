@@ -12,6 +12,7 @@ import '../ice/state_machine.dart';
 import '../media/media_stream.dart';
 import '../media/media_stream_track.dart';
 import '../rtp/parser.dart';
+import '../rtp/rtcp_math.dart';
 import '../rtp/rtp_transport.dart';
 import '../sctp/state_machine.dart';
 import '../sdp/parser.dart';
@@ -107,6 +108,11 @@ final class PeerConnection {
   int _localRtcpSsrc = 0; // Our SSRC for RTCP reports
   Timer? _rtcpTimer;
   final Set<int> _pendingPliSsrcs = {}; // SSRCs needing PLI in next RTCP
+
+  /// Latest RTCP-RR snapshot per our outbound SSRC. Populated when the
+  /// remote peer sends a Receiver Report whose report block names
+  /// that SSRC; surfaced via `getStats()` as `RemoteInboundRtpStats`.
+  final Map<int, _RemoteInboundStats> _remoteInboundStats = {};
 
   // Transport-CC state
   int _twccExtId = 0; // extension ID from SDP (0 = not negotiated)
@@ -572,7 +578,15 @@ final class PeerConnection {
     for (final pair in _ice.pairs) {
       final localId = pair.local.statsId(isLocal: true);
       final remoteId = pair.remote.statsId(isLocal: false);
-      final pairId = 'pair-$localId-$remoteId';
+      // Key by the pair's identity hash rather than the (localId,
+      // remoteId) tuple: the ICE state machine can hold multiple
+      // CandidatePair instances with the same coordinates (e.g. a
+      // host pair plus a prflx-triggered pair to the same address),
+      // and we want each one's state visible — not a single survivor
+      // overwriting the rest. TODO(ice): dedupe at `_addPair` time
+      // and switch back to a structured pair id.
+      final pairId =
+          'pair-${identityHashCode(pair).toRadixString(16)}';
       final isSelected = identical(_ice.selectedPair, pair);
       if (isSelected) selectedPairId = pairId;
       entries[pairId] = CandidatePairStats(
@@ -582,6 +596,9 @@ final class PeerConnection {
         remoteCandidateId: remoteId,
         state: pair.state.name,
         nominated: pair.nominated,
+        currentRoundTripTime: pair.roundTripTimeMs == null
+            ? null
+            : pair.roundTripTimeMs! / 1000.0,
       );
     }
     for (final c in _ice.localCandidates) {
@@ -614,15 +631,32 @@ final class PeerConnection {
     for (final t in _transceivers) {
       final sender = t.sender;
       if (sender == null) continue;
-      final id = 'outbound-rtp-${sender.ssrc}';
-      entries[id] = OutboundRtpStats(
-        id: id,
+      final outboundId = 'outbound-rtp-${sender.ssrc}';
+      entries[outboundId] = OutboundRtpStats(
+        id: outboundId,
         timestamp: now,
         ssrc: sender.ssrc,
         kind: sender.kind,
         packetsSent: sender.packetsSent,
         bytesSent: sender.bytesSent,
       );
+      // Emit a paired remote-inbound entry once the remote has actually
+      // reported anything about this SSRC. `clockRate` converts the
+      // RR's jitter field from RTP timestamp units to seconds.
+      final remote = _remoteInboundStats[sender.ssrc];
+      if (remote != null) {
+        final remoteId = 'remote-inbound-rtp-${sender.ssrc}';
+        entries[remoteId] = RemoteInboundRtpStats(
+          id: remoteId,
+          timestamp: now,
+          ssrc: sender.ssrc,
+          localId: outboundId,
+          packetsLost: remote.packetsLost,
+          fractionLost: remote.fractionLost,
+          jitter: remote.jitterRtpUnits / sender.clockRate,
+          roundTripTime: remote.roundTripTimeSeconds,
+        );
+      }
     }
     for (final s in _rtpRecvStats.values) {
       // Skip the placeholder entry created for the local sender's
@@ -1016,12 +1050,44 @@ final class PeerConnection {
         // Update stats with SR info and send RR back
         final stats = _rtpRecvStats[pkt.ssrc];
         if (stats != null) {
-          stats.lastSrNtp = ((pkt.ntpTimestampHigh & 0xFFFF) << 16) |
-              ((pkt.ntpTimestampLow >> 16) & 0xFFFF);
+          stats.lastSrNtp = compactNtpOf(
+              pkt.ntpTimestampHigh, pkt.ntpTimestampLow);
           stats.lastSrReceivedAt = DateTime.now();
         }
+        _ingestReportBlocks(pkt.reportBlocks);
         _sendRtcpRR();
+      } else if (pkt is RtcpReceiverReport) {
+        _ingestReportBlocks(pkt.reportBlocks);
       }
+    }
+  }
+
+  /// RFC 3550 §6.4.1: RR/SR report blocks describe how the *remote*
+  /// peer is receiving one of our outbound SSRCs. Store the latest
+  /// snapshot per SSRC, plus a freshly-computed RTT when the remote
+  /// has echoed a non-zero `lastSr`. Blocks naming an SSRC we don't
+  /// own are dropped — without that gate a misbehaving peer can grow
+  /// the map without bound by flooding RRs with random SSRCs.
+  void _ingestReportBlocks(List<RtcpReportBlock> blocks) {
+    if (blocks.isEmpty) return;
+    final knownSsrcs = {
+      for (final t in _transceivers)
+        if (t.sender != null) t.sender!.ssrc,
+    };
+    if (knownSsrcs.isEmpty) return;
+    final nowCompact = currentCompactNtp(DateTime.now());
+    for (final b in blocks) {
+      if (!knownSsrcs.contains(b.ssrc)) continue;
+      final s = _remoteInboundStats.putIfAbsent(b.ssrc, _RemoteInboundStats.new);
+      s.packetsLost = sext24(b.cumulativeLost);
+      s.fractionLost = b.fractionLost / rtcpFractionLostScale;
+      s.jitterRtpUnits = b.jitter;
+      final rtt = rttSeconds(
+        nowCompactNtp: nowCompact,
+        lastSr: b.lastSr,
+        dlsrNtp: b.delaySinceLastSr,
+      );
+      if (rtt != null) s.roundTripTimeSeconds = rtt;
     }
   }
 
@@ -1085,13 +1151,11 @@ final class PeerConnection {
           ? activeSenders.where((s) => s.kind == 'video').firstOrNull
           : null) ?? activeSenders.first;
       compoundSsrc = sender.ssrc;
-      final now = DateTime.now();
-      final ntpSecs = (now.millisecondsSinceEpoch ~/ 1000) + 2208988800; // Unix→NTP epoch
-      final ntpFrac = ((now.millisecondsSinceEpoch % 1000) * 4294967296 ~/ 1000);
+      final ntp = ntpTimestampOf(DateTime.now());
       compound.addAll(RtcpSenderReport(
         ssrc: compoundSsrc,
-        ntpTimestampHigh: ntpSecs & 0xFFFFFFFF,
-        ntpTimestampLow: ntpFrac & 0xFFFFFFFF,
+        ntpTimestampHigh: ntp.high,
+        ntpTimestampLow: ntp.low,
         rtpTimestamp: sender._lastRtpTimestamp,
         packetCount: sender._packetsSent,
         octetCount: sender._octetsSent,
@@ -1272,6 +1336,18 @@ final class _RtpRecvStats {
     bytesReceived += payloadBytes;
     if (seq > highestSeq) highestSeq = seq;
   }
+}
+
+/// Latest snapshot from a Receiver Report block the remote sent about
+/// one of our outbound SSRCs. `roundTripTime` is null until we've
+/// received an RR that echoes a non-zero `lastSr` (which only happens
+/// after the peer has both received an SR from us and replied at
+/// least once).
+final class _RemoteInboundStats {
+  int packetsLost = 0;
+  double fractionLost = 0;
+  int jitterRtpUnits = 0;
+  double? roundTripTimeSeconds;
 }
 
 final class _TwccEntry {
