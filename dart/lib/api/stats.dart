@@ -260,9 +260,9 @@ final class InboundRtpStats extends RtcStats {
   /// Total RTP payload bytes received for this SSRC (no RTP header).
   final int bytesReceived;
 
-  /// `id` of the [CodecStats] for the payload type carrying this
-  /// stream, or `null` if the codec hasn't been negotiated yet.
-  final String? codecId;
+  // No `codecId` field yet: per-SSRC payload-type tracking isn't
+  // wired on the receive path, so a field exposed here would always
+  // be null. Add it back once the SSRC→PT map exists.
 
   const InboundRtpStats({
     required super.id,
@@ -270,7 +270,6 @@ final class InboundRtpStats extends RtcStats {
     required this.ssrc,
     required this.packetsReceived,
     required this.bytesReceived,
-    this.codecId,
   }) : super(type: RtcStatsType.inboundRtp);
 }
 
