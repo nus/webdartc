@@ -1,0 +1,116 @@
+name: webdartc CI setup
+description: |
+  Checkout (+ submodules), language toolchain, pub cache, optional
+  build-hook artifact cache, optional Chrome-for-Testing cache, and the
+  workspace-detach dance for Dart-only jobs.
+
+inputs:
+  flavor:
+    description: 'dart-analyze | dart | flutter'
+    required: true
+  cache-hooks:
+    description: 'Cache the native-asset build artifacts under dart/.dart_tool/hooks_runner/shared/webdartc/'
+    default: 'true'
+  cache-chrome:
+    description: 'Cache the Chrome-for-Testing download under dart/.local/chrome_for_testing/'
+    default: 'false'
+  install-linux-deps:
+    description: 'apt-install libssl-dev + yasm on Linux runners (everything that runs the build hook needs them)'
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    # Caller MUST `uses: actions/checkout@v6 with: submodules: recursive`
+    # before invoking this action — composite actions in `./.github/actions`
+    # cannot exist on the runner before the checkout step.
+    - if: ${{ inputs.flavor == 'dart-analyze' || inputs.flavor == 'dart' }}
+      uses: dart-lang/setup-dart@v1
+      with:
+        sdk: '3.11.0'
+
+    - if: ${{ inputs.flavor == 'flutter' }}
+      uses: subosito/flutter-action@v2
+      with:
+        channel: stable
+        # Cache the resolved Flutter SDK so subsequent runs skip the
+        # ~20 s download/extract step.
+        cache: true
+
+    - name: Cache pub
+      uses: actions/cache@v5
+      with:
+        # macOS / Linux use ~/.pub-cache; Windows uses %LOCALAPPDATA%\Pub\Cache.
+        # actions/cache silently skips paths that don't exist on the host.
+        path: |
+          ~/.pub-cache
+          ~/AppData/Local/Pub/Cache
+        # `flavor` is part of the key because dart-flavor jobs resolve
+        # against a *detached* pubspec (root pubspec.yaml removed +
+        # `resolution: workspace` line dropped from dart/pubspec.yaml)
+        # while flutter-flavor jobs resolve against the intact workspace
+        # — same source pubspecs, different resolved package sets.
+        key: pub-${{ runner.os }}-${{ inputs.flavor }}-${{ hashFiles('**/pubspec.yaml', '**/pubspec.lock') }}
+        restore-keys: |
+          pub-${{ runner.os }}-${{ inputs.flavor }}-
+
+    - if: ${{ runner.os == 'Linux' && inputs.install-linux-deps == 'true' }}
+      name: Install native build deps
+      # libssl-dev: crypto FFI. yasm: required by libvpx's x86_64 SIMD
+      # assembly. cmake comes preinstalled on ubuntu-latest. VP8 / VP9 /
+      # Opus / OpenH264 are vendored (OpenH264 as a Cisco prebuilt
+      # download in dart/hook/build.dart) — no system codec packages
+      # needed.
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libssl-dev yasm
+
+    - if: ${{ inputs.flavor == 'dart-analyze' || inputs.flavor == 'dart' }}
+      name: Detach from workspace
+      # Drop the root workspace pubspec + the member's `resolution:
+      # workspace` line so the Dart-only jobs don't need Flutter. Dual
+      # sed handles both BSD (macOS) and GNU (Linux + git-bash on
+      # Windows) syntax.
+      shell: bash
+      run: |
+        rm -f pubspec.yaml
+        sed -i '' -e '/^resolution: workspace$/d' dart/pubspec.yaml 2>/dev/null \
+          || sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
+
+    - if: ${{ inputs.cache-hooks == 'true' }}
+      name: Compute build cache key
+      id: build_cache_key
+      # `git rev-parse HEAD:<path>` returns the SHA the parent tree pins
+      # for the submodule, so the key invalidates exactly when libvpx /
+      # opus is bumped — without hashing the submodule's entire content.
+      shell: bash
+      run: |
+        OPUS=$(git rev-parse HEAD:dart/third_party/opus | head -c12)
+        VPX=$(git rev-parse HEAD:dart/third_party/libvpx | head -c12)
+        echo "submods=$OPUS-$VPX" >> "$GITHUB_OUTPUT"
+
+    - if: ${{ inputs.cache-hooks == 'true' }}
+      name: Cache build hook artifacts
+      uses: actions/cache@v5
+      with:
+        path: dart/.dart_tool/hooks_runner/shared/webdartc
+        key: hooks-${{ runner.os }}-${{ runner.arch }}-${{ steps.build_cache_key.outputs.submods }}-${{ hashFiles('dart/hook/build.dart', 'dart/src/**') }}
+
+    - if: ${{ inputs.cache-chrome == 'true' }}
+      name: Cache Chrome for Testing
+      uses: actions/cache@v5
+      with:
+        path: dart/.local/chrome_for_testing
+        key: chrome-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('dart/test/e2e/chrome_for_testing.dart') }}
+
+    - if: ${{ inputs.flavor == 'dart-analyze' || inputs.flavor == 'dart' }}
+      name: dart pub get
+      shell: bash
+      working-directory: dart
+      run: dart pub get
+
+    - if: ${{ inputs.flavor == 'flutter' }}
+      name: flutter pub get
+      shell: bash
+      run: flutter pub get

@@ -7,11 +7,13 @@ on:
   pull_request:
     branches: [main]
 
+# All shared setup (checkout, language toolchain, pub cache, build-hook
+# artifact cache, Chrome-for-Testing cache, workspace-detach) lives in
+# `.github/actions/setup`. Per-job overrides are passed via the `with:`
+# block of each `uses: ./.github/actions/setup` step.
+
 jobs:
   # ── dart (pure Dart) ──────────────────────────────────────────────────
-  # Resolve the dart package standalone (drop root workspace pubspec + the
-  # member's `resolution: workspace` line) so the Dart-only jobs don't need
-  # Flutter.
   dart-analyze:
     name: dart / Analyze
     runs-on: ubuntu-latest
@@ -19,15 +21,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: dart-lang/setup-dart@v1
+      - uses: ./.github/actions/setup
         with:
-          sdk: '3.11.0'
-      - name: Detach from workspace
-        run: |
-          rm -f pubspec.yaml
-          sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
-      - working-directory: dart
-        run: dart pub get
+          flavor: dart-analyze
+          cache-hooks: 'false'
+          install-linux-deps: 'false'
       - working-directory: dart
         run: dart analyze --fatal-infos
 
@@ -39,42 +37,23 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
     defaults:
-      # Force bash on every runner so the Detach-from-workspace step's
-      # `rm`/`sed` works identically on Windows (via git-bash).
+      # Force bash on every runner so the test command syntax is identical
+      # on Windows (via git-bash).
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: dart-lang/setup-dart@v1
+      - uses: ./.github/actions/setup
         with:
-          sdk: '3.11.0'
-      - if: runner.os == 'Linux'
-        name: Install native build deps
-        # libssl-dev: crypto FFI. yasm: required by libvpx's x86_64 SIMD
-        # assembly. cmake comes preinstalled on ubuntu-latest. VP8 / VP9
-        # / Opus / OpenH264 are vendored (OpenH264 as a Cisco prebuilt
-        # download in dart/hook/build.dart) — no system codec packages
-        # needed.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev yasm
-      - name: Detach from workspace
-        run: |
-          rm -f pubspec.yaml
-          sed -i '' -e '/^resolution: workspace$/d' dart/pubspec.yaml 2>/dev/null \
-            || sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
-      - working-directory: dart
-        run: dart pub get
+          flavor: dart
       - if: runner.os != 'Windows'
         working-directory: dart
         # `dart test` runs the build hook (dart/hook/build.dart): builds
         # the bundled libopus + libvpx (VP8 + VP9) on both macOS and
         # Linux, downloads the Cisco-prebuilt OpenH264 dylib on Linux,
-        # plus the VideoToolbox callback shim on macOS. The opus and
-        # libvpx submodules must be checked out (see
-        # `submodules: recursive` above).
+        # plus the VideoToolbox callback shim on macOS.
         #
         # `coturn` is excluded here because most runners don't ship the
         # turnserver binary — the dedicated turn-integration job below
@@ -95,6 +74,10 @@ jobs:
         #     `_bundleLibvpxPrebuilt` in dart/hook/build.dart).
         #   - libopus (`opus-prebuilt-*` release zip, fetched by
         #     `_bundleLibopusPrebuilt`).
+        # Plus the MF + WASAPI capture shim built from source by the build
+        # hook on the runner (`_buildWmdCaptureWindows`). The capture tests
+        # don't require a real camera — windows-latest is headless — and
+        # tolerate a missing audio endpoint via `markTestSkipped`.
         run: |
           dart test \
             test/codec/openh264_version_test.dart \
@@ -113,6 +96,8 @@ jobs:
             test/codec/vp9_version_test.dart \
             test/codec/opus_test.dart \
             test/codec/opus_libopus_update_test.dart \
+            test/media/windows/mf_capture_test.dart \
+            test/media/windows/mf_media_devices_test.dart \
             --timeout=120s
 
   dart-test-e2e-linux:
@@ -122,20 +107,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: dart-lang/setup-dart@v1
+      - uses: ./.github/actions/setup
         with:
-          sdk: '3.11.0'
-      - name: Install native build deps
-        # See dart-test-unit above for what each package is for.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev yasm
-      - name: Detach from workspace
-        run: |
-          rm -f pubspec.yaml
-          sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
-      - working-directory: dart
-        run: dart pub get
+          flavor: dart
+          cache-chrome: 'true'
       - working-directory: dart
         # Runs the sendonly video_call test with VP8 and H.264 (via
         # OpenH264 on Linux). VP8 uses the bundled libvpx wrapper. The
@@ -146,24 +121,19 @@ jobs:
     name: dart / E2E Tests (Windows)
     runs-on: windows-latest
     defaults:
-      # Same as dart-test-unit — the Detach-from-workspace step uses
-      # `rm`/`sed` which need bash on Windows (git-bash).
+      # The retry-loop step below relies on bash heredoc syntax that
+      # PowerShell can't run, so force bash on every step here (git-bash
+      # on Windows runners).
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: dart-lang/setup-dart@v1
+      - uses: ./.github/actions/setup
         with:
-          sdk: '3.11.0'
-      - name: Detach from workspace
-        run: |
-          rm -f pubspec.yaml
-          sed -i '' -e '/^resolution: workspace$/d' dart/pubspec.yaml 2>/dev/null \
-            || sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
-      - working-directory: dart
-        run: dart pub get
+          flavor: dart
+          cache-chrome: 'true'
       - working-directory: dart
         # Stable subset for Windows E2E. The "webdartc as answerer"
         # scenarios (Chrome drives ICE pair selection) and the
@@ -213,15 +183,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: dart-lang/setup-dart@v1
+      - uses: ./.github/actions/setup
         with:
-          sdk: '3.11.0'
-      - name: Detach from workspace
-        run: |
-          rm -f pubspec.yaml
-          sed -i '' -e '/^resolution: workspace$/d' dart/pubspec.yaml
-      - working-directory: dart
-        run: dart pub get
+          flavor: dart
+          cache-chrome: 'true'
       - working-directory: dart
         # VideoToolbox-only coverage: sendonly sample (H.264 via VT) +
         # bidirectional (browser → VT decoder). Chrome for Testing on
@@ -244,20 +209,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: dart-lang/setup-dart@v1
+      - uses: ./.github/actions/setup
         with:
-          sdk: '3.11.0'
-      - name: Install coturn + native build deps
+          flavor: dart
+      - name: Install coturn
         run: |
-          sudo apt-get update
-          sudo apt-get install -y coturn libssl-dev yasm
+          sudo apt-get install -y coturn
           turnserver --version | head -1
-      - name: Detach from workspace
-        run: |
-          rm -f pubspec.yaml
-          sed -i '/^resolution: workspace$/d' dart/pubspec.yaml
-      - working-directory: dart
-        run: dart pub get
       - working-directory: dart
         run: dart test --tags=coturn test/turn/ --timeout=60s
 
@@ -269,10 +227,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: subosito/flutter-action@v2
+      - uses: ./.github/actions/setup
         with:
-          channel: stable
-      - run: flutter pub get
+          flavor: flutter
+          cache-hooks: 'false'
+          install-linux-deps: 'false'
       - working-directory: flutter
         run: flutter analyze --fatal-infos
 
@@ -287,18 +246,9 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: subosito/flutter-action@v2
+      - uses: ./.github/actions/setup
         with:
-          channel: stable
-      - if: runner.os == 'Linux'
-        # `flutter pub get` walks the workspace and triggers
-        # dart/hook/build.dart, which configures + builds bundled libopus
-        # and libvpx and downloads OpenH264 — needs cmake (preinstalled),
-        # yasm (libvpx x86_64 SIMD asm), libssl-dev (crypto FFI).
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libssl-dev yasm
-      - run: flutter pub get
+          flavor: flutter
       - working-directory: flutter
         # Widget tests use a mock MethodChannel; native plugin code is not
         # loaded so this passes on Linux too.
@@ -317,10 +267,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: subosito/flutter-action@v2
+      - uses: ./.github/actions/setup
         with:
-          channel: stable
-      - run: flutter pub get
+          flavor: flutter
+          cache-chrome: 'true'
       - working-directory: flutter/example
         run: flutter build macos --debug
       - working-directory: dart
@@ -340,10 +290,9 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
-      - uses: subosito/flutter-action@v2
+      - uses: ./.github/actions/setup
         with:
-          channel: stable
-      - run: flutter pub get
+          flavor: flutter
       - working-directory: flutter/example
         run: flutter build windows --debug
       - working-directory: flutter/example
