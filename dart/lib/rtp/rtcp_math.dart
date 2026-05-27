@@ -4,6 +4,43 @@
 /// without spinning up a full PeerConnection.
 library;
 
+/// Sign bit of the 24-bit two's-complement field used by RR's
+/// cumulative-lost.
+const int _signBit24 = 0x800000;
+
+/// 24-bit value mask.
+const int _mask24 = 0xFFFFFF;
+
+/// 32-bit value mask, used to clamp the result of a wrapping subtract
+/// into the compact-NTP range.
+const int _mask32 = 0xFFFFFFFF;
+
+/// Sign bit of the wrapped 32-bit delta produced by the compact-NTP
+/// subtraction in [rttSeconds]; anything at or above this is treated
+/// as a "negative" delta (wrap-around / clock skew).
+const int _signBit32 = 0x80000000;
+
+/// 1 second expressed in compact-NTP 1/65536-sec ticks. Used to
+/// convert the integer compact-NTP delta to a fractional-second
+/// `double` for the W3C `roundTripTime` field.
+const double _compactNtpTicksPerSecond = 65536.0;
+
+/// Mask used to keep only the low 16 bits of the seconds half of a
+/// 64-bit NTP timestamp when collapsing to compact NTP.
+const int _compactNtpHalfMask = 0xFFFF;
+
+/// Seconds between the NTP epoch (1900-01-01) and the Unix epoch
+/// (1970-01-01). RFC 5905 §6.
+const int ntpEpochOffsetSeconds = 2208988800;
+
+/// 2^32 — the number of NTP fractional units in one second. Used to
+/// convert sub-second precision (millisecond, micro-) into the
+/// `ntp_frac` half of a 64-bit NTP timestamp.
+const int ntpFracUnitsPerSecond = 4294967296;
+
+/// 0–255 RR fraction-lost byte → 0.0–1.0 (W3C convention).
+const double rtcpFractionLostScale = 256.0;
+
 /// Sign-extend an unsigned 24-bit value into a Dart `int` (effectively
 /// 64-bit on the VM). RTCP's "cumulative number of packets lost" field
 /// is 24-bit two's-complement (RFC 3550 §6.4.1) and can legitimately go
@@ -15,7 +52,25 @@ library;
 /// total over any `int` for defensive use.
 int sext24(int v) {
   // Bit 23 is the sign bit. When set, the top bits must all be 1.
-  return (v & 0x800000) != 0 ? v | ~0xFFFFFF : v & 0xFFFFFF;
+  return (v & _signBit24) != 0 ? v | ~_mask24 : v & _mask24;
+}
+
+/// Collapse a 64-bit NTP timestamp (split into 32-bit seconds and
+/// 32-bit fraction halves) to its compact 32-bit form: low 16 bits of
+/// seconds, high 16 bits of fraction. Compact NTP is what RR's
+/// `lastSr` / `dlsr` fields carry, per RFC 3550 §6.4.1.
+int compactNtpOf(int ntpSecs, int ntpFrac) =>
+    ((ntpSecs & _compactNtpHalfMask) << 16) |
+    ((ntpFrac >> 16) & _compactNtpHalfMask);
+
+/// Current wall clock expressed as compact NTP. Combines [DateTime.now]
+/// with [ntpEpochOffsetSeconds] / [ntpFracUnitsPerSecond] to produce
+/// the same shape that goes on the wire in SR / RR blocks.
+int currentCompactNtp() {
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+  final ntpSecs = (nowMs ~/ 1000) + ntpEpochOffsetSeconds;
+  final ntpFrac = ((nowMs % 1000) * ntpFracUnitsPerSecond) ~/ 1000;
+  return compactNtpOf(ntpSecs, ntpFrac);
 }
 
 /// Compute the round-trip time between sending a Sender Report and
@@ -40,10 +95,10 @@ double? rttSeconds({
   required int dlsrNtp,
 }) {
   if (lastSr == 0) return null;
-  final delta = (nowCompactNtp - lastSr - dlsrNtp) & 0xFFFFFFFF;
+  final delta = (nowCompactNtp - lastSr - dlsrNtp) & _mask32;
   // Treat the upper half of the 32-bit space as "negative" — either
   // clock skew or an outright wrap-around. RFC 3550 doesn't say what
   // to do, so we conservatively decline to report.
-  if (delta >= 0x80000000) return null;
-  return delta / 65536.0;
+  if (delta >= _signBit32) return null;
+  return delta / _compactNtpTicksPerSecond;
 }

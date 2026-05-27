@@ -1049,8 +1049,8 @@ final class PeerConnection {
         // Update stats with SR info and send RR back
         final stats = _rtpRecvStats[pkt.ssrc];
         if (stats != null) {
-          stats.lastSrNtp = ((pkt.ntpTimestampHigh & 0xFFFF) << 16) |
-              ((pkt.ntpTimestampLow >> 16) & 0xFFFF);
+          stats.lastSrNtp = compactNtpOf(
+              pkt.ntpTimestampHigh, pkt.ntpTimestampLow);
           stats.lastSrReceivedAt = DateTime.now();
         }
         _ingestReportBlocks(pkt.reportBlocks);
@@ -1067,18 +1067,11 @@ final class PeerConnection {
   /// has echoed a non-zero `lastSr`.
   void _ingestReportBlocks(List<RtcpReportBlock> blocks) {
     if (blocks.isEmpty) return;
-    // Compute "now" as a compact NTP timestamp (middle 32 bits of the
-    // full 64-bit NTP) so the subtraction below operates in the same
-    // units the remote used for `lastSr` / `dlsr`.
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final ntpSecs = (nowMs ~/ 1000) + 2208988800; // Unix → NTP epoch.
-    final ntpFrac = ((nowMs % 1000) * 4294967296) ~/ 1000;
-    final nowCompact = ((ntpSecs & 0xFFFF) << 16) | ((ntpFrac >> 16) & 0xFFFF);
-
+    final nowCompact = currentCompactNtp();
     for (final b in blocks) {
       final s = _remoteInboundStats.putIfAbsent(b.ssrc, _RemoteInboundStats.new);
       s.packetsLost = sext24(b.cumulativeLost);
-      s.fractionLost = b.fractionLost / 256.0;
+      s.fractionLost = b.fractionLost / rtcpFractionLostScale;
       s.jitterRtpUnits = b.jitter;
       final rtt = rttSeconds(
         nowCompactNtp: nowCompact,
@@ -1149,13 +1142,15 @@ final class PeerConnection {
           ? activeSenders.where((s) => s.kind == 'video').firstOrNull
           : null) ?? activeSenders.first;
       compoundSsrc = sender.ssrc;
-      final now = DateTime.now();
-      final ntpSecs = (now.millisecondsSinceEpoch ~/ 1000) + 2208988800; // Unix→NTP epoch
-      final ntpFrac = ((now.millisecondsSinceEpoch % 1000) * 4294967296 ~/ 1000);
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final ntpSecs =
+          ((nowMs ~/ 1000) + ntpEpochOffsetSeconds) & 0xFFFFFFFF;
+      final ntpFrac =
+          (((nowMs % 1000) * ntpFracUnitsPerSecond) ~/ 1000) & 0xFFFFFFFF;
       compound.addAll(RtcpSenderReport(
         ssrc: compoundSsrc,
-        ntpTimestampHigh: ntpSecs & 0xFFFFFFFF,
-        ntpTimestampLow: ntpFrac & 0xFFFFFFFF,
+        ntpTimestampHigh: ntpSecs,
+        ntpTimestampLow: ntpFrac,
         rtpTimestamp: sender._lastRtpTimestamp,
         packetCount: sender._packetsSent,
         octetCount: sender._octetsSent,
