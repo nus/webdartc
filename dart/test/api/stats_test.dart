@@ -278,14 +278,37 @@ void main() {
             reason: 'at least one candidate-pair check should have RTT by now');
         for (final p in pairsWithRtt) {
           expect(p.currentRoundTripTime!, greaterThanOrEqualTo(0.0));
-          expect(p.currentRoundTripTime!, lessThan(1.0));
+          // Loopback STUN check on the same host: even a slow CI
+          // runner shouldn't take more than 100 ms. A wider bound
+          // would let wrap-around math sneak through undetected.
+          expect(p.currentRoundTripTime!, lessThan(0.1),
+              reason: 'loopback ICE check RTT should be well below 100 ms');
         }
 
         // The remote sent RR back; pcA stored a snapshot for its
         // outbound SSRC. RTT must be a small positive number; loss
         // and jitter on a loopback channel should round to 0.
-        final remoteInboundA = reportA
+        final remoteInboundEntries = reportA
             .ofType<RemoteInboundRtpStats>(RtcStatsType.remoteInboundRtp)
+            .toList();
+        expect(remoteInboundEntries, isNotEmpty);
+
+        // SSRC filter regression: every remote-inbound-rtp entry must
+        // correspond to an SSRC we actually send from. Without the
+        // filter in `_ingestReportBlocks`, a misbehaving peer could
+        // grow `_remoteInboundStats` unboundedly by flooding RRs with
+        // random SSRCs.
+        final ownSenderSsrcs = pcA.getSenders().map((s) => s.ssrc).toSet();
+        for (final e in remoteInboundEntries) {
+          expect(ownSenderSsrcs.contains(e.ssrc), isTrue,
+              reason: 'remote-inbound-rtp entry for unknown ssrc ${e.ssrc} '
+                  '— SSRC filter regression');
+          // Every entry must back-reference a real outbound-rtp.
+          expect(reportA[e.localId], isA<OutboundRtpStats>(),
+              reason: 'localId ${e.localId} dangling');
+        }
+
+        final remoteInboundA = remoteInboundEntries
             .singleWhere((s) => s.ssrc == senderA.ssrc);
         expect(remoteInboundA.localId, 'outbound-rtp-${senderA.ssrc}');
         expect(remoteInboundA.packetsLost, 0);
@@ -294,8 +317,12 @@ void main() {
         expect(remoteInboundA.roundTripTime, isNotNull,
             reason:
                 'pcA should have seen pcB echo back its SR by now');
+        // Loopback RTT should land well under 100 ms — a 1-second
+        // ceiling would let a regression slip through where the
+        // helper is reporting wrap-around math as a real RTT.
         expect(remoteInboundA.roundTripTime!, greaterThanOrEqualTo(0.0));
-        expect(remoteInboundA.roundTripTime!, lessThan(1.0));
+        expect(remoteInboundA.roundTripTime!, lessThan(0.1),
+            reason: 'loopback RTT should be well below 100 ms');
       } finally {
         await pcA.close();
         await pcB.close();

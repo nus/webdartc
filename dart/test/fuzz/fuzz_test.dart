@@ -774,6 +774,67 @@ void main() {
             isNull);
       }
     });
+
+    test('compactNtpOf never throws on random 32-bit halves', () {
+      for (var i = 0; i < _iterations; i++) {
+        compactNtpOf(_rng.nextInt(0x100000000), _rng.nextInt(0x100000000));
+      }
+    });
+
+    test('compactNtpOf output fits in 32 bits', () {
+      for (var i = 0; i < _iterations; i++) {
+        final r = compactNtpOf(
+            _rng.nextInt(0x100000000), _rng.nextInt(0x100000000));
+        expect(r, greaterThanOrEqualTo(0));
+        expect(r, lessThanOrEqualTo(0xFFFFFFFF));
+      }
+    });
+
+    test('compactNtpOf only consumes the middle 32 bits', () {
+      // High 16 bits of `secs` and low 16 bits of `frac` must not
+      // influence the output — the helper's contract is "middle 32
+      // bits of the full 64-bit NTP". Flip those discardable bits
+      // arbitrarily and confirm the result is unchanged.
+      for (var i = 0; i < _iterations; i++) {
+        final secsLow = _rng.nextInt(0x10000);
+        final fracHigh = _rng.nextInt(0x10000);
+        final discardableA = _rng.nextInt(0x10000);
+        final discardableB = _rng.nextInt(0x10000);
+        final expected = (secsLow << 16) | fracHigh;
+        expect(
+            compactNtpOf((discardableA << 16) | secsLow,
+                (fracHigh << 16) | discardableB),
+            equals(expected));
+      }
+    });
+
+    test('ntpTimestampOf never throws across the full Unix-ms range', () {
+      // Synthesize timestamps from year-1970 up to year-2100 in
+      // millisecond steps — covers the year-2036 NTP-seconds wrap
+      // without burning a real `DateTime` per iteration. `nextInt`
+      // caps at 2^32, so compose 48 random bits and modulo into the
+      // target range.
+      const year2100Ms = 4102444800000; // 2100-01-01 UTC
+      for (var i = 0; i < _iterations; i++) {
+        final ms = ((_rng.nextInt(0x10000) << 32) |
+                _rng.nextInt(0x100000000)) %
+            year2100Ms;
+        ntpTimestampOf(DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true));
+      }
+    });
+
+    test('ntpTimestampOf halves stay in 32-bit range', () {
+      const year2100Ms = 4102444800000;
+      for (var i = 0; i < _iterations; i++) {
+        final ms = ((_rng.nextInt(0x10000) << 32) |
+                _rng.nextInt(0x100000000)) %
+            year2100Ms;
+        final ts = ntpTimestampOf(
+            DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true));
+        expect(ts.high, inInclusiveRange(0, 0xFFFFFFFF));
+        expect(ts.low, inInclusiveRange(0, 0xFFFFFFFF));
+      }
+    });
   });
 
   // ── Demux classification ──────────────────────────────────────────────────
