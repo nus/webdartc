@@ -143,10 +143,13 @@ Future<CoturnInstance> startCoturn({
     await _waitUntilStunRespondsOn(port, timeout);
     if (withTls) {
       // STUN-on-UDP responding doesn't imply the TLS-over-TCP listener
-      // has bound — coturn brings them up on separate threads. Wait for
-      // the TCP `tlsPort` to accept before returning, otherwise tests
-      // race the listener and get ECONNRESET on Client Hello.
-      await _waitUntilTcpAccepts(tlsPort!, timeout);
+      // has bound — coturn brings them up on separate threads. *And*
+      // the TCP listener finishes `accept()` slightly before the TLS
+      // subsystem (OpenSSL init + cert load) is ready, so a pure TCP
+      // probe still races the handshake (ECONNRESET inside
+      // `_RawSecureSocket._tryFilter`). Run a real TLS handshake as
+      // the readiness check.
+      await _waitUntilTlsAccepts(tlsPort!, timeout);
     }
   } catch (e) {
     process.kill(ProcessSignal.sigkill);
@@ -305,18 +308,24 @@ Future<void> _waitUntilStunRespondsOn(int port, Duration timeout) async {
   throw StateError('no STUN response from 127.0.0.1:$port within $timeout');
 }
 
-/// Open a TCP connection and discard it — proves coturn's TLS listener
-/// has finished `accept()`-ing on [port]. We don't speak TLS here on
-/// purpose: a successful TCP handshake is enough to know the listener
-/// is bound and the next test won't get ECONNRESET because the kernel
-/// has a SYN waiting on no-one.
-Future<void> _waitUntilTcpAccepts(int port, Duration timeout) async {
+/// Complete a TLS handshake against [port] and discard the connection.
+/// `onBadCertificate: (_) => true` accepts the self-signed cert coturn
+/// is serving — production code must not do this, but the probe only
+/// cares whether coturn's TLS layer can complete a handshake.
+///
+/// A pure TCP probe isn't enough: coturn's TCP listener finishes
+/// `accept()` slightly before its TLS subsystem (OpenSSL init + cert
+/// load) is ready, and a TCP-only probe races straight past that
+/// window. The real-handshake probe forces us to wait until coturn
+/// can actually answer a Client Hello.
+Future<void> _waitUntilTlsAccepts(int port, Duration timeout) async {
   final deadline = DateTime.now().add(timeout);
   while (DateTime.now().isBefore(deadline)) {
     try {
-      final s = await Socket.connect(
+      final s = await SecureSocket.connect(
         InternetAddress.loopbackIPv4, port,
-        timeout: const Duration(milliseconds: 250),
+        onBadCertificate: (_) => true,
+        timeout: const Duration(milliseconds: 500),
       );
       s.destroy();
       return;
@@ -324,5 +333,5 @@ Future<void> _waitUntilTcpAccepts(int port, Duration timeout) async {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
   }
-  throw StateError('no TCP accept on 127.0.0.1:$port within $timeout');
+  throw StateError('no TLS handshake on 127.0.0.1:$port within $timeout');
 }
