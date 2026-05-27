@@ -114,6 +114,12 @@ final class PeerConnection {
   /// that SSRC; surfaced via `getStats()` as `RemoteInboundRtpStats`.
   final Map<int, _RemoteInboundStats> _remoteInboundStats = {};
 
+  /// Remote DTLS fingerprint extracted from the SDP `a=fingerprint`
+  /// attribute on `setRemoteDescription`. Used in `getStats` to emit
+  /// the remote [CertificateStats] entry; null until the remote
+  /// description is set.
+  String? _remoteFingerprint;
+
   // Transport-CC state
   int _twccExtId = 0; // extension ID from SDP (0 = not negotiated)
   final List<_TwccEntry> _twccRecvLog = [];
@@ -338,9 +344,11 @@ final class PeerConnection {
       throw Exception('Remote SDP missing required a=fingerprint attribute (RFC 8827 §5)');
     }
     // Strip "sha-256 " prefix if present
-    _dtls.expectedRemoteFingerprint = remoteFingerprint.startsWith('sha-256 ')
+    final bareFingerprint = remoteFingerprint.startsWith('sha-256 ')
         ? remoteFingerprint.substring(8)
         : remoteFingerprint;
+    _dtls.expectedRemoteFingerprint = bareFingerprint;
+    _remoteFingerprint = bareFingerprint;
 
     // Set DTLS role: if remote is active, we are passive (server); otherwise client.
     _dtls.role = (setup == 'active') ? DtlsRole.server : DtlsRole.client;
@@ -628,6 +636,24 @@ final class PeerConnection {
       );
     }
 
+    // Media sources + codecs are emitted first so the outbound /
+    // inbound entries below can back-reference them by id.
+    final mediaSourceIdByTrack = <String, String>{};
+    for (final t in _transceivers) {
+      final track = t.sender?.track;
+      if (track == null) continue;
+      final id = 'media-source-${track.id}';
+      if (mediaSourceIdByTrack.containsKey(track.id)) continue;
+      mediaSourceIdByTrack[track.id] = id;
+      entries[id] = MediaSourceStats(
+        id: id,
+        timestamp: now,
+        trackIdentifier: track.id,
+        kind: track.kind,
+      );
+    }
+    final codecIdByPt = _emitCodecStats(entries, now);
+
     for (final t in _transceivers) {
       final sender = t.sender;
       if (sender == null) continue;
@@ -639,6 +665,8 @@ final class PeerConnection {
         kind: sender.kind,
         packetsSent: sender.packetsSent,
         bytesSent: sender.bytesSent,
+        codecId: codecIdByPt[sender.payloadType],
+        mediaSourceId: mediaSourceIdByTrack[sender.track?.id],
       );
       // Emit a paired remote-inbound entry once the remote has actually
       // reported anything about this SSRC. `clockRate` converts the
@@ -665,12 +693,35 @@ final class PeerConnection {
       // stream that doesn't exist.
       if (s.packetsReceived == 0) continue;
       final id = 'inbound-rtp-${s.ssrc}';
+      // PT for an inbound stream isn't tracked per-SSRC yet; best
+      // effort: leave codecId null when we don't know.
       entries[id] = InboundRtpStats(
         id: id,
         timestamp: now,
         ssrc: s.ssrc,
         packetsReceived: s.packetsReceived,
         bytesReceived: s.bytesReceived,
+      );
+    }
+
+    // DTLS certificates: local one is always known after PC
+    // construction; remote one is set when `setRemoteDescription` runs.
+    const localCertId = 'certificate-local';
+    entries[localCertId] = CertificateStats(
+      id: localCertId,
+      timestamp: now,
+      fingerprint: _localCert.sha256Fingerprint,
+      fingerprintAlgorithm: 'sha-256',
+    );
+    String? remoteCertId;
+    final remoteFp = _remoteFingerprint;
+    if (remoteFp != null) {
+      remoteCertId = 'certificate-remote';
+      entries[remoteCertId] = CertificateStats(
+        id: remoteCertId,
+        timestamp: now,
+        fingerprint: remoteFp,
+        fingerprintAlgorithm: 'sha-256',
       );
     }
 
@@ -682,6 +733,8 @@ final class PeerConnection {
       packetsSent: _transport.packetsSent,
       packetsReceived: _transport.packetsReceived,
       selectedCandidatePairId: selectedPairId,
+      localCertificateId: localCertId,
+      remoteCertificateId: remoteCertId,
     );
 
     entries['pc'] = PeerConnectionStats(
@@ -692,6 +745,66 @@ final class PeerConnection {
     );
 
     return Future.value(RtcStatsReport(entries));
+  }
+
+  /// Emit one [CodecStats] per (m-line, payloadType) found in the
+  /// agreed-upon SDP, and return a `{payloadType: codecId}` map for
+  /// the outbound/inbound entries to back-reference. Prefer the
+  /// description whose `type == answer` — that's the narrowed list
+  /// both sides have committed to. Returns an empty map when no
+  /// answer has been exchanged yet.
+  Map<int, String> _emitCodecStats(Map<String, RtcStats> entries, DateTime now) {
+    final SessionDescription? desc =
+        _localDescription?.type == SessionDescriptionType.answer
+            ? _localDescription
+            : _remoteDescription?.type == SessionDescriptionType.answer
+                ? _remoteDescription
+                : null;
+    if (desc == null) return const {};
+    final parsed = SdpParser.parse(desc.sdp);
+    if (parsed.isErr) return const {};
+
+    final out = <int, String>{};
+    for (final m in parsed.value.media) {
+      // Skip data-channel m-lines — they have no rtpmap.
+      if (m.type != 'audio' && m.type != 'video') continue;
+      final mid = m.mid ?? '?';
+      for (final rtpmap in m.getAll('rtpmap')) {
+        // Format: "<PT> <codec>/<clock>[/<channels>]"
+        final space = rtpmap.indexOf(' ');
+        if (space < 0) continue;
+        final pt = int.tryParse(rtpmap.substring(0, space));
+        if (pt == null) continue;
+        final parts = rtpmap.substring(space + 1).split('/');
+        if (parts.isEmpty) continue;
+        final codecName = parts[0];
+        final clockRate = parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0;
+        final channels =
+            parts.length > 2 ? int.tryParse(parts[2]) : null;
+        String? fmtp;
+        for (final f in m.getAll('fmtp')) {
+          if (f.startsWith('$pt ')) {
+            fmtp = f.substring('$pt '.length);
+            break;
+          }
+        }
+        final id = 'codec-$mid-$pt';
+        entries[id] = CodecStats(
+          id: id,
+          timestamp: now,
+          payloadType: pt,
+          mimeType: '${m.type}/$codecName',
+          clockRate: clockRate,
+          channels: channels,
+          sdpFmtpLine: fmtp,
+        );
+        // The same PT can appear under multiple m-lines (rare in
+        // practice, but legal). First one wins for the back-reference
+        // map; getStats only links the most-likely codec.
+        out.putIfAbsent(pt, () => id);
+      }
+    }
+    return out;
   }
 
   /// Close the connection.
