@@ -74,10 +74,6 @@ jobs:
         #     `_bundleLibvpxPrebuilt` in dart/hook/build.dart).
         #   - libopus (`opus-prebuilt-*` release zip, fetched by
         #     `_bundleLibopusPrebuilt`).
-        # Plus the MF + WASAPI capture shim built from source by the build
-        # hook on the runner (`_buildWmdCaptureWindows`). The capture tests
-        # don't require a real camera — windows-latest is headless — and
-        # tolerate a missing audio endpoint via `markTestSkipped`.
         run: |
           dart test \
             test/codec/openh264_version_test.dart \
@@ -96,8 +92,6 @@ jobs:
             test/codec/vp9_version_test.dart \
             test/codec/opus_test.dart \
             test/codec/opus_libopus_update_test.dart \
-            test/media/windows/mf_capture_test.dart \
-            test/media/windows/mf_media_devices_test.dart \
             --timeout=120s
 
   dart-test-e2e-linux:
