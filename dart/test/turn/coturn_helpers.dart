@@ -149,7 +149,7 @@ Future<CoturnInstance> startCoturn({
       // probe still races the handshake (ECONNRESET inside
       // `_RawSecureSocket._tryFilter`). Run a real TLS handshake as
       // the readiness check.
-      await _waitUntilTlsAccepts(tlsPort!, timeout);
+      await _waitUntilTlsReady(tlsPort!, timeout);
     }
   } catch (e) {
     process.kill(ProcessSignal.sigkill);
@@ -318,7 +318,7 @@ Future<void> _waitUntilStunRespondsOn(int port, Duration timeout) async {
 /// load) is ready, and a TCP-only probe races straight past that
 /// window. The real-handshake probe forces us to wait until coturn
 /// can actually answer a Client Hello.
-Future<void> _waitUntilTlsAccepts(int port, Duration timeout) async {
+Future<void> _waitUntilTlsReady(int port, Duration timeout) async {
   final deadline = DateTime.now().add(timeout);
   while (DateTime.now().isBefore(deadline)) {
     try {
