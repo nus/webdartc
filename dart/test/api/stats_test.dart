@@ -247,5 +247,91 @@ void main() {
         await pcB.close();
       }
     }, timeout: const Timeout(Duration(seconds: 45)));
+
+    test(
+        'RTCP feedback surfaces remote-inbound-rtp + candidate-pair RTT',
+        () async {
+      const setting = SettingEngine(
+        bindAddresses: ['127.0.0.1'],
+        includeLoopbackCandidate: true,
+      );
+      final pcA = PeerConnection(
+        configuration: PeerConnectionConfiguration(),
+        settingEngine: setting,
+      );
+      final pcB = PeerConnection(
+        configuration: PeerConnectionConfiguration(),
+        settingEngine: setting,
+      );
+
+      try {
+        _wireTrickle(pcA, pcB);
+        pcA.addTransceiver('audio', direction: 'sendrecv');
+        pcB.addTransceiver('audio', direction: 'sendrecv');
+
+        final offer = await pcA.createOffer();
+        await pcA.setLocalDescription(offer);
+        await pcB.setRemoteDescription(offer);
+        final answer = await pcB.createAnswer();
+        await pcB.setLocalDescription(answer);
+        await pcA.setRemoteDescription(answer);
+
+        await Future.wait([
+          pcA.onConnectionStateChange
+              .firstWhere((s) => s == PeerConnectionState.connected),
+          pcB.onConnectionStateChange
+              .firstWhere((s) => s == PeerConnectionState.connected),
+        ]).timeout(const Duration(seconds: 20));
+
+        // Push some RTP so pcA's RTCP timer has something to put in
+        // the next SR. The RR loop is: pcA SR → pcB consumes lastSr →
+        // pcB next RR carries dlsr → pcA computes RTT. The RTCP timer
+        // fires every 100 ms, so 600 ms covers ≥4 cycles and stays
+        // well clear of flakes on slow CI runners.
+        final senderA = pcA.getSenders().single;
+        final payload = Uint8List.fromList(List.filled(80, 0x55));
+        for (var i = 0; i < 10; i++) {
+          senderA.sendRtp(payload);
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+
+        final reportA = await pcA.getStats();
+
+        // ICE pair RTT is recorded from the STUN connectivity-check
+        // round-trip. On loopback the *selected* pair may have been
+        // installed via the peer-reflexive triggered-check path, which
+        // doesn't always record an RTT; just confirm at least one of
+        // the candidate pairs has a measured RTT in a sane range.
+        final pairsWithRtt = reportA
+            .ofType<CandidatePairStats>(RtcStatsType.candidatePair)
+            .where((p) => p.currentRoundTripTime != null)
+            .toList();
+        expect(pairsWithRtt, isNotEmpty,
+            reason: 'at least one candidate-pair check should have RTT by now');
+        for (final p in pairsWithRtt) {
+          expect(p.currentRoundTripTime!, greaterThanOrEqualTo(0.0));
+          expect(p.currentRoundTripTime!, lessThan(1.0));
+        }
+
+        // The remote sent RR back; pcA stored a snapshot for its
+        // outbound SSRC. RTT must be a small positive number; loss
+        // and jitter on a loopback channel should round to 0.
+        final remoteInboundA = reportA
+            .ofType<RemoteInboundRtpStats>(RtcStatsType.remoteInboundRtp)
+            .singleWhere((s) => s.ssrc == senderA.ssrc);
+        expect(remoteInboundA.localId, 'outbound-rtp-${senderA.ssrc}');
+        expect(remoteInboundA.packetsLost, 0);
+        expect(remoteInboundA.fractionLost, 0.0);
+        expect(remoteInboundA.jitter, greaterThanOrEqualTo(0.0));
+        expect(remoteInboundA.roundTripTime, isNotNull,
+            reason:
+                'pcA should have seen pcB echo back its SR by now');
+        expect(remoteInboundA.roundTripTime!, greaterThanOrEqualTo(0.0));
+        expect(remoteInboundA.roundTripTime!, lessThan(1.0));
+      } finally {
+        await pcA.close();
+        await pcB.close();
+      }
+    }, timeout: const Timeout(Duration(seconds: 45)));
   });
 }

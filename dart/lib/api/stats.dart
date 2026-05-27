@@ -21,6 +21,10 @@ enum RtcStatsType {
   /// Outbound RTP stream stats keyed by SSRC.
   outboundRtp,
 
+  /// RTCP-RR-derived stats: what the remote peer reports back about
+  /// receiving *our* outbound stream.
+  remoteInboundRtp,
+
   /// One [CandidatePair] from the ICE agent.
   candidatePair,
 
@@ -120,6 +124,12 @@ final class CandidatePairStats extends RtcStats {
   final String state; // "frozen" / "waiting" / "in-progress" / "succeeded" / "failed"
   final bool nominated;
 
+  /// Most recent connectivity-check round-trip time in seconds, or
+  /// `null` if the pair hasn't completed a check yet. Measured from
+  /// the STUN Binding Request transmit to the matching response
+  /// receive (RFC 8445 §6.1.4).
+  final double? currentRoundTripTime;
+
   const CandidatePairStats({
     required super.id,
     required super.timestamp,
@@ -127,6 +137,7 @@ final class CandidatePairStats extends RtcStats {
     required this.remoteCandidateId,
     required this.state,
     required this.nominated,
+    this.currentRoundTripTime,
   }) : super(type: RtcStatsType.candidatePair);
 }
 
@@ -170,6 +181,47 @@ final class OutboundRtpStats extends RtcStats {
     required this.packetsSent,
     required this.bytesSent,
   }) : super(type: RtcStatsType.outboundRtp);
+}
+
+/// What the remote peer reports back (via RTCP Receiver Report) about
+/// receiving our outbound stream. W3C `RTCRemoteInboundRtpStreamStats`.
+/// Keyed by *our* outbound SSRC — the same SSRC the remote echoes in
+/// the RR's report block.
+final class RemoteInboundRtpStats extends RtcStats {
+  final int ssrc;
+
+  /// Id of the corresponding local [OutboundRtpStats] entry
+  /// (`outbound-rtp-<ssrc>`). Callers cross-reference the two to see
+  /// "we sent N, the remote received N − packetsLost" pairs.
+  final String localId;
+
+  /// Cumulative packets lost as reported by the remote. May be
+  /// negative when the remote received duplicates after our seq
+  /// rollover (RFC 3550 §6.4.1, 24-bit signed).
+  final int packetsLost;
+
+  /// Fraction of packets lost since the last report, 0.0–1.0.
+  final double fractionLost;
+
+  /// Inter-arrival jitter in seconds (RR jitter divided by RTP clock
+  /// rate; W3C convention).
+  final double jitter;
+
+  /// Round-trip time in seconds derived from `lastSr` + `dlsr` in the
+  /// RR (RFC 3550 §6.4.1). Null until at least one RR has been
+  /// received that references one of our SRs.
+  final double? roundTripTime;
+
+  const RemoteInboundRtpStats({
+    required super.id,
+    required super.timestamp,
+    required this.ssrc,
+    required this.localId,
+    required this.packetsLost,
+    required this.fractionLost,
+    required this.jitter,
+    required this.roundTripTime,
+  }) : super(type: RtcStatsType.remoteInboundRtp);
 }
 
 /// Per-SSRC stats for an RTP stream this connection is receiving.
