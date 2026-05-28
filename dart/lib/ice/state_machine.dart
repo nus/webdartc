@@ -260,17 +260,8 @@ final class IceStateMachine implements ProtocolStateMachine {
   /// [_pairLocalCandidate]. RFC 8445 §6.1.2.2: only pairs candidates
   /// of the same transport (UDP here) and address family; each
   /// `(local, remote)` coordinate may exist at most once in the
-  /// check list.
-  ///
-  /// The dedup gate matters because Trickle ICE callers can drive the
-  /// same `(local, remote)` through here from two paths — e.g. a
-  /// remote candidate arriving via `addRemoteCandidate` while the
-  /// agent is in `iceGatheringComplete` (pairs against all locals)
-  /// *and* a later `_startChecks` walking `_remoteCandidates` again.
-  /// Without the gate the same pair would be inserted twice and
-  /// shadow each other in selection / stats. Gating on insert (rather
-  /// than deduping at read time) means selection and
-  /// `_checkConnectivityComplete` see a single source of truth.
+  /// check list. Trickle ICE can drive the same coordinate through
+  /// here multiple times, so the dedup is gated on insert.
   void _addPair(IceCandidate local, IceCandidate remote) {
     if (local.transport != remote.transport) return;
     if (local.ip.isV6 != remote.ip.isV6) return;
@@ -282,10 +273,11 @@ final class IceStateMachine implements ProtocolStateMachine {
       ..state = CandidatePairState.waiting);
   }
 
-  /// Two candidates address the same physical endpoint iff their
-  /// type + transport + (ip, port) tuple matches. Foundation + priority
-  /// can differ (random hex, computed) without changing the wire
-  /// effect of a connectivity check between them.
+  /// Two candidates produce the same connectivity-check coordinate iff
+  /// their `(type, transport, ip, port)` tuple matches. `type` is part
+  /// of the key because host vs prflx at the same `(ip, port)` are
+  /// RFC-distinct candidates with different priorities and selection
+  /// semantics.
   static bool _sameCoords(IceCandidate a, IceCandidate b) =>
       a.type == b.type &&
       a.transport == b.transport &&
