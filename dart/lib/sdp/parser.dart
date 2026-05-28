@@ -377,9 +377,23 @@ abstract final class SdpBuilder {
           final codecInfo = rtpmap.substring(spaceIdx + 1);
           final codecName = codecInfo.split('/').first;
 
-          if (supported.any((s) => s.toLowerCase() == codecName.toLowerCase())) {
+          // Match against `supported` case-insensitively; the matched
+          // entry's spelling is the IANA-canonical one (sourced from
+          // MediaEngine), so use it on the wire even if the offerer
+          // sent e.g. `vp8`. libwebrtc / Pion / aiortc / Firefox all
+          // rewrite the codec name in their answer the same way — only
+          // case-insensitive matching avoids interop hassle, but the
+          // answer SDP must still carry canonical case so downstream
+          // consumers (getStats `mimeType`, browser dashboards) see
+          // the expected `VP8` / `opus` / `H264`.
+          final canonical = supported.firstWhere(
+            (s) => s.toLowerCase() == codecName.toLowerCase(),
+            orElse: () => '',
+          );
+          if (canonical.isNotEmpty) {
             selectedFormats.add(pt);
-            rawAttrs.add('rtpmap:$rtpmap');
+            final tail = codecInfo.substring(codecName.length);
+            rawAttrs.add('rtpmap:$pt $canonical$tail');
             final ptInt = int.tryParse(pt);
             final fmtp = ptInt == null ? null : fmtpByPt[ptInt];
             if (fmtp != null) rawAttrs.add('fmtp:$pt $fmtp');

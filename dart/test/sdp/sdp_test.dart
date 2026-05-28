@@ -90,4 +90,105 @@ a=candidate:1 1 udp 2122260223 192.168.1.1 9999 typ host
       expect(result.isOk, isTrue);
     });
   });
+
+  group('SdpBuilder.buildAnswerFromOffer canonical codec names', () {
+    // Regression: when a (non-conforming) offerer sends non-canonical
+    // codec case — e.g. `vp8` / `OPUS` / `h264` — the answer must
+    // emit the IANA-canonical form (`VP8` / `opus` / `H264`) instead
+    // of echoing the offerer's bytes. Matches libwebrtc / Pion /
+    // aiortc / Firefox behaviour and keeps `getStats().mimeType`
+    // consistent with what browsers report.
+    SdpSessionDescription parseOffer(String sdp) {
+      final r = SdpParser.parse(sdp);
+      expect(r.isOk, isTrue);
+      return r.value;
+    }
+
+    String rtpmapLineFor(SdpSessionDescription answer, String pt) =>
+        answer.media.single
+            .getAll('rtpmap')
+            .singleWhere((l) => l.startsWith('$pt '));
+
+    test('lowercase `vp8` offer is answered with canonical `VP8`', () {
+      final offerSdp = 'v=0\r\n'
+          'o=- 1 2 IN IP4 0.0.0.0\r\n'
+          's=-\r\n'
+          't=0 0\r\n'
+          'a=group:BUNDLE 0\r\n'
+          'm=video 9 UDP/TLS/RTP/SAVPF 96\r\n'
+          'c=IN IP4 0.0.0.0\r\n'
+          'a=mid:0\r\n'
+          'a=sendrecv\r\n'
+          'a=rtpmap:96 vp8/90000\r\n'
+          'a=ice-ufrag:abcd\r\n'
+          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+          'a=fingerprint:sha-256 ${'AA:' * 31}BB\r\n'
+          'a=setup:actpass\r\n'
+          'a=rtcp-mux\r\n';
+      final answer = SdpBuilder.buildAnswerFromOffer(
+        remoteOffer: parseOffer(offerSdp),
+        ufrag: 'u',
+        password: 'pwd0123456789012345678',
+        fingerprint: 'AA:' * 31 + 'BB',
+        supportedVideoCodecs: ['VP8'],
+      );
+      expect(rtpmapLineFor(answer, '96'), equals('96 VP8/90000'));
+    });
+
+    test('uppercase `OPUS` offer is answered with canonical `opus`', () {
+      final offerSdp = 'v=0\r\n'
+          'o=- 1 2 IN IP4 0.0.0.0\r\n'
+          's=-\r\n'
+          't=0 0\r\n'
+          'a=group:BUNDLE 0\r\n'
+          'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
+          'c=IN IP4 0.0.0.0\r\n'
+          'a=mid:0\r\n'
+          'a=sendrecv\r\n'
+          'a=rtpmap:111 OPUS/48000/2\r\n'
+          'a=ice-ufrag:abcd\r\n'
+          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+          'a=fingerprint:sha-256 ${'AA:' * 31}BB\r\n'
+          'a=setup:actpass\r\n'
+          'a=rtcp-mux\r\n';
+      final answer = SdpBuilder.buildAnswerFromOffer(
+        remoteOffer: parseOffer(offerSdp),
+        ufrag: 'u',
+        password: 'pwd0123456789012345678',
+        fingerprint: 'AA:' * 31 + 'BB',
+        supportedAudioCodecs: ['opus'],
+      );
+      // Channels suffix preserved verbatim.
+      expect(rtpmapLineFor(answer, '111'), equals('111 opus/48000/2'));
+    });
+
+    test('canonical-case offer passes through unchanged', () {
+      // Sanity check that the rewrite doesn't perturb the common case
+      // where the offerer already used IANA-canonical case (Chrome,
+      // Firefox, libwebrtc, Pion, aiortc all do).
+      final offerSdp = 'v=0\r\n'
+          'o=- 1 2 IN IP4 0.0.0.0\r\n'
+          's=-\r\n'
+          't=0 0\r\n'
+          'a=group:BUNDLE 0\r\n'
+          'm=video 9 UDP/TLS/RTP/SAVPF 102\r\n'
+          'c=IN IP4 0.0.0.0\r\n'
+          'a=mid:0\r\n'
+          'a=sendrecv\r\n'
+          'a=rtpmap:102 H264/90000\r\n'
+          'a=ice-ufrag:abcd\r\n'
+          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+          'a=fingerprint:sha-256 ${'AA:' * 31}BB\r\n'
+          'a=setup:actpass\r\n'
+          'a=rtcp-mux\r\n';
+      final answer = SdpBuilder.buildAnswerFromOffer(
+        remoteOffer: parseOffer(offerSdp),
+        ufrag: 'u',
+        password: 'pwd0123456789012345678',
+        fingerprint: 'AA:' * 31 + 'BB',
+        supportedVideoCodecs: ['H264'],
+      );
+      expect(rtpmapLineFor(answer, '102'), equals('102 H264/90000'));
+    });
+  });
 }
