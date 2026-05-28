@@ -42,6 +42,15 @@ enum RtcStatsType {
 
   /// PeerConnection-wide aggregate.
   peerConnection,
+
+  /// One negotiated codec per (m-line, payloadType).
+  codec,
+
+  /// Application-side source feeding an outbound RTP stream.
+  mediaSource,
+
+  /// DTLS certificate (local or remote).
+  certificate,
 }
 
 /// Base class for an entry in a [RtcStatsReport].
@@ -103,6 +112,11 @@ final class TransportStats extends RtcStats {
   /// ICE hasn't nominated a pair.
   final String? selectedCandidatePairId;
 
+  /// `id` of the [CertificateStats] entries for the DTLS certificates
+  /// in use, or `null` if the handshake hasn't completed.
+  final String? localCertificateId;
+  final String? remoteCertificateId;
+
   const TransportStats({
     required super.id,
     required super.timestamp,
@@ -111,6 +125,8 @@ final class TransportStats extends RtcStats {
     required this.packetsSent,
     required this.packetsReceived,
     this.selectedCandidatePairId,
+    this.localCertificateId,
+    this.remoteCertificateId,
   }) : super(type: RtcStatsType.transport);
 }
 
@@ -173,6 +189,15 @@ final class OutboundRtpStats extends RtcStats {
   /// for RTCP SR.
   final int bytesSent;
 
+  /// `id` of the [CodecStats] for the payload type this stream is
+  /// emitting, or `null` if the codec hasn't been negotiated yet.
+  final String? codecId;
+
+  /// `id` of the [MediaSourceStats] feeding this stream — usually the
+  /// `media-source-<trackId>` for the sender's attached track. Null
+  /// when no track is attached.
+  final String? mediaSourceId;
+
   const OutboundRtpStats({
     required super.id,
     required super.timestamp,
@@ -180,6 +205,8 @@ final class OutboundRtpStats extends RtcStats {
     required this.kind,
     required this.packetsSent,
     required this.bytesSent,
+    this.codecId,
+    this.mediaSourceId,
   }) : super(type: RtcStatsType.outboundRtp);
 }
 
@@ -233,6 +260,10 @@ final class InboundRtpStats extends RtcStats {
   /// Total RTP payload bytes received for this SSRC (no RTP header).
   final int bytesReceived;
 
+  // No `codecId` field yet: per-SSRC payload-type tracking isn't
+  // wired on the receive path, so a field exposed here would always
+  // be null. Add it back once the SSRC→PT map exists.
+
   const InboundRtpStats({
     required super.id,
     required super.timestamp,
@@ -240,6 +271,60 @@ final class InboundRtpStats extends RtcStats {
     required this.packetsReceived,
     required this.bytesReceived,
   }) : super(type: RtcStatsType.inboundRtp);
+}
+
+/// One negotiated codec for an m-line (RFC 8866 `a=rtpmap`).
+/// W3C `RTCCodecStats`. The `id` shape is `codec-<mid>-<payloadType>`
+/// so callers can find codecs for a specific track via the m-line ID
+/// the SDP carries.
+final class CodecStats extends RtcStats {
+  final int payloadType;
+  final String mimeType; // e.g. "audio/opus", "video/VP8"
+  final int clockRate;
+  final int? channels;
+  final String? sdpFmtpLine; // raw `a=fmtp` params, no PT prefix
+
+  const CodecStats({
+    required super.id,
+    required super.timestamp,
+    required this.payloadType,
+    required this.mimeType,
+    required this.clockRate,
+    this.channels,
+    this.sdpFmtpLine,
+  }) : super(type: RtcStatsType.codec);
+}
+
+/// Application-side source feeding an outbound RTP stream — the
+/// MediaStreamTrack the sender is attached to. W3C `RTCMediaSourceStats`.
+/// MVP exposes just identity + kind; video frame dimensions / audio
+/// level are deferred (require per-frame instrumentation).
+final class MediaSourceStats extends RtcStats {
+  final String trackIdentifier;
+  final String kind; // "audio" | "video"
+
+  const MediaSourceStats({
+    required super.id,
+    required super.timestamp,
+    required this.trackIdentifier,
+    required this.kind,
+  }) : super(type: RtcStatsType.mediaSource);
+}
+
+/// DTLS certificate fingerprint (W3C `RTCCertificateStats`). One
+/// entry per role (local + remote). The `base64Certificate` field
+/// W3C also defines isn't exposed yet — the DTLS module only retains
+/// the verified fingerprint.
+final class CertificateStats extends RtcStats {
+  final String fingerprint; // hex, colon-separated (`AA:BB:CC:...`)
+  final String fingerprintAlgorithm; // e.g. "sha-256"
+
+  const CertificateStats({
+    required super.id,
+    required super.timestamp,
+    required this.fingerprint,
+    required this.fingerprintAlgorithm,
+  }) : super(type: RtcStatsType.certificate);
 }
 
 /// One open / opening DataChannel.

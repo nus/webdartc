@@ -328,5 +328,150 @@ void main() {
         await pcB.close();
       }
     }, timeout: const Timeout(Duration(seconds: 45)));
+
+    test('codec + media-source + certificate entries appear after handshake',
+        () async {
+      void addAudio(PeerConnection pc) =>
+          pc.addTransceiver('audio', direction: 'sendrecv');
+      final (pcA, pcB) = await _handshakeLoopback(
+        configureA: addAudio,
+        configureB: addAudio,
+      );
+      // Attach a track to pcA's sender so MediaSourceStats has
+      // something to identify by.
+      final track = _FakeAudioTrack('test-track-id');
+      await pcA.getSenders().single.replaceTrack(track);
+
+      try {
+        final reportA = await pcA.getStats();
+
+        // ── certificate ─────────────────────────────────────────────
+        final local =
+            reportA['certificate-local'] as CertificateStats?;
+        final remote =
+            reportA['certificate-remote'] as CertificateStats?;
+        expect(local, isNotNull);
+        expect(remote, isNotNull);
+        expect(local!.fingerprintAlgorithm, 'sha-256');
+        // SHA-256 fingerprint, colon-separated hex, 32 bytes →
+        // 32 hex-pairs + 31 colons = 95 chars.
+        expect(local.fingerprint, hasLength(95));
+        expect(local.fingerprint, matches(RegExp(r'^[0-9A-F:]+$')));
+        expect(remote!.fingerprint, hasLength(95));
+        // Local and remote certs must differ (each PC built its own).
+        expect(local.fingerprint, isNot(equals(remote.fingerprint)));
+
+        final transport = reportA['transport'] as TransportStats;
+        expect(transport.localCertificateId, 'certificate-local');
+        expect(transport.remoteCertificateId, 'certificate-remote');
+
+        // ── codec ───────────────────────────────────────────────────
+        final codecs = reportA
+            .ofType<CodecStats>(RtcStatsType.codec)
+            .toList();
+        expect(codecs, isNotEmpty,
+            reason: 'audio m-line should have produced ≥1 codec entry');
+        // Opus 48 kHz stereo is the default audio codec.
+        final opus = codecs.singleWhere(
+          (c) => c.mimeType == 'audio/opus',
+          orElse: () => throw StateError('no audio/opus codec entry'),
+        );
+        expect(opus.payloadType, 111);
+        expect(opus.clockRate, 48000);
+        expect(opus.channels, 2);
+
+        // ── media-source ────────────────────────────────────────────
+        final sources = reportA
+            .ofType<MediaSourceStats>(RtcStatsType.mediaSource)
+            .toList();
+        expect(sources, hasLength(1));
+        expect(sources.single.trackIdentifier, 'test-track-id');
+        expect(sources.single.kind, 'audio');
+        expect(sources.single.id, 'media-source-test-track-id');
+
+        // ── outbound-rtp back-references ────────────────────────────
+        final outbound = reportA
+            .ofType<OutboundRtpStats>(RtcStatsType.outboundRtp)
+            .single;
+        expect(outbound.codecId, isNotNull);
+        expect(reportA[outbound.codecId!], isA<CodecStats>());
+        expect(outbound.mediaSourceId, 'media-source-test-track-id');
+        expect(reportA[outbound.mediaSourceId!], isA<MediaSourceStats>());
+      } finally {
+        await pcA.close();
+        await pcB.close();
+      }
+    }, timeout: const Timeout(Duration(seconds: 45)));
+
+    test('CertificateStats round-trips the remote a=fingerprint algorithm',
+        () async {
+      // Regression: setRemoteDescription now parses `<algo> <hex>`
+      // instead of stripping a hardcoded `sha-256 ` prefix. A peer
+      // sending sha-384 must surface as such in getStats — earlier
+      // code mis-labelled non-sha-256 fingerprints. No connection
+      // needed; we just exercise the SDP-ingest path.
+      final pc = PeerConnection(configuration: PeerConnectionConfiguration());
+      const sha384Hex =
+          'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:'
+          'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:'
+          'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99';
+      final offerSdp = 'v=0\r\n'
+          'o=- 1 2 IN IP4 0.0.0.0\r\n'
+          's=-\r\n'
+          't=0 0\r\n'
+          'a=group:BUNDLE 0\r\n'
+          'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
+          'c=IN IP4 0.0.0.0\r\n'
+          'a=mid:0\r\n'
+          'a=sendrecv\r\n'
+          'a=rtpmap:111 opus/48000/2\r\n'
+          'a=ice-ufrag:abcd\r\n'
+          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+          'a=fingerprint:sha-384 $sha384Hex\r\n'
+          'a=setup:actpass\r\n'
+          'a=rtcp-mux\r\n';
+      try {
+        await pc.setRemoteDescription(
+          SessionDescription(
+            type: SessionDescriptionType.offer,
+            sdp: offerSdp,
+          ),
+        );
+        final report = await pc.getStats();
+        final remote =
+            report['certificate-remote'] as CertificateStats?;
+        expect(remote, isNotNull);
+        expect(remote!.fingerprintAlgorithm, 'sha-384');
+        expect(remote.fingerprint, sha384Hex);
+      } finally {
+        await pc.close();
+      }
+    });
   });
+}
+
+/// Minimal `MediaStreamTrack` for tests that only need stable id+kind
+/// (e.g. asserting MediaSourceStats wiring). Doesn't actually produce
+/// audio data — the test only inspects metadata.
+class _FakeAudioTrack extends MediaStreamTrack {
+  @override
+  final String id;
+  _FakeAudioTrack(this.id);
+  @override
+  String get kind => 'audio';
+  @override
+  String get label => 'fake-audio';
+  @override
+  bool enabled = true;
+  @override
+  MediaStreamTrackState get readyState => MediaStreamTrackState.live;
+  @override
+  MediaStreamTrack clone() => _FakeAudioTrack(id);
+  @override
+  void stop() {}
+  @override
+  Stream<VideoFrame> get onVideoFrame =>
+      throw UnsupportedError('audio track');
+  @override
+  Stream<AudioData> get onAudioData => const Stream<AudioData>.empty();
 }

@@ -91,9 +91,12 @@ final class PeerConnection {
   late final String _iceUfrag;
   late final String _icePwd;
 
-  // SDP
+  // SDP — cached parses, so re-negotiation parses each side once and
+  // `getStats()` doesn't have to re-tokenise the SDP on every snapshot.
   SessionDescription? _localDescription;
   SessionDescription? _remoteDescription;
+  SdpSessionDescription? _localParsed;
+  SdpSessionDescription? _remoteParsed;
 
   // Data channels
   final Map<int, DataChannel> _dataChannels = {};
@@ -113,6 +116,12 @@ final class PeerConnection {
   /// remote peer sends a Receiver Report whose report block names
   /// that SSRC; surfaced via `getStats()` as `RemoteInboundRtpStats`.
   final Map<int, _RemoteInboundStats> _remoteInboundStats = {};
+
+  /// Parsed remote DTLS fingerprint (algorithm + hex pair) from the
+  /// SDP `a=fingerprint` attribute on `setRemoteDescription`. Used in
+  /// `getStats` to emit the remote [CertificateStats] entry; null
+  /// until the remote description is set.
+  ({String algorithm, String hex})? _remoteFp;
 
   // Transport-CC state
   int _twccExtId = 0; // extension ID from SDP (0 = not negotiated)
@@ -242,11 +251,10 @@ final class PeerConnection {
     }
     await _ensureTransportStarted();
     final remoteDesc = _remoteDescription;
-    if (remoteDesc == null) {
+    final remoteParsed = _remoteParsed;
+    if (remoteDesc == null || remoteParsed == null) {
       throw StateError('createAnswer: no remote offer set');
     }
-    final parsed = SdpParser.parse(remoteDesc.sdp);
-    if (parsed.isErr) throw Exception(parsed.error.message);
 
     final localSenderSsrcs = <String, int>{};
     for (final t in _transceivers) {
@@ -254,7 +262,7 @@ final class PeerConnection {
     }
     // Honour each transceiver's preferredCodecs on the answer side.
     final sdp = SdpBuilder.buildAnswerFromOffer(
-      remoteOffer: parsed.value,
+      remoteOffer: remoteParsed,
       ufrag: _iceUfrag,
       password: _icePwd,
       fingerprint: _localCert.sha256Fingerprint,
@@ -274,8 +282,17 @@ final class PeerConnection {
   }
 
   /// Set the local description and begin ICE gathering.
+  ///
+  /// Throws when [desc.sdp] doesn't parse — earlier code silently
+  /// dropped malformed local SDPs, leaving the description field
+  /// and its parsed cache out of sync. `createOffer` / `createAnswer`
+  /// produce well-formed SDP, so the throw mainly catches a caller
+  /// passing hand-rolled bytes.
   Future<void> setLocalDescription(SessionDescription desc) async {
+    final parsed = SdpParser.parse(desc.sdp);
+    if (parsed.isErr) throw Exception(parsed.error.message);
     _localDescription = desc;
+    _localParsed = parsed.value;
     _setSignalingState(
       desc.type == SessionDescriptionType.offer
           ? SignalingState.haveLocalOffer
@@ -295,16 +312,18 @@ final class PeerConnection {
 
   /// Set the remote description.
   Future<void> setRemoteDescription(SessionDescription desc) async {
+    // Parse first so the description and its parsed cache land
+    // atomically — see `setLocalDescription` for the same rationale.
+    final parsed = SdpParser.parse(desc.sdp);
+    if (parsed.isErr) throw Exception(parsed.error.message);
+    final sdp = parsed.value;
     _remoteDescription = desc;
+    _remoteParsed = sdp;
     _setSignalingState(
       desc.type == SessionDescriptionType.offer
           ? SignalingState.haveRemoteOffer
           : SignalingState.stable,
     );
-
-    final parsed = SdpParser.parse(desc.sdp);
-    if (parsed.isErr) throw Exception(parsed.error.message);
-    final sdp = parsed.value;
 
     // When we are the offerer and an answer just arrived, apply the
     // negotiated MID/PT to our senders so outgoing RTP uses the remote's
@@ -337,10 +356,18 @@ final class PeerConnection {
     if (remoteFingerprint == null) {
       throw Exception('Remote SDP missing required a=fingerprint attribute (RFC 8827 §5)');
     }
-    // Strip "sha-256 " prefix if present
-    _dtls.expectedRemoteFingerprint = remoteFingerprint.startsWith('sha-256 ')
-        ? remoteFingerprint.substring(8)
+    // SDP a=fingerprint is "<algorithm> <hex>" (RFC 4572 §5). Split
+    // properly so the stats layer can report the actual algorithm the
+    // remote used; tolerant fallback treats a missing prefix as
+    // sha-256, which is what every real WebRTC peer sends today.
+    final spaceIdx = remoteFingerprint.indexOf(' ');
+    final algorithm =
+        spaceIdx > 0 ? remoteFingerprint.substring(0, spaceIdx) : 'sha-256';
+    final hex = spaceIdx > 0
+        ? remoteFingerprint.substring(spaceIdx + 1)
         : remoteFingerprint;
+    _dtls.expectedRemoteFingerprint = hex;
+    _remoteFp = (algorithm: algorithm, hex: hex);
 
     // Set DTLS role: if remote is active, we are passive (server); otherwise client.
     _dtls.role = (setup == 'active') ? DtlsRole.server : DtlsRole.client;
@@ -628,6 +655,24 @@ final class PeerConnection {
       );
     }
 
+    // Media sources + codecs are emitted first so the outbound /
+    // inbound entries below can back-reference them by id.
+    final mediaSourceIdByTrack = <String, String>{};
+    for (final t in _transceivers) {
+      final track = t.sender?.track;
+      if (track == null) continue;
+      final id = 'media-source-${track.id}';
+      if (mediaSourceIdByTrack.containsKey(track.id)) continue;
+      mediaSourceIdByTrack[track.id] = id;
+      entries[id] = MediaSourceStats(
+        id: id,
+        timestamp: now,
+        trackIdentifier: track.id,
+        kind: track.kind,
+      );
+    }
+    final codecIdByPt = _emitCodecStats(entries, now);
+
     for (final t in _transceivers) {
       final sender = t.sender;
       if (sender == null) continue;
@@ -639,6 +684,11 @@ final class PeerConnection {
         kind: sender.kind,
         packetsSent: sender.packetsSent,
         bytesSent: sender.bytesSent,
+        // PT-only lookup — if the same PT shows up under multiple
+        // m-lines the first one wins (see _emitCodecStats). A pair-
+        // keyed (mid, pt) map would need RtpSender to expose its mid.
+        codecId: codecIdByPt[sender.payloadType],
+        mediaSourceId: mediaSourceIdByTrack[sender.track?.id],
       );
       // Emit a paired remote-inbound entry once the remote has actually
       // reported anything about this SSRC. `clockRate` converts the
@@ -665,12 +715,37 @@ final class PeerConnection {
       // stream that doesn't exist.
       if (s.packetsReceived == 0) continue;
       final id = 'inbound-rtp-${s.ssrc}';
+      // PT for an inbound stream isn't tracked per-SSRC yet; best
+      // effort: leave codecId null when we don't know.
       entries[id] = InboundRtpStats(
         id: id,
         timestamp: now,
         ssrc: s.ssrc,
         packetsReceived: s.packetsReceived,
         bytesReceived: s.bytesReceived,
+      );
+    }
+
+    // DTLS certificates. The local cert is sha-256 by impl
+    // (EcdsaCertificate); the remote algorithm comes verbatim from
+    // the SDP a=fingerprint line, so a peer using sha-384/sha-512
+    // gets reported as such instead of being mis-labelled.
+    const localCertId = 'certificate-local';
+    entries[localCertId] = CertificateStats(
+      id: localCertId,
+      timestamp: now,
+      fingerprint: _localCert.sha256Fingerprint,
+      fingerprintAlgorithm: 'sha-256',
+    );
+    String? remoteCertId;
+    final remoteFp = _remoteFp;
+    if (remoteFp != null) {
+      remoteCertId = 'certificate-remote';
+      entries[remoteCertId] = CertificateStats(
+        id: remoteCertId,
+        timestamp: now,
+        fingerprint: remoteFp.hex,
+        fingerprintAlgorithm: remoteFp.algorithm,
       );
     }
 
@@ -682,6 +757,8 @@ final class PeerConnection {
       packetsSent: _transport.packetsSent,
       packetsReceived: _transport.packetsReceived,
       selectedCandidatePairId: selectedPairId,
+      localCertificateId: localCertId,
+      remoteCertificateId: remoteCertId,
     );
 
     entries['pc'] = PeerConnectionStats(
@@ -692,6 +769,71 @@ final class PeerConnection {
     );
 
     return Future.value(RtcStatsReport(entries));
+  }
+
+  /// Emit one [CodecStats] per (m-line, payloadType) found in the
+  /// Whichever description is the agreed-upon answer — that's the
+  /// narrowed codec list both sides committed to. Returns null while
+  /// the offer/answer dance is still pending, in which case `getStats`
+  /// skips codec entries entirely.
+  SdpSessionDescription? _agreedSdp() {
+    if (_localDescription?.type == SessionDescriptionType.answer) {
+      return _localParsed;
+    }
+    if (_remoteDescription?.type == SessionDescriptionType.answer) {
+      return _remoteParsed;
+    }
+    return null;
+  }
+
+  /// Emit one [CodecStats] per (m-line, payloadType) found in the
+  /// agreed-upon SDP and return a `{payloadType: codecId}` map for
+  /// outbound entries to back-reference. The same PT under multiple
+  /// m-lines (rare but legal) collapses to the first one in the map —
+  /// `getStats` reports the most-likely codec only.
+  Map<int, String> _emitCodecStats(Map<String, RtcStats> entries, DateTime now) {
+    final sdp = _agreedSdp();
+    if (sdp == null) return const {};
+
+    final out = <int, String>{};
+    for (final m in sdp.media) {
+      if (m.type != 'audio' && m.type != 'video') continue;
+      final mid = m.mid;
+      // BUNDLE makes `a=mid` mandatory; a missing one means malformed
+      // SDP rather than something we should paper over with a `?`
+      // placeholder that would collide across m-lines.
+      if (mid == null) continue;
+
+      // PT→fmtp lookup, hoisted out of the rtpmap loop below so the
+      // fmtp scan happens once per m-line rather than once per codec.
+      final fmtpByPt = m.fmtpByPayloadType();
+
+      for (final rtpmap in m.getAll('rtpmap')) {
+        // Format: "<PT> <codec>/<clock>[/<channels>]"
+        final space = rtpmap.indexOf(' ');
+        if (space < 0) continue;
+        final pt = int.tryParse(rtpmap.substring(0, space));
+        if (pt == null) continue;
+        final parts = rtpmap.substring(space + 1).split('/');
+        if (parts.isEmpty) continue;
+        final codecName = parts[0];
+        final clockRate = parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0;
+        final channels =
+            parts.length > 2 ? int.tryParse(parts[2]) : null;
+        final id = 'codec-$mid-$pt';
+        entries[id] = CodecStats(
+          id: id,
+          timestamp: now,
+          payloadType: pt,
+          mimeType: '${m.type}/$codecName',
+          clockRate: clockRate,
+          channels: channels,
+          sdpFmtpLine: fmtpByPt[pt],
+        );
+        out.putIfAbsent(pt, () => id);
+      }
+    }
+    return out;
   }
 
   /// Close the connection.
