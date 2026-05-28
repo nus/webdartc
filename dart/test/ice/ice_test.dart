@@ -382,10 +382,8 @@ void main() {
       ice.setRemoteParameters(
           IceParameters(usernameFragment: 'r', password: 'rp'));
 
-      final remoteCoordPairs = ice.pairs
-          .where((p) =>
-              p.remote.ip == remote.ip && p.remote.port == remote.port)
-          .toList();
+      final remoteCoordPairs = ice.pairs.where(
+          (p) => p.remote.ip == remote.ip && p.remote.port == remote.port);
       expect(remoteCoordPairs, hasLength(1));
     });
 

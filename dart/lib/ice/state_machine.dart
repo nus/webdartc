@@ -268,7 +268,9 @@ final class IceStateMachine implements ProtocolStateMachine {
   /// agent is in `iceGatheringComplete` (pairs against all locals)
   /// *and* a later `_startChecks` walking `_remoteCandidates` again.
   /// Without the gate the same pair would be inserted twice and
-  /// shadow each other in selection / stats.
+  /// shadow each other in selection / stats. Gating on insert (rather
+  /// than deduping at read time) means selection and
+  /// `_checkConnectivityComplete` see a single source of truth.
   void _addPair(IceCandidate local, IceCandidate remote) {
     if (local.transport != remote.transport) return;
     if (local.ip.isV6 != remote.ip.isV6) return;
