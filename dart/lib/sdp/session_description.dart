@@ -73,12 +73,12 @@ final class SdpMediaDescription {
   List<String> getAll(String key) =>
       allAttributes.where((a) => a.$1 == key).map((a) => a.$2).toList();
 
-  /// Index `a=fmtp:<pt> <params>` lines by payload type. Built on
-  /// demand and not cached — callers that consume it inside a tight
-  /// loop should hoist the result. Lines that don't parse as
-  /// `<int> <params>` are silently dropped (best-effort against
-  /// malformed remote SDPs).
-  Map<int, String> get fmtpByPayloadType {
+  /// Index `a=fmtp:<pt> <params>` lines by payload type. Allocates a
+  /// fresh map each call (intentionally a method, not a getter, so
+  /// callers can see the cost) — hoist when reading inside a loop.
+  /// Lines that don't parse as `<int> <params>` are silently dropped
+  /// (best-effort against malformed remote SDPs).
+  Map<int, String> fmtpByPayloadType() {
     final out = <int, String>{};
     for (final f in getAll('fmtp')) {
       final space = f.indexOf(' ');

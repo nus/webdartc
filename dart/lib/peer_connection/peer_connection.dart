@@ -282,11 +282,13 @@ final class PeerConnection {
   }
 
   /// Set the local description and begin ICE gathering.
+  ///
+  /// Throws when [desc.sdp] doesn't parse — earlier code silently
+  /// dropped malformed local SDPs, leaving the description field
+  /// and its parsed cache out of sync. `createOffer` / `createAnswer`
+  /// produce well-formed SDP, so the throw mainly catches a caller
+  /// passing hand-rolled bytes.
   Future<void> setLocalDescription(SessionDescription desc) async {
-    // Parse first so a malformed local description rejects atomically
-    // (the description field and its parsed cache stay in lockstep).
-    // `createOffer` / `createAnswer` produce well-formed SDP, so this
-    // path mainly catches a caller passing us hand-rolled bytes.
     final parsed = SdpParser.parse(desc.sdp);
     if (parsed.isErr) throw Exception(parsed.error.message);
     _localDescription = desc;
@@ -804,7 +806,7 @@ final class PeerConnection {
 
       // PT→fmtp lookup, hoisted out of the rtpmap loop below so the
       // fmtp scan happens once per m-line rather than once per codec.
-      final fmtpByPt = m.fmtpByPayloadType;
+      final fmtpByPt = m.fmtpByPayloadType();
 
       for (final rtpmap in m.getAll('rtpmap')) {
         // Format: "<PT> <codec>/<clock>[/<channels>]"

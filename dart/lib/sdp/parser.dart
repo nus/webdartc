@@ -368,7 +368,7 @@ abstract final class SdpBuilder {
         final selectedFormats = <String>[];
         final rawAttrs = <String>[];
 
-        final fmtpByPt = rm.fmtpByPayloadType;
+        final fmtpByPt = rm.fmtpByPayloadType();
         for (final rtpmap in rtpmaps) {
           // rtpmap value: "PT codec/clockRate[/channels]"
           final spaceIdx = rtpmap.indexOf(' ');
