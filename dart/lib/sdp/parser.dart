@@ -377,9 +377,22 @@ abstract final class SdpBuilder {
           final codecInfo = rtpmap.substring(spaceIdx + 1);
           final codecName = codecInfo.split('/').first;
 
-          if (supported.any((s) => s.toLowerCase() == codecName.toLowerCase())) {
+          // Case-insensitive match, canonical write-back: `supported`
+          // carries the IANA-canonical spelling (`'VP8'`, `'opus'`)
+          // from MediaEngine, so a non-conforming offer like `vp8` is
+          // answered with `VP8`. Matches libwebrtc / Pion / aiortc /
+          // Firefox behaviour. The `isNotEmpty` gate doubles as a
+          // codecName-empty filter (malformed rtpmap "PT /...") since
+          // an empty needle can't match any non-empty `supported`
+          // entry.
+          final canonical = supported.firstWhere(
+            (s) => s.toLowerCase() == codecName.toLowerCase(),
+            orElse: () => '',
+          );
+          if (canonical.isNotEmpty) {
             selectedFormats.add(pt);
-            rawAttrs.add('rtpmap:$rtpmap');
+            final tail = codecInfo.substring(codecName.length);
+            rawAttrs.add('rtpmap:$pt $canonical$tail');
             final ptInt = int.tryParse(pt);
             final fmtp = ptInt == null ? null : fmtpByPt[ptInt];
             if (fmtp != null) rawAttrs.add('fmtp:$pt $fmtp');
