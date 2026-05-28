@@ -605,15 +605,10 @@ final class PeerConnection {
     for (final pair in _ice.pairs) {
       final localId = pair.local.statsId(isLocal: true);
       final remoteId = pair.remote.statsId(isLocal: false);
-      // Key by the pair's identity hash rather than the (localId,
-      // remoteId) tuple: the ICE state machine can hold multiple
-      // CandidatePair instances with the same coordinates (e.g. a
-      // host pair plus a prflx-triggered pair to the same address),
-      // and we want each one's state visible — not a single survivor
-      // overwriting the rest. TODO(ice): dedupe at `_addPair` time
-      // and switch back to a structured pair id.
-      final pairId =
-          'pair-${identityHashCode(pair).toRadixString(16)}';
+      // ICE state machine de-dupes by candidate coords in `_addPair`,
+      // so this structured id is collision-free: one entry per
+      // (local-candidate, remote-candidate) coordinate.
+      final pairId = 'pair-$localId-$remoteId';
       final isSelected = identical(_ice.selectedPair, pair);
       if (isSelected) selectedPairId = pairId;
       entries[pairId] = CandidatePairStats(

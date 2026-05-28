@@ -257,14 +257,38 @@ final class IceStateMachine implements ProtocolStateMachine {
   }
 
   /// Cartesian-product helper shared by [_pairCandidate] and
-  /// [_pairLocalCandidate]. RFC 8445 §6.1.2.2 only pairs candidates of
-  /// the same transport (UDP here) and same address family.
+  /// [_pairLocalCandidate]. RFC 8445 §6.1.2.2: only pairs candidates
+  /// of the same transport (UDP here) and address family; each
+  /// `(local, remote)` coordinate may exist at most once in the
+  /// check list.
+  ///
+  /// The dedup gate matters because Trickle ICE callers can drive the
+  /// same `(local, remote)` through here from two paths — e.g. a
+  /// remote candidate arriving via `addRemoteCandidate` while the
+  /// agent is in `iceGatheringComplete` (pairs against all locals)
+  /// *and* a later `_startChecks` walking `_remoteCandidates` again.
+  /// Without the gate the same pair would be inserted twice and
+  /// shadow each other in selection / stats.
   void _addPair(IceCandidate local, IceCandidate remote) {
     if (local.transport != remote.transport) return;
     if (local.ip.isV6 != remote.ip.isV6) return;
+    if (_pairs.any((p) =>
+        _sameCoords(p.local, local) && _sameCoords(p.remote, remote))) {
+      return;
+    }
     _pairs.add(CandidatePair(local: local, remote: remote)
       ..state = CandidatePairState.waiting);
   }
+
+  /// Two candidates address the same physical endpoint iff their
+  /// type + transport + (ip, port) tuple matches. Foundation + priority
+  /// can differ (random hex, computed) without changing the wire
+  /// effect of a connectivity check between them.
+  static bool _sameCoords(IceCandidate a, IceCandidate b) =>
+      a.type == b.type &&
+      a.transport == b.transport &&
+      a.ip == b.ip &&
+      a.port == b.port;
 
   /// Add a remote ICE candidate (Trickle ICE).
   ///

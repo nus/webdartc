@@ -352,4 +352,80 @@ void main() {
       expect(r.value.outputPackets, isNotEmpty);
     });
   });
+
+  group('IceStateMachine._addPair dedup', () {
+    test('adding the same remote twice yields only one pair', () {
+      // Trickle-ICE callers can drive `addRemoteCandidate` for the
+      // same candidate twice in races between the initial pairing
+      // and the subsequent `setRemoteParameters` → `_startChecks`
+      // walk. The state machine must keep the check list unique.
+      final ice = IceStateMachine(controlling: true);
+      ice.startGathering(
+        IceParameters(usernameFragment: 'u', password: 'p'),
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
+      );
+
+      final remote = IceCandidate(
+        foundation: 'r1',
+        componentId: 1,
+        transport: 'udp',
+        priority: 1,
+        ip: IpAddress.parse('203.0.113.1'),
+        port: 30000,
+        type: IceCandidateType.host,
+      );
+      ice.addRemoteCandidate(remote);
+      ice.addRemoteCandidate(remote);
+      // Setting params triggers `_startChecks`, which re-walks
+      // `_remoteCandidates`; this is a third opportunity to add the
+      // pair. Dedup must still produce one pair.
+      ice.setRemoteParameters(
+          IceParameters(usernameFragment: 'r', password: 'rp'));
+
+      final remoteCoordPairs = ice.pairs
+          .where((p) =>
+              p.remote.ip == remote.ip && p.remote.port == remote.port)
+          .toList();
+      expect(remoteCoordPairs, hasLength(1));
+    });
+
+    test('different remote types at same address are kept as distinct pairs',
+        () {
+      // Host and prflx with the same (ip, port) are RFC-distinct
+      // candidates (different priorities, different selection
+      // semantics). They must NOT be coalesced by the dedup.
+      final ice = IceStateMachine(controlling: true);
+      ice.startGathering(
+        IceParameters(usernameFragment: 'u', password: 'p'),
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
+      );
+
+      final host = IceCandidate(
+        foundation: 'h',
+        componentId: 1,
+        transport: 'udp',
+        priority: 1,
+        ip: IpAddress.parse('203.0.113.1'),
+        port: 30000,
+        type: IceCandidateType.host,
+      );
+      final prflx = IceCandidate(
+        foundation: 'p',
+        componentId: 1,
+        transport: 'udp',
+        priority: 1,
+        ip: IpAddress.parse('203.0.113.1'),
+        port: 30000,
+        type: IceCandidateType.prflx,
+      );
+      ice.addRemoteCandidate(host);
+      ice.addRemoteCandidate(prflx);
+
+      final samePort = ice.pairs
+          .where((p) => p.remote.port == 30000)
+          .map((p) => p.remote.type)
+          .toSet();
+      expect(samePort, equals({IceCandidateType.host, IceCandidateType.prflx}));
+    });
+  });
 }
