@@ -45,6 +45,13 @@ Future<(PeerConnection, PeerConnection)> _handshakeLoopback({
     configuration: PeerConnectionConfiguration(),
     settingEngine: _kLoopbackSetting,
   );
+  // Subscribe BEFORE the SDP dance: onConnectionStateChange is a
+  // broadcast stream that drops events for late subscribers, and on
+  // loopback the handshake can race ahead of our subscription.
+  final aConnected = pcA.onConnectionStateChange
+      .firstWhere((s) => s == PeerConnectionState.connected);
+  final bConnected = pcB.onConnectionStateChange
+      .firstWhere((s) => s == PeerConnectionState.connected);
   _wireTrickle(pcA, pcB);
   if (configureA != null) configureA(pcA);
   if (configureB != null) configureB(pcB);
@@ -54,12 +61,7 @@ Future<(PeerConnection, PeerConnection)> _handshakeLoopback({
   final answer = await pcB.createAnswer();
   await pcB.setLocalDescription(answer);
   await pcA.setRemoteDescription(answer);
-  await Future.wait([
-    pcA.onConnectionStateChange
-        .firstWhere((s) => s == PeerConnectionState.connected),
-    pcB.onConnectionStateChange
-        .firstWhere((s) => s == PeerConnectionState.connected),
-  ]).timeout(connectedTimeout);
+  await Future.wait([aConnected, bConnected]).timeout(connectedTimeout);
   return (pcA, pcB);
 }
 

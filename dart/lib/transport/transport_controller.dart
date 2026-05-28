@@ -26,6 +26,14 @@ final class TransportController {
   /// `0.0.0.0` as the key; per-interface bind uses the interface IPs.
   final Map<IpAddress, RawDatagramSocket> _sockets = {};
 
+  /// Per-socket FIFO of UDP datagrams whose `send()` returned 0 (kernel
+  /// send buffer transiently full — happens on Windows loopback after
+  /// even a 2-packet burst). Drained on `RawSocketEvent.write`. Without
+  /// this queue, packets are silently dropped, which on the wire looks
+  /// like random loopback packet loss and stalls DTLS handshakes for
+  /// seconds while the upper-layer retransmit timer fires.
+  final Map<RawDatagramSocket, List<_PendingSend>> _pendingSends = {};
+
   /// Last local IP a DTLS record arrived on. DTLS state-machine output
   /// packets don't carry a localIp, but Windows refuses to bounce UDP
   /// across non-loopback interfaces — so when no other localIp signal
@@ -240,6 +248,7 @@ final class TransportController {
       socket.close();
     }
     _sockets.clear();
+    _pendingSends.clear();
   }
 
   // ── Module attachment ─────────────────────────────────────────────────────
@@ -491,30 +500,42 @@ final class TransportController {
 
   void _onEvent(
       RawDatagramSocket socket, IpAddress bindIp, RawSocketEvent event) {
-    if (event != RawSocketEvent.read) return;
-    // Record arrival timestamp immediately, before any processing.
-    final arrivalUs = _arrivalClock.elapsedMicroseconds;
-    final datagram = socket.receive();
-    if (datagram == null) return;
-
-    final data = datagram.data;
-    final remoteIp = IpAddress.fromBytes(datagram.address.rawAddress);
-    final remotePort = datagram.port;
-
-    _bytesReceived += data.length;
-    _packetsReceived++;
-
-    if (_debug) {
-      stderr.writeln('[transport] RX ${data.length}b from $remoteIp:$remotePort'
-          ' on local=$bindIp'
-          ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
-      if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
-        final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-        stderr.writeln('[transport] RX hex: $hex');
-      }
+    if (event == RawSocketEvent.write) {
+      _drainPendingSends(socket);
+      return;
     }
+    if (event != RawSocketEvent.read) return;
+    // Drain every datagram the kernel has queued for this readable event.
+    // Dart's RawDatagramSocket emits a single RawSocketEvent.read when the
+    // socket transitions to readable; if multiple datagrams arrive before
+    // we drain, the extras stay in the OS receive buffer and only become
+    // visible on the NEXT readable transition (which may not fire until
+    // another packet arrives). On Windows loopback that gap stalls DTLS
+    // handshakes — server flight retransmits sit unread for seconds.
+    while (true) {
+      final arrivalUs = _arrivalClock.elapsedMicroseconds;
+      final datagram = socket.receive();
+      if (datagram == null) return;
 
-    _dispatch(data, arrivalUs, remoteIp, remotePort, bindIp);
+      final data = datagram.data;
+      final remoteIp = IpAddress.fromBytes(datagram.address.rawAddress);
+      final remotePort = datagram.port;
+
+      _bytesReceived += data.length;
+      _packetsReceived++;
+
+      if (_debug) {
+        stderr.writeln('[transport] RX ${data.length}b from $remoteIp:$remotePort'
+            ' on local=$bindIp'
+            ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
+        if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
+          final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+          stderr.writeln('[transport] RX hex: $hex');
+        }
+      }
+
+      _dispatch(data, arrivalUs, remoteIp, remotePort, bindIp);
+    }
   }
 
   void _dispatch(Uint8List data, int arrivalUs, IpAddress remoteIp,
@@ -816,14 +837,53 @@ final class TransportController {
         }
       }
       final socket = _selectSocket(localIp);
-      final sent = socket?.send(data, addr, port);
-      if (sent != null && sent > 0) {
+      if (socket == null) return;
+      // If we already have a pending queue for this socket, append instead
+      // of trying send() — preserving order with previously deferred packets.
+      final queued = _pendingSends[socket];
+      if (queued != null && queued.isNotEmpty) {
+        queued.add(_PendingSend(data, addr, port));
+        return;
+      }
+      final sent = socket.send(data, addr, port);
+      if (sent > 0) {
         _bytesSent += sent;
         _packetsSent++;
+      } else {
+        // Windows loopback returns 0 from send() once the kernel UDP send
+        // buffer is briefly full (after as few as 2 back-to-back sends).
+        // The datagram is NOT queued by the OS — we have to hold it until
+        // RawSocketEvent.write fires, then retry. Dart auto-disables write
+        // events after each delivery; re-arm so the queue actually drains.
+        (_pendingSends[socket] ??= <_PendingSend>[])
+            .add(_PendingSend(data, addr, port));
+        socket.writeEventsEnabled = true;
       }
     } catch (_) {
       // Network errors are non-fatal in UDP
     }
+  }
+
+  void _drainPendingSends(RawDatagramSocket socket) {
+    final q = _pendingSends[socket];
+    if (q == null || q.isEmpty) return;
+    while (q.isNotEmpty) {
+      final pkt = q.first;
+      final sent = socket.send(pkt.data, pkt.address, pkt.port);
+      if (sent == 0) {
+        // Buffer still full — leave the queue intact; re-arm write events
+        // so we get another notification when room opens up (Dart disables
+        // them after each delivery).
+        socket.writeEventsEnabled = true;
+        return;
+      }
+      q.removeAt(0);
+      if (sent > 0) {
+        _bytesSent += sent;
+        _packetsSent++;
+      }
+    }
+    _pendingSends.remove(socket);
   }
 
   /// Public hook so PeerConnection can schedule SCTP-layer timers
@@ -903,6 +963,14 @@ final class TransportController {
       }
     }
   }
+}
+
+/// One datagram held over because `RawDatagramSocket.send()` returned 0.
+final class _PendingSend {
+  final Uint8List data;
+  final InternetAddress address;
+  final int port;
+  _PendingSend(this.data, this.address, this.port);
 }
 
 /// TCP control connection to a single TURN server (RFC 5766 §2.1).
