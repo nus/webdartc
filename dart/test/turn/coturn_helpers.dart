@@ -46,14 +46,26 @@ class CoturnInstance {
   }
 }
 
-/// Pick a loopback port the OS just confirmed was free. There's a tiny
-/// race window between close + coturn's bind, but it's vanishingly
-/// small for localhost test runs. Works for both UDP and TCP picks —
-/// the ephemeral-port pools don't collide.
-Future<int> _freePort() async {
+/// Pick a UDP loopback port the OS just confirmed was free. Used for the
+/// main `--listening-port`, where the post-bind STUN probe verifies the
+/// UDP socket is healthy.
+Future<int> _freeUdpPort() async {
   final probe = await RawDatagramSocket.bind(InternetAddress.loopbackIPv4, 0);
   final port = probe.port;
   probe.close();
+  return port;
+}
+
+/// Pick a TCP loopback port. The TLS listener is TCP-only and Linux
+/// keeps UDP / TCP port spaces fully independent — a UDP probe says
+/// nothing about TCP availability, and the resulting race (TLS bind
+/// silently falling back, TURN client connecting to whatever was
+/// already on that TCP port) showed up as the `coturn_tls_relay_test`
+/// flake (ECONNRESET on Client Hello).
+Future<int> _freeTcpPort() async {
+  final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+  final port = probe.port;
+  await probe.close();
   return port;
 }
 
@@ -76,7 +88,7 @@ Future<CoturnInstance> startCoturn({
         'Linux) to run this test.');
   }
 
-  final port = await _freePort();
+  final port = await _freeUdpPort();
   int? tlsPort;
   Directory? certDir;
   if (withTls) {
@@ -85,7 +97,7 @@ Future<CoturnInstance> startCoturn({
           'openssl binary not found in PATH — needed to generate the '
           'self-signed coturn cert for TLS tests.');
     }
-    tlsPort = await _freePort();
+    tlsPort = await _freeTcpPort();
     certDir = _generateSelfSignedCert();
   }
   final certPath = certDir == null ? null : '${certDir.path}/cert.pem';
@@ -129,6 +141,16 @@ Future<CoturnInstance> startCoturn({
 
   try {
     await _waitUntilStunRespondsOn(port, timeout);
+    if (withTls) {
+      // STUN-on-UDP responding doesn't imply the TLS-over-TCP listener
+      // has bound — coturn brings them up on separate threads. *And*
+      // the TCP listener finishes `accept()` slightly before the TLS
+      // subsystem (OpenSSL init + cert load) is ready, so a pure TCP
+      // probe still races the handshake (ECONNRESET inside
+      // `_RawSecureSocket._tryFilter`). Run a real TLS handshake as
+      // the readiness check.
+      await _waitUntilTlsReady(tlsPort!, timeout);
+    }
   } catch (e) {
     process.kill(ProcessSignal.sigkill);
     // Await exit so the stdout/stderr listeners flush every last byte
@@ -284,4 +306,55 @@ Future<void> _waitUntilStunRespondsOn(int port, Duration timeout) async {
     }
   }
   throw StateError('no STUN response from 127.0.0.1:$port within $timeout');
+}
+
+/// Wait until coturn's TLS port is stable enough that a follow-up
+/// connection storm won't race partial init state.
+///
+/// `onBadCertificate: (_) => true` accepts the self-signed cert coturn
+/// is serving — production code must not do this, but the probe only
+/// cares whether coturn's TLS layer can complete a handshake.
+///
+/// A *single* TLS handshake isn't enough on its own: coturn lets the
+/// TCP listener accept a few ms before its TLS subsystem finishes
+/// initialising (cert load, OpenSSL setup, per-server-id state), and
+/// the `coturn_tls_relay_test` PCs immediately fire two near-
+/// simultaneous handshakes — empirically that pair lands inside the
+/// race window half the time and the second handshake resets in
+/// `_RawSecureSocket._tryFilter`. Instead, drive a small burst of
+/// handshakes and require several consecutive bursts to all succeed.
+/// Each successful burst proves not just one worker is ready but
+/// that coturn can sustain a handful of concurrent handshakes — the
+/// scenario the actual test will then trigger.
+Future<void> _waitUntilTlsReady(int port, Duration timeout) async {
+  const burstSize = 8;
+  const stableBurstsNeeded = 3;
+  final deadline = DateTime.now().add(timeout);
+  var stableBursts = 0;
+  while (DateTime.now().isBefore(deadline)) {
+    final burst = await Future.wait(
+        List.generate(burstSize, (_) => _tlsHandshakeProbe(port)));
+    if (burst.every((ok) => ok)) {
+      stableBursts++;
+      if (stableBursts >= stableBurstsNeeded) return;
+    } else {
+      stableBursts = 0;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  throw StateError('no TLS handshake on 127.0.0.1:$port within $timeout');
+}
+
+Future<bool> _tlsHandshakeProbe(int port) async {
+  try {
+    final s = await SecureSocket.connect(
+      InternetAddress.loopbackIPv4, port,
+      onBadCertificate: (_) => true,
+      timeout: const Duration(milliseconds: 500),
+    );
+    await s.close();
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
