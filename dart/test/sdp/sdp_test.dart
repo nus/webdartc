@@ -98,6 +98,29 @@ a=candidate:1 1 udp 2122260223 192.168.1.1 9999 typ host
     // of echoing the offerer's bytes. Matches libwebrtc / Pion /
     // aiortc / Firefox behaviour and keeps `getStats().mimeType`
     // consistent with what browsers report.
+    final fingerprintHex = 'AA:' * 31 + 'BB';
+
+    String minimalOffer({
+      required String mediaType,
+      required String payloadType,
+      required String rtpmap,
+    }) =>
+        'v=0\r\n'
+        'o=- 1 2 IN IP4 0.0.0.0\r\n'
+        's=-\r\n'
+        't=0 0\r\n'
+        'a=group:BUNDLE 0\r\n'
+        'm=$mediaType 9 UDP/TLS/RTP/SAVPF $payloadType\r\n'
+        'c=IN IP4 0.0.0.0\r\n'
+        'a=mid:0\r\n'
+        'a=sendrecv\r\n'
+        'a=rtpmap:$rtpmap\r\n'
+        'a=ice-ufrag:abcd\r\n'
+        'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+        'a=fingerprint:sha-256 $fingerprintHex\r\n'
+        'a=setup:actpass\r\n'
+        'a=rtcp-mux\r\n';
+
     SdpSessionDescription parseOffer(String sdp) {
       final r = SdpParser.parse(sdp);
       expect(r.isOk, isTrue);
@@ -110,52 +133,30 @@ a=candidate:1 1 udp 2122260223 192.168.1.1 9999 typ host
             .singleWhere((l) => l.startsWith('$pt '));
 
     test('lowercase `vp8` offer is answered with canonical `VP8`', () {
-      final offerSdp = 'v=0\r\n'
-          'o=- 1 2 IN IP4 0.0.0.0\r\n'
-          's=-\r\n'
-          't=0 0\r\n'
-          'a=group:BUNDLE 0\r\n'
-          'm=video 9 UDP/TLS/RTP/SAVPF 96\r\n'
-          'c=IN IP4 0.0.0.0\r\n'
-          'a=mid:0\r\n'
-          'a=sendrecv\r\n'
-          'a=rtpmap:96 vp8/90000\r\n'
-          'a=ice-ufrag:abcd\r\n'
-          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
-          'a=fingerprint:sha-256 ${'AA:' * 31}BB\r\n'
-          'a=setup:actpass\r\n'
-          'a=rtcp-mux\r\n';
       final answer = SdpBuilder.buildAnswerFromOffer(
-        remoteOffer: parseOffer(offerSdp),
+        remoteOffer: parseOffer(minimalOffer(
+          mediaType: 'video',
+          payloadType: '96',
+          rtpmap: '96 vp8/90000',
+        )),
         ufrag: 'u',
         password: 'pwd0123456789012345678',
-        fingerprint: 'AA:' * 31 + 'BB',
+        fingerprint: fingerprintHex,
         supportedVideoCodecs: ['VP8'],
       );
       expect(rtpmapLineFor(answer, '96'), equals('96 VP8/90000'));
     });
 
     test('uppercase `OPUS` offer is answered with canonical `opus`', () {
-      final offerSdp = 'v=0\r\n'
-          'o=- 1 2 IN IP4 0.0.0.0\r\n'
-          's=-\r\n'
-          't=0 0\r\n'
-          'a=group:BUNDLE 0\r\n'
-          'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
-          'c=IN IP4 0.0.0.0\r\n'
-          'a=mid:0\r\n'
-          'a=sendrecv\r\n'
-          'a=rtpmap:111 OPUS/48000/2\r\n'
-          'a=ice-ufrag:abcd\r\n'
-          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
-          'a=fingerprint:sha-256 ${'AA:' * 31}BB\r\n'
-          'a=setup:actpass\r\n'
-          'a=rtcp-mux\r\n';
       final answer = SdpBuilder.buildAnswerFromOffer(
-        remoteOffer: parseOffer(offerSdp),
+        remoteOffer: parseOffer(minimalOffer(
+          mediaType: 'audio',
+          payloadType: '111',
+          rtpmap: '111 OPUS/48000/2',
+        )),
         ufrag: 'u',
         password: 'pwd0123456789012345678',
-        fingerprint: 'AA:' * 31 + 'BB',
+        fingerprint: fingerprintHex,
         supportedAudioCodecs: ['opus'],
       );
       // Channels suffix preserved verbatim.
@@ -166,26 +167,15 @@ a=candidate:1 1 udp 2122260223 192.168.1.1 9999 typ host
       // Sanity check that the rewrite doesn't perturb the common case
       // where the offerer already used IANA-canonical case (Chrome,
       // Firefox, libwebrtc, Pion, aiortc all do).
-      final offerSdp = 'v=0\r\n'
-          'o=- 1 2 IN IP4 0.0.0.0\r\n'
-          's=-\r\n'
-          't=0 0\r\n'
-          'a=group:BUNDLE 0\r\n'
-          'm=video 9 UDP/TLS/RTP/SAVPF 102\r\n'
-          'c=IN IP4 0.0.0.0\r\n'
-          'a=mid:0\r\n'
-          'a=sendrecv\r\n'
-          'a=rtpmap:102 H264/90000\r\n'
-          'a=ice-ufrag:abcd\r\n'
-          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
-          'a=fingerprint:sha-256 ${'AA:' * 31}BB\r\n'
-          'a=setup:actpass\r\n'
-          'a=rtcp-mux\r\n';
       final answer = SdpBuilder.buildAnswerFromOffer(
-        remoteOffer: parseOffer(offerSdp),
+        remoteOffer: parseOffer(minimalOffer(
+          mediaType: 'video',
+          payloadType: '102',
+          rtpmap: '102 H264/90000',
+        )),
         ufrag: 'u',
         password: 'pwd0123456789012345678',
-        fingerprint: 'AA:' * 31 + 'BB',
+        fingerprint: fingerprintHex,
         supportedVideoCodecs: ['H264'],
       );
       expect(rtpmapLineFor(answer, '102'), equals('102 H264/90000'));

@@ -377,15 +377,14 @@ abstract final class SdpBuilder {
           final codecInfo = rtpmap.substring(spaceIdx + 1);
           final codecName = codecInfo.split('/').first;
 
-          // Match against `supported` case-insensitively; the matched
-          // entry's spelling is the IANA-canonical one (sourced from
-          // MediaEngine), so use it on the wire even if the offerer
-          // sent e.g. `vp8`. libwebrtc / Pion / aiortc / Firefox all
-          // rewrite the codec name in their answer the same way — only
-          // case-insensitive matching avoids interop hassle, but the
-          // answer SDP must still carry canonical case so downstream
-          // consumers (getStats `mimeType`, browser dashboards) see
-          // the expected `VP8` / `opus` / `H264`.
+          // Case-insensitive match, canonical write-back: `supported`
+          // carries the IANA-canonical spelling (`'VP8'`, `'opus'`)
+          // from MediaEngine, so a non-conforming offer like `vp8` is
+          // answered with `VP8`. Matches libwebrtc / Pion / aiortc /
+          // Firefox behaviour. The `isNotEmpty` gate doubles as a
+          // codecName-empty filter (malformed rtpmap "PT /...") since
+          // an empty needle can't match any non-empty `supported`
+          // entry.
           final canonical = supported.firstWhere(
             (s) => s.toLowerCase() == codecName.toLowerCase(),
             orElse: () => '',
