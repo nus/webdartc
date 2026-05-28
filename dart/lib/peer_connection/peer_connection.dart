@@ -283,9 +283,14 @@ final class PeerConnection {
 
   /// Set the local description and begin ICE gathering.
   Future<void> setLocalDescription(SessionDescription desc) async {
-    _localDescription = desc;
+    // Parse first so a malformed local description rejects atomically
+    // (the description field and its parsed cache stay in lockstep).
+    // `createOffer` / `createAnswer` produce well-formed SDP, so this
+    // path mainly catches a caller passing us hand-rolled bytes.
     final parsed = SdpParser.parse(desc.sdp);
-    if (parsed.isOk) _localParsed = parsed.value;
+    if (parsed.isErr) throw Exception(parsed.error.message);
+    _localDescription = desc;
+    _localParsed = parsed.value;
     _setSignalingState(
       desc.type == SessionDescriptionType.offer
           ? SignalingState.haveLocalOffer
@@ -305,17 +310,18 @@ final class PeerConnection {
 
   /// Set the remote description.
   Future<void> setRemoteDescription(SessionDescription desc) async {
+    // Parse first so the description and its parsed cache land
+    // atomically — see `setLocalDescription` for the same rationale.
+    final parsed = SdpParser.parse(desc.sdp);
+    if (parsed.isErr) throw Exception(parsed.error.message);
+    final sdp = parsed.value;
     _remoteDescription = desc;
+    _remoteParsed = sdp;
     _setSignalingState(
       desc.type == SessionDescriptionType.offer
           ? SignalingState.haveRemoteOffer
           : SignalingState.stable,
     );
-
-    final parsed = SdpParser.parse(desc.sdp);
-    if (parsed.isErr) throw Exception(parsed.error.message);
-    final sdp = parsed.value;
-    _remoteParsed = sdp;
 
     // When we are the offerer and an answer just arrived, apply the
     // negotiated MID/PT to our senders so outgoing RTP uses the remote's
@@ -676,6 +682,9 @@ final class PeerConnection {
         kind: sender.kind,
         packetsSent: sender.packetsSent,
         bytesSent: sender.bytesSent,
+        // PT-only lookup — if the same PT shows up under multiple
+        // m-lines the first one wins (see _emitCodecStats). A pair-
+        // keyed (mid, pt) map would need RtpSender to expose its mid.
         codecId: codecIdByPt[sender.payloadType],
         mediaSourceId: mediaSourceIdByTrack[sender.track?.id],
       );
@@ -793,16 +802,9 @@ final class PeerConnection {
       // placeholder that would collide across m-lines.
       if (mid == null) continue;
 
-      // Walk the m-line's fmtp lines once into a PT→params map so the
-      // rtpmap loop doesn't re-scan `getAll('fmtp')` per codec.
-      final fmtpByPt = <int, String>{};
-      for (final f in m.getAll('fmtp')) {
-        final space = f.indexOf(' ');
-        if (space <= 0) continue;
-        final pt = int.tryParse(f.substring(0, space));
-        if (pt == null) continue;
-        fmtpByPt[pt] = f.substring(space + 1);
-      }
+      // PT→fmtp lookup, hoisted out of the rtpmap loop below so the
+      // fmtp scan happens once per m-line rather than once per codec.
+      final fmtpByPt = m.fmtpByPayloadType;
 
       for (final rtpmap in m.getAll('rtpmap')) {
         // Format: "<PT> <codec>/<clock>[/<channels>]"

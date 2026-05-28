@@ -368,6 +368,7 @@ abstract final class SdpBuilder {
         final selectedFormats = <String>[];
         final rawAttrs = <String>[];
 
+        final fmtpByPt = rm.fmtpByPayloadType;
         for (final rtpmap in rtpmaps) {
           // rtpmap value: "PT codec/clockRate[/channels]"
           final spaceIdx = rtpmap.indexOf(' ');
@@ -379,10 +380,9 @@ abstract final class SdpBuilder {
           if (supported.any((s) => s.toLowerCase() == codecName.toLowerCase())) {
             selectedFormats.add(pt);
             rawAttrs.add('rtpmap:$rtpmap');
-            // Copy fmtp for this PT
-            for (final fmtp in rm.getAll('fmtp')) {
-              if (fmtp.startsWith('$pt ')) rawAttrs.add('fmtp:$fmtp');
-            }
+            final ptInt = int.tryParse(pt);
+            final fmtp = ptInt == null ? null : fmtpByPt[ptInt];
+            if (fmtp != null) rawAttrs.add('fmtp:$pt $fmtp');
             // Copy rtcp-fb for this PT (including transport-cc).
             for (final fb in rm.getAll('rtcp-fb')) {
               if (fb.startsWith('$pt ')) {

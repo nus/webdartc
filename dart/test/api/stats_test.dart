@@ -402,6 +402,51 @@ void main() {
         await pcB.close();
       }
     }, timeout: const Timeout(Duration(seconds: 45)));
+
+    test('CertificateStats round-trips the remote a=fingerprint algorithm',
+        () async {
+      // Regression: setRemoteDescription now parses `<algo> <hex>`
+      // instead of stripping a hardcoded `sha-256 ` prefix. A peer
+      // sending sha-384 must surface as such in getStats — earlier
+      // code mis-labelled non-sha-256 fingerprints. No connection
+      // needed; we just exercise the SDP-ingest path.
+      final pc = PeerConnection(configuration: PeerConnectionConfiguration());
+      const sha384Hex =
+          'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:'
+          'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:'
+          'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99';
+      final offerSdp = 'v=0\r\n'
+          'o=- 1 2 IN IP4 0.0.0.0\r\n'
+          's=-\r\n'
+          't=0 0\r\n'
+          'a=group:BUNDLE 0\r\n'
+          'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
+          'c=IN IP4 0.0.0.0\r\n'
+          'a=mid:0\r\n'
+          'a=sendrecv\r\n'
+          'a=rtpmap:111 opus/48000/2\r\n'
+          'a=ice-ufrag:abcd\r\n'
+          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+          'a=fingerprint:sha-384 $sha384Hex\r\n'
+          'a=setup:actpass\r\n'
+          'a=rtcp-mux\r\n';
+      try {
+        await pc.setRemoteDescription(
+          SessionDescription(
+            type: SessionDescriptionType.offer,
+            sdp: offerSdp,
+          ),
+        );
+        final report = await pc.getStats();
+        final remote =
+            report['certificate-remote'] as CertificateStats?;
+        expect(remote, isNotNull);
+        expect(remote!.fingerprintAlgorithm, 'sha-384');
+        expect(remote.fingerprint, sha384Hex);
+      } finally {
+        await pc.close();
+      }
+    });
   });
 }
 

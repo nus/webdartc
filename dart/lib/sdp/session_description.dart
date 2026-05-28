@@ -73,6 +73,23 @@ final class SdpMediaDescription {
   List<String> getAll(String key) =>
       allAttributes.where((a) => a.$1 == key).map((a) => a.$2).toList();
 
+  /// Index `a=fmtp:<pt> <params>` lines by payload type. Built on
+  /// demand and not cached — callers that consume it inside a tight
+  /// loop should hoist the result. Lines that don't parse as
+  /// `<int> <params>` are silently dropped (best-effort against
+  /// malformed remote SDPs).
+  Map<int, String> get fmtpByPayloadType {
+    final out = <int, String>{};
+    for (final f in getAll('fmtp')) {
+      final space = f.indexOf(' ');
+      if (space <= 0) continue;
+      final pt = int.tryParse(f.substring(0, space));
+      if (pt == null) continue;
+      out[pt] = f.substring(space + 1);
+    }
+    return out;
+  }
+
   String build() {
     final sb = StringBuffer();
     sb.writeln('m=$type $port $proto ${formats.join(' ')}');
