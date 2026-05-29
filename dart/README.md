@@ -129,6 +129,7 @@ example/
 ├── audio_receive/             # browser → Dart audio
 ├── video_sender/              # Dart → browser video (VP8 / H.264 fake video)
 ├── video_receiver/            # browser → Dart video (depacketize + decode)
+├── video_echo/                # browser → Dart → browser (RTP packet forward)
 └── signaling/                 # HTTP + WS relay (for the Flutter pairing)
 ```
 
@@ -158,6 +159,10 @@ dart run example/video_sender/server.dart --port=8080 --codec=h264
 
 # video_receiver — browser camera → Dart VideoToolbox decoder (macOS)
 dart run example/video_receiver/server.dart --port=8080 --codec=h264
+# Open http://localhost:8080 in Chrome (grant camera permission)
+
+# video_echo — browser camera → Dart RTP forward → browser
+dart run example/video_echo/server.dart --port=8080
 # Open http://localhost:8080 in Chrome (grant camera permission)
 ```
 

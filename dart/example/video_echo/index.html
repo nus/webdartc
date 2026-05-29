@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>webdartc video-echo</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; margin: 20px; }
+    h2 { font-size: 1.4rem; }
+    .videos { display: flex; gap: 16px; margin-top: 12px; }
+    .cell { display: flex; flex-direction: column; }
+    .cell label { font-size: 13px; color: #bbb; margin-bottom: 4px; font-family: Menlo, monospace; }
+    video { background: #000; border: 1px solid #444; display: block; }
+    #log { white-space: pre-wrap; font-size: 12px; color: #9c9; max-height: 200px; overflow: auto; border: 1px solid #333; padding: 8px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h2>webdartc video-echo</h2>
+  <p>The browser sends its camera to the Dart peer, which forwards each
+     RTP packet straight back via the matching sender — no encoder or
+     decoder on the Dart side.</p>
+  <div class="videos">
+    <div class="cell">
+      <label>local (camera)</label>
+      <video id="vlocal" autoplay playsinline muted width="320" height="240"></video>
+    </div>
+    <div class="cell">
+      <label>remote (echoed)</label>
+      <video id="vremote" autoplay playsinline muted width="320" height="240"></video>
+    </div>
+  </div>
+  <pre id="log"></pre>
+<script>
+'use strict';
+
+const log = (m) => {
+  console.log(m);
+  document.getElementById('log').textContent += m + '\n';
+};
+
+const pc = new RTCPeerConnection({iceServers: []});
+
+pc.ontrack = (e) => {
+  log('ontrack kind=' + e.track.kind);
+  document.getElementById('vremote').srcObject = e.streams[0];
+};
+
+pc.onicecandidate = (e) => {
+  if (e.candidate) {
+    ws.send(JSON.stringify({
+      type: 'candidate',
+      candidate: {
+        candidate: e.candidate.candidate,
+        sdpMid: e.candidate.sdpMid,
+        sdpMLineIndex: e.candidate.sdpMLineIndex,
+      }
+    }));
+  }
+};
+
+pc.oniceconnectionstatechange = () => {
+  log('ICE: ' + pc.iceConnectionState);
+  window.__testState = window.__testState || {};
+  window.__testState.iceState = pc.iceConnectionState;
+};
+
+setInterval(async () => {
+  try {
+    const report = await pc.getStats();
+    for (const [, s] of report) {
+      if (s.type === 'inbound-rtp' && s.kind === 'video') {
+        window.__testState = window.__testState || {};
+        window.__testState.videoFramesDecoded = s.framesDecoded || 0;
+        window.__testState.videoBytesReceived = s.bytesReceived || 0;
+      }
+    }
+  } catch (_) {}
+}, 500);
+
+const ws = new WebSocket('ws://' + location.host);
+
+ws.onmessage = async (ev) => {
+  const msg = JSON.parse(ev.data);
+  log('signal: ' + msg.type);
+  if (msg.type === 'answer') {
+    await pc.setRemoteDescription({type: 'answer', sdp: msg.sdp});
+  } else if (msg.type === 'candidate' && msg.candidate) {
+    try { await pc.addIceCandidate(msg.candidate); } catch (e) { log('addIceCandidate err: ' + e); }
+  }
+};
+
+ws.onopen = async () => {
+  log('ws open');
+  let localStream;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: {width: 320, height: 240, frameRate: 30},
+      audio: false,
+    });
+    for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
+    document.getElementById('vlocal').srcObject = localStream;
+    log('camera attached');
+  } catch (err) {
+    log('getUserMedia failed: ' + err);
+    return;
+  }
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({type: 'offer', sdp: offer.sdp}));
+  log('offer sent');
+};
+</script>
+</body>
+</html>
