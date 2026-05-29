@@ -46,29 +46,25 @@ const vlocal = document.getElementById('vlocal');
 const ws = new WebSocket('ws://' + location.host);
 const pc = new RTCPeerConnection({iceServers: []});
 
-// Local send (bidir only). When --use-fake-device-for-media-stream is set
-// on Chrome (E2E), getUserMedia returns a green-bar video source.
-let localStream = null;
-if (bidir) {
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: {width: 320, height: 240, frameRate: 30},
-      audio: false,
-    });
-    for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
-    vlocal.srcObject = localStream;
-    try { await vlocal.play(); } catch (_) {}
-    localLabel.textContent = 'local (camera)';
-    log('local media added (tracks=' + localStream.getTracks().length + ')');
-  } catch (err) {
-    localLabel.textContent = 'local (getUserMedia failed)';
-    log('getUserMedia failed: ' + err + ' — falling back to recvonly');
-    pc.addTransceiver('video', {direction: 'recvonly'});
+// Attach `onmessage` BEFORE any `await` below so that the offer sent by
+// the Dart peer as soon as we signal `ready` never races our setup.
+ws.onmessage = async (ev) => {
+  const msg = JSON.parse(ev.data);
+  log('signal: ' + msg.type);
+  if (msg.type === 'offer') {
+    await pc.setRemoteDescription({type: 'offer', sdp: msg.sdp});
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    ws.send(JSON.stringify({type: 'answer', sdp: answer.sdp}));
+  } else if (msg.type === 'candidate' && msg.candidate) {
+    try {
+      await pc.addIceCandidate(msg.candidate);
+    } catch (e) {
+      log('addIceCandidate error: ' + e);
+    }
   }
-} else {
-  localLabel.textContent = 'local (recvonly — append ?bidir=1)';
-  pc.addTransceiver('video', {direction: 'recvonly'});
-}
+};
+ws.onopen = () => log('ws open');
 
 pc.ontrack = (e) => {
   log('ontrack kind=' + e.track.kind);
@@ -109,24 +105,38 @@ setInterval(async () => {
   } catch (_) {}
 }, 500);
 
-ws.onopen = () => log('ws open');
-
-ws.onmessage = async (ev) => {
-  const msg = JSON.parse(ev.data);
-  log('signal: ' + msg.type);
-  if (msg.type === 'offer') {
-    await pc.setRemoteDescription({type: 'offer', sdp: msg.sdp});
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    ws.send(JSON.stringify({type: 'answer', sdp: answer.sdp}));
-  } else if (msg.type === 'candidate' && msg.candidate) {
-    try {
-      await pc.addIceCandidate(msg.candidate);
-    } catch (e) {
-      log('addIceCandidate error: ' + e);
-    }
+// Local send (bidir only). When --use-fake-device-for-media-stream is set
+// on Chrome (E2E), getUserMedia returns a green-bar video source.
+let localStream = null;
+if (bidir) {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: {width: 320, height: 240, frameRate: 30},
+      audio: false,
+    });
+    for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
+    vlocal.srcObject = localStream;
+    try { await vlocal.play(); } catch (_) {}
+    localLabel.textContent = 'local (camera)';
+    log('local media added (tracks=' + localStream.getTracks().length + ')');
+  } catch (err) {
+    localLabel.textContent = 'local (getUserMedia failed)';
+    log('getUserMedia failed: ' + err + ' — falling back to recvonly');
+    pc.addTransceiver('video', {direction: 'recvonly'});
   }
-};
+} else {
+  localLabel.textContent = 'local (recvonly — append ?bidir=1)';
+  pc.addTransceiver('video', {direction: 'recvonly'});
+}
+
+// Signal that we are ready to receive the offer. The Dart peer's
+// `signaling.dart` relay also forwards this to the other WS client
+// (e.g. the Flutter peer), which ignores unknown message types.
+if (ws.readyState !== WebSocket.OPEN) {
+  await new Promise((res) => ws.addEventListener('open', res, {once: true}));
+}
+ws.send(JSON.stringify({type: 'ready'}));
+log('signal: ready (sent)');
 </script>
 </body>
 </html>

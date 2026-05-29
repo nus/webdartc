@@ -152,10 +152,7 @@ grep -rn "RawDatagramSocket\|RawSocket" \
 # ICE candidate gathering with Google STUN server
 dart run example/ice_gather.dart stun:stun.l.google.com:19302
 
-# Media sample — start signaling + browser client server
-dart run example/media/bin/signaling.dart --port=8080 &
-
-# sender mode: Dart sender → browser receiver (sendonly)
+# Media sample — sender (Dart → browser receiver, sendonly)
 dart run example/media/bin/sender.dart --port=8080 --codec=h264
 # Open http://localhost:8080 in Chrome
 
@@ -163,7 +160,7 @@ dart run example/media/bin/sender.dart --port=8080 --codec=h264
 dart run example/media/bin/sender.dart --port=8080 --codec=h264 --bidir
 # Open http://localhost:8080/?bidir=1 in Chrome
 
-# echo mode: browser camera reflected back via the Dart peer
+# echo: browser camera reflected back via the Dart peer
 dart run example/media/bin/echo.dart --port=8080
 # Open http://localhost:8080/?bidir=1 in Chrome
 ```

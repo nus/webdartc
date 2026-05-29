@@ -44,17 +44,24 @@ void main() {
       () async {
     final port = await _findFreePort();
 
-    final server = await _spawnDart(
-      'example/media/bin/signaling.dart',
-      ['--port=$port'],
+    final sender = await _spawnDart(
+      'example/media/bin/sender.dart',
+      ['--port=$port', '--codec=h264', '--bidir'],
     );
-    server.stdout.transform(utf8.decoder).listen((line) {
+    final decodedController = StreamController<int>.broadcast();
+    final decodedRe = RegExp(r'\[sender\] decoded #(\d+)');
+    sender.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
       // ignore: avoid_print
-      stdout.write('[server] $line');
+      print('[sender] $line');
+      final m = decodedRe.firstMatch(line);
+      if (m != null) decodedController.add(int.parse(m.group(1)!));
     });
-    server.stderr.transform(utf8.decoder).listen((line) {
+    sender.stderr.transform(utf8.decoder).listen((line) {
       // ignore: avoid_print
-      stderr.write('[server-err] $line');
+      stderr.write('[sender-err] $line');
     });
 
     await waitFor(() async {
@@ -85,29 +92,11 @@ void main() {
     if (!codecList.contains('video/h264')) {
       markTestSkipped('browser lacks H.264 encoder (codecs=$codecList)');
       await cdp.quit();
-      server.kill();
+      sender.kill();
+      await sender.exitCode
+          .timeout(const Duration(seconds: 3), onTimeout: () => -1);
       return;
     }
-
-    final sender = await _spawnDart(
-      'example/media/bin/sender.dart',
-      ['--port=$port', '--codec=h264', '--bidir'],
-    );
-    final decodedController = StreamController<int>.broadcast();
-    final decodedRe = RegExp(r'\[sender\] decoded #(\d+)');
-    sender.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) {
-      // ignore: avoid_print
-      print('[sender] $line');
-      final m = decodedRe.firstMatch(line);
-      if (m != null) decodedController.add(int.parse(m.group(1)!));
-    });
-    sender.stderr.transform(utf8.decoder).listen((line) {
-      // ignore: avoid_print
-      stderr.write('[sender-err] $line');
-    });
 
     try {
       final first = await decodedController.stream
@@ -115,12 +104,9 @@ void main() {
           .timeout(const Duration(seconds: 60));
       expect(first, greaterThan(0));
     } finally {
-      sender.kill();
       await cdp.quit();
-      server.kill();
+      sender.kill();
       await sender.exitCode
-          .timeout(const Duration(seconds: 3), onTimeout: () => -1);
-      await server.exitCode
           .timeout(const Duration(seconds: 3), onTimeout: () => -1);
     }
   });
