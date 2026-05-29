@@ -23,6 +23,8 @@ import 'dart:io';
 import 'package:webdartc/rtp/packetizer.dart';
 import 'package:webdartc/webdartc.dart';
 
+import '../serve.dart';
+
 int _port = 8080;
 String _codec = 'vp8';
 
@@ -52,34 +54,9 @@ Future<void> main(List<String> args) async {
       final ws = await WebSocketTransformer.upgrade(req);
       unawaited(_handleWs(ws));
     } else {
-      await _serveStatic(req);
+      await serveExampleStatic(req);
     }
   }
-}
-
-String _scriptDir() {
-  final script = Platform.script.toFilePath();
-  return script.substring(0, script.lastIndexOf('/'));
-}
-
-Future<void> _serveStatic(HttpRequest req) async {
-  var path = req.uri.path;
-  if (path == '/' || path.isEmpty) path = '/index.html';
-  final file = File('${_scriptDir()}$path');
-  if (!await file.exists()) {
-    req.response.statusCode = HttpStatus.notFound;
-    await req.response.close();
-    return;
-  }
-  final ext = path.split('.').last;
-  req.response.headers.contentType = ContentType.parse(switch (ext) {
-    'html' => 'text/html; charset=utf-8',
-    'js' => 'application/javascript; charset=utf-8',
-    'css' => 'text/css; charset=utf-8',
-    _ => 'application/octet-stream',
-  });
-  await req.response.addStream(file.openRead());
-  await req.response.close();
 }
 
 Future<void> _handleWs(WebSocket ws) async {

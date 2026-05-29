@@ -18,6 +18,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import '../serve.dart';
+
 const _pingInterval = Duration(seconds: 30);
 
 class _Client {
@@ -45,7 +47,7 @@ Future<void> main(List<String> args) async {
       final ws = await WebSocketTransformer.upgrade(req);
       _handleWs(ws);
     } else {
-      await _serveStatic(req);
+      await serveExampleStatic(req);
     }
   }
 }
@@ -148,27 +150,3 @@ void _pingAll() {
   }
 }
 
-String _scriptDir() {
-  final script = Platform.script.toFilePath();
-  return script.substring(0, script.lastIndexOf('/'));
-}
-
-Future<void> _serveStatic(HttpRequest req) async {
-  var path = req.uri.path;
-  if (path == '/' || path.isEmpty) path = '/index.html';
-  final file = File('${_scriptDir()}$path');
-  if (!await file.exists()) {
-    req.response.statusCode = HttpStatus.notFound;
-    await req.response.close();
-    return;
-  }
-  final ext = path.split('.').last;
-  req.response.headers.contentType = ContentType.parse(switch (ext) {
-    'html' => 'text/html; charset=utf-8',
-    'js' => 'application/javascript; charset=utf-8',
-    'css' => 'text/css; charset=utf-8',
-    _ => 'application/octet-stream',
-  });
-  await req.response.addStream(file.openRead());
-  await req.response.close();
-}
