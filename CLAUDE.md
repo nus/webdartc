@@ -39,7 +39,7 @@ dart analyze
 
 # Run an example
 dart run example/ice_gather.dart stun:stun.l.google.com:19302
-dart run example/reflect/server.dart --port=8080
+dart run example/media/bin/signaling.dart --port=8080
 ```
 
 ## Architecture

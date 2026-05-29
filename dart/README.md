@@ -126,8 +126,10 @@ example/
 ├── ice_gather.dart            # ICE candidate gathering
 ├── opus_codec.dart            # Opus encode/decode round-trip + SNR check
 ├── audio_send/                # Browser ↔ Dart audio call (Opus)
-├── reflect/                   # Audio/video reflection server + browser client
-└── video_call/                # Browser ↔ Dart video call (VP8 / H.264; sendonly or bidir)
+└── media/                     # Browser ↔ Dart video sample
+                               #   signaling + browser client + Dart sender
+                               #   (fake video, VP8/H.264, sendonly or bidir)
+                               #   + Dart echo peer (reflects browser camera)
 ```
 
 ## Running tests
@@ -150,17 +152,19 @@ grep -rn "RawDatagramSocket\|RawSocket" \
 # ICE candidate gathering with Google STUN server
 dart run example/ice_gather.dart stun:stun.l.google.com:19302
 
-# Audio/video reflection server
-dart run example/reflect/server.dart --port=8080
+# Media sample — start signaling + browser client server
+dart run example/media/bin/signaling.dart --port=8080 &
+
+# sender mode: Dart sender → browser receiver (sendonly)
+dart run example/media/bin/sender.dart --port=8080 --codec=h264
 # Open http://localhost:8080 in Chrome
 
-# Video call — Dart sender → browser receiver (sendonly)
-dart run example/video_call/bin/server.dart --port=8080 &
-dart run example/video_call/bin/sender.dart --port=8080 --codec=h264
-# Open http://localhost:8080 in Chrome
+# bidir: browser fake camera → Dart VideoToolbox decoder (macOS)
+dart run example/media/bin/sender.dart --port=8080 --codec=h264 --bidir
+# Open http://localhost:8080/?bidir=1 in Chrome
 
-# Bidirectional: browser fake camera → Dart VideoToolbox decoder (macOS)
-dart run example/video_call/bin/sender.dart --port=8080 --codec=h264 --bidir
+# echo mode: browser camera reflected back via the Dart peer
+dart run example/media/bin/echo.dart --port=8080
 # Open http://localhost:8080/?bidir=1 in Chrome
 ```
 

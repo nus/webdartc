@@ -1,10 +1,10 @@
-/// HTTP + WebSocket signaling server for the video_call sample.
+/// HTTP + WebSocket signaling server for the media sample.
 ///
 /// Serves the browser client HTML on `/` and relays signaling JSON messages
-/// between two WebSocket clients.
+/// between two WebSocket clients (Dart peer ↔ browser).
 ///
 /// Usage:
-///   dart run example/video_call/bin/server.dart [--port=8080]
+///   dart run example/media/bin/signaling.dart [--port=8080]
 library;
 
 import 'dart:async';
@@ -19,7 +19,7 @@ Future<void> main(List<String> args) async {
   final webRoot = _resolveWebRoot();
 
   final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
-  stdout.writeln('video_call server listening on http://127.0.0.1:$port');
+  stdout.writeln('media signaling server listening on http://127.0.0.1:$port');
   stdout.writeln('web root: $webRoot');
 
   final clients = <WebSocket>[];

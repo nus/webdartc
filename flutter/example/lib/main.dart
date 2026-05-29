@@ -1,19 +1,19 @@
-/// Browser ↔ Flutter bidirectional video_call demo (macOS).
+/// Browser ↔ Flutter bidirectional video-call demo (macOS).
 ///
-/// The Flutter app is a WebRTC peer: it connects to the video_call
+/// The Flutter app is a WebRTC peer: it connects to the media-sample
 /// signaling server, sends a FakeVideoSource stream (H.264 via
 /// VideoToolbox), and renders the browser's incoming stream via
 /// ShaderVideoRenderer.
 ///
 /// Signaling server and browser client come from
-/// `dart/example/video_call/` (run those first). This app knows the
+/// `dart/example/media/` (run those first). This app knows the
 /// server's port from the `WEBDARTC_PORT` env var (default `8080`).
 ///
 /// Run:
 /// ```
 /// # terminal 1
 /// cd dart
-/// dart run example/video_call/bin/server.dart --port=8080
+/// dart run example/media/bin/signaling.dart --port=8080
 /// # open http://127.0.0.1:8080/?bidir=1 in Chrome
 ///
 /// # terminal 2

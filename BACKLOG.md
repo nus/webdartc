@@ -409,16 +409,6 @@ Each item:
 
 ## Housekeeping
 
-### `example/reflect/` does not use the Webdartc factory
-
-- **Found:** 2026-05-04, post-multi-bind branch summary
-- **Detail:** The reflect example still constructs `PeerConnection(...)`
-  directly instead of going through the new `Webdartc` factory + `SettingEngine`
-  pattern.
-- **Why deferred:** Intentionally skipped — example code, not library code.
-- **Acceptance:** Either migrate the example to the factory pattern, or
-  delete this entry as a permanent decision.
-
 ### STUN / TURN comments cite obsoleted RFCs
 
 - **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**

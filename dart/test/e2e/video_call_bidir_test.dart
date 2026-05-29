@@ -45,7 +45,7 @@ void main() {
     final port = await _findFreePort();
 
     final server = await _spawnDart(
-      'example/video_call/bin/server.dart',
+      'example/media/bin/signaling.dart',
       ['--port=$port'],
     );
     server.stdout.transform(utf8.decoder).listen((line) {
@@ -90,7 +90,7 @@ void main() {
     }
 
     final sender = await _spawnDart(
-      'example/video_call/bin/sender.dart',
+      'example/media/bin/sender.dart',
       ['--port=$port', '--codec=h264', '--bidir'],
     );
     final decodedController = StreamController<int>.broadcast();

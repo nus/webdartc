@@ -1,4 +1,4 @@
-/// Dart sender for the video_call sample.
+/// Dart sender peer for the media sample.
 ///
 /// By default sends a fake video stream to the browser (sendonly). With
 /// `--bidir`, also subscribes to the browser's track and decodes it — used
@@ -6,7 +6,7 @@
 /// decoder on macOS).
 ///
 /// Usage:
-///   dart run example/video_call/bin/sender.dart \
+///   dart run example/media/bin/sender.dart \
 ///     [--port=8080] [--codec=vp8|h264] [--bidir]
 library;
 

@@ -27,7 +27,7 @@ A Dart-native WebRTC stack. This monorepo contains the protocol library and its 
 │   │                         #   sctp, stun, rtp, sdp, crypto, media, codec, core
 │   ├── test/                 #   unit + fuzz + e2e (Chrome / Firefox)
 │   └── example/
-│       └── video_call/       #   browser ↔ Dart sendonly / bidir demo
+│       └── media/            #   signaling + browser client + sender / echo Dart peers
 ├── flutter/                  # Flutter integration (requires Flutter SDK)
 │   ├── lib/render/           #   VideoRenderer / ShaderVideoRenderer / widget
 │   ├── macos/Classes/        #   Swift FlutterTexture plugin
@@ -68,7 +68,7 @@ flutter analyze
 
 # Flutter macOS demo (full Flutter ↔ browser WebRTC peer)
 cd flutter/example
-flutter run -d macos           # pair with dart/example/video_call server + Chrome ?bidir=1
+flutter run -d macos           # pair with dart/example/media signaling + Chrome ?bidir=1
 ```
 
 The `flutter` package depends on `dart` via a local `path:` reference, so changes in `dart/` are picked up without republishing.

@@ -1,9 +1,9 @@
 /// E2E test for the video_call sample.
 ///
 /// Runs the sample end-to-end:
-///   1. spawns example/video_call/bin/server.dart (HTTP + signaling WS)
+///   1. spawns example/media/bin/signaling.dart (HTTP + signaling WS)
 ///   2. launches Chrome, points it at the server's root
-///   3. spawns example/video_call/bin/sender.dart
+///   3. spawns example/media/bin/sender.dart
 ///   4. polls the browser's inbound-rtp stats until frames decode
 @Tags(['e2e'])
 @Timeout(Duration(seconds: 120))
@@ -46,7 +46,7 @@ void main() {
 
       // 1. Start the sample server.
       final server = await _spawnDart(
-        'example/video_call/bin/server.dart',
+        'example/media/bin/signaling.dart',
         ['--port=$port'],
       );
       server.stdout.transform(utf8.decoder).listen((line) {
@@ -95,7 +95,7 @@ void main() {
 
       // 3. Start the sender.
       final sender = await _spawnDart(
-        'example/video_call/bin/sender.dart',
+        'example/media/bin/sender.dart',
         ['--port=$port', '--codec=$codec'],
       );
       sender.stdout.transform(utf8.decoder).listen((line) {
