@@ -41,9 +41,9 @@ Future<void> main(List<String> args) async {
   }
 
   final server = await HttpServer.bind(InternetAddress.anyIPv4, _port);
-  stdout.writeln(
+  print(
       '[video_sender] listening on http://127.0.0.1:$_port (codec=$_codec)');
-  stdout.writeln('[video_sender] open the URL above in Chrome to start');
+  print('[video_sender] open the URL above in Chrome to start');
 
   await for (final req in server) {
     if (WebSocketTransformer.isUpgradeRequest(req)) {
@@ -81,7 +81,7 @@ Future<void> _serveStatic(HttpRequest req) async {
 }
 
 Future<void> _handleWs(WebSocket ws) async {
-  stdout.writeln('[video_sender] WS client connected');
+  print('[video_sender] WS client connected');
 
   PeerConnection? pc;
   VideoEncoder? encoder;
@@ -99,7 +99,7 @@ Future<void> _handleWs(WebSocket ws) async {
       final msg = jsonDecode(data) as Map<String, dynamic>;
       switch (msg['type']) {
         case 'offer':
-          stdout.writeln('[video_sender] received offer');
+          print('[video_sender] received offer');
           pc = PeerConnection(
               configuration: const PeerConnectionConfiguration());
           pc!.addTransceiver(
@@ -120,9 +120,9 @@ Future<void> _handleWs(WebSocket ws) async {
             }));
           });
           pc!.onIceConnectionStateChange
-              .listen((s) => stdout.writeln('[video_sender] ICE: $s'));
+              .listen((s) => print('[video_sender] ICE: $s'));
           pc!.onConnectionStateChange.listen((s) {
-            stdout.writeln('[video_sender] PC: $s');
+            print('[video_sender] PC: $s');
             if (s == PeerConnectionState.connected) {
               final stream = _startVideoStream(sender);
               encoder = stream.encoder;
@@ -137,7 +137,7 @@ Future<void> _handleWs(WebSocket ws) async {
           final answer = await pc!.createAnswer();
           await pc!.setLocalDescription(answer);
           ws.add(jsonEncode({'type': 'answer', 'sdp': answer.sdp}));
-          stdout.writeln('[video_sender] sent answer');
+          print('[video_sender] sent answer');
 
         case 'candidate':
           final c = msg['candidate'];
@@ -151,7 +151,7 @@ Future<void> _handleWs(WebSocket ws) async {
       }
     },
     onDone: () async {
-      stdout.writeln('[video_sender] WS client disconnected');
+      print('[video_sender] WS client disconnected');
       await teardown();
     },
     onError: (_) async => teardown(),

@@ -43,9 +43,9 @@ Future<void> main(List<String> args) async {
   }
 
   final server = await HttpServer.bind(InternetAddress.anyIPv4, _port);
-  stdout.writeln(
+  print(
       '[video_receiver] listening on http://127.0.0.1:$_port (codec=$_codec)');
-  stdout.writeln('[video_receiver] open the URL above in Chrome (camera permission required)');
+  print('[video_receiver] open the URL above in Chrome (camera permission required)');
 
   await for (final req in server) {
     if (WebSocketTransformer.isUpgradeRequest(req)) {
@@ -83,7 +83,7 @@ Future<void> _serveStatic(HttpRequest req) async {
 }
 
 Future<void> _handleWs(WebSocket ws) async {
-  stdout.writeln('[video_receiver] WS client connected');
+  print('[video_receiver] WS client connected');
 
   PeerConnection? pc;
 
@@ -93,7 +93,7 @@ Future<void> _handleWs(WebSocket ws) async {
       final msg = jsonDecode(data) as Map<String, dynamic>;
       switch (msg['type']) {
         case 'offer':
-          stdout.writeln('[video_receiver] received offer');
+          print('[video_receiver] received offer');
           pc = PeerConnection(
               configuration: const PeerConnectionConfiguration());
           pc!.addTransceiver(
@@ -113,12 +113,12 @@ Future<void> _handleWs(WebSocket ws) async {
             }));
           });
           pc!.onIceConnectionStateChange
-              .listen((s) => stdout.writeln('[video_receiver] ICE: $s'));
+              .listen((s) => print('[video_receiver] ICE: $s'));
           pc!.onConnectionStateChange
-              .listen((s) => stdout.writeln('[video_receiver] PC: $s'));
+              .listen((s) => print('[video_receiver] PC: $s'));
           pc!.onTrack.listen((evt) {
             if (evt.kind != 'video') return;
-            stdout.writeln(
+            print(
                 '[video_receiver] onTrack kind=${evt.kind} ssrc=${evt.ssrc}');
             _pipeIncoming(evt.receiver, _codec);
           });
@@ -130,7 +130,7 @@ Future<void> _handleWs(WebSocket ws) async {
           final answer = await pc!.createAnswer();
           await pc!.setLocalDescription(answer);
           ws.add(jsonEncode({'type': 'answer', 'sdp': answer.sdp}));
-          stdout.writeln('[video_receiver] sent answer');
+          print('[video_receiver] sent answer');
 
         case 'candidate':
           final c = msg['candidate'];
@@ -144,7 +144,7 @@ Future<void> _handleWs(WebSocket ws) async {
       }
     },
     onDone: () async {
-      stdout.writeln('[video_receiver] WS client disconnected');
+      print('[video_receiver] WS client disconnected');
       await pc?.close();
     },
     onError: (_) async => await pc?.close(),
@@ -160,7 +160,7 @@ void _pipeIncoming(RtpReceiver receiver, String codec) {
     output: (frame) {
       decoded++;
       if (decoded <= 3 || decoded % 30 == 0) {
-        stdout.writeln('[video_receiver] decoded #$decoded '
+        print('[video_receiver] decoded #$decoded '
             '${frame.codedWidth}x${frame.codedHeight} '
             'ts=${frame.timestamp}');
       }

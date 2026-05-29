@@ -22,7 +22,7 @@ Future<void> main(List<String> args) async {
   }
 
   final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
-  stdout.writeln('signaling relay listening on http://127.0.0.1:$port');
+  print('signaling relay listening on http://127.0.0.1:$port');
 
   final clients = <WebSocket>[];
 
