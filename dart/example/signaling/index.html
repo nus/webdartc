@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>webdartc video_call sample</title>
+  <title>webdartc signaling (Ayame)</title>
   <style>
     body { font-family: sans-serif; background: #111; color: #eee; margin: 20px; }
+    h2 { font-size: 1.4rem; }
     .videos { display: flex; gap: 16px; margin-top: 12px; }
     .cell { display: flex; flex-direction: column; }
     .cell label { font-size: 13px; color: #bbb; margin-bottom: 4px; font-family: Menlo, monospace; }
@@ -13,22 +14,22 @@
   </style>
 </head>
 <body>
-  <h2>webdartc video_call — browser peer</h2>
-  <p><b>local</b>: this browser's camera, sent to the remote peer (shown only with <code>?bidir=1</code>).<br>
-     <b>remote</b>: video received from the remote peer (Dart <code>sender.dart</code>, or the Flutter example).</p>
-  <p>Open with <code>?bidir=1</code> for two-way video; otherwise the page is receive-only.</p>
+  <h2>webdartc Ayame browser peer</h2>
+  <p>Pair with another peer (e.g. the <code>flutter/example/</code> app)
+     in the same room. Append <code>?room=NAME</code> to override the
+     default room <code>webdartc-demo</code>.</p>
   <div class="videos">
     <div class="cell">
-      <label id="localLabel">local</label>
+      <label>local (camera)</label>
       <video id="vlocal" autoplay playsinline muted width="320" height="240"></video>
     </div>
     <div class="cell">
-      <label>remote</label>
-      <video id="v" autoplay playsinline muted width="320" height="240"></video>
+      <label>remote (peer)</label>
+      <video id="vremote" autoplay playsinline muted width="320" height="240"></video>
     </div>
   </div>
   <pre id="log"></pre>
-<script type="module">
+<script>
 'use strict';
 
 const log = (m) => {
@@ -37,45 +38,22 @@ const log = (m) => {
 };
 
 const params = new URLSearchParams(location.search);
-const bidir = params.get('bidir') === '1';
-log('mode: ' + (bidir ? 'sendrecv (bidir)' : 'recvonly'));
+const roomId = params.get('room') || 'webdartc-demo';
+const clientId = 'browser-' + Math.random().toString(36).slice(2, 10);
+log('room=' + roomId + ' clientId=' + clientId);
 
-const localLabel = document.getElementById('localLabel');
-const vlocal = document.getElementById('vlocal');
-
-const ws = new WebSocket('ws://' + location.host);
 const pc = new RTCPeerConnection({iceServers: []});
-
-// Attach `onmessage` BEFORE any `await` below so that the offer sent by
-// the Dart peer as soon as we signal `ready` never races our setup.
-ws.onmessage = async (ev) => {
-  const msg = JSON.parse(ev.data);
-  log('signal: ' + msg.type);
-  if (msg.type === 'offer') {
-    await pc.setRemoteDescription({type: 'offer', sdp: msg.sdp});
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    ws.send(JSON.stringify({type: 'answer', sdp: answer.sdp}));
-  } else if (msg.type === 'candidate' && msg.candidate) {
-    try {
-      await pc.addIceCandidate(msg.candidate);
-    } catch (e) {
-      log('addIceCandidate error: ' + e);
-    }
-  }
-};
-ws.onopen = () => log('ws open');
 
 pc.ontrack = (e) => {
   log('ontrack kind=' + e.track.kind);
-  document.getElementById('v').srcObject = e.streams[0];
+  document.getElementById('vremote').srcObject = e.streams[0];
 };
 
 pc.onicecandidate = (e) => {
   if (e.candidate) {
     ws.send(JSON.stringify({
       type: 'candidate',
-      candidate: {
+      ice: {
         candidate: e.candidate.candidate,
         sdpMid: e.candidate.sdpMid,
         sdpMLineIndex: e.candidate.sdpMLineIndex,
@@ -90,7 +68,6 @@ pc.oniceconnectionstatechange = () => {
   window.__testState.iceState = pc.iceConnectionState;
 };
 
-// Expose decode stats for automated testing.
 setInterval(async () => {
   try {
     const report = await pc.getStats();
@@ -99,44 +76,77 @@ setInterval(async () => {
         window.__testState = window.__testState || {};
         window.__testState.videoFramesDecoded = s.framesDecoded || 0;
         window.__testState.videoBytesReceived = s.bytesReceived || 0;
-        window.__testState.videoPacketsReceived = s.packetsReceived || 0;
       }
     }
   } catch (_) {}
 }, 500);
 
-// Local send (bidir only). When --use-fake-device-for-media-stream is set
-// on Chrome (E2E), getUserMedia returns a green-bar video source.
-let localStream = null;
-if (bidir) {
+let isOfferer = false;
+
+const ws = new WebSocket('ws://' + location.host + '/signaling');
+
+ws.onmessage = async (ev) => {
+  const msg = JSON.parse(ev.data);
+  log('signal: ' + msg.type);
+  switch (msg.type) {
+    case 'accept':
+      isOfferer = !!msg.isExistClient;
+      log('accept (offerer=' + isOfferer + ')');
+      if (isOfferer) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({type: 'offer', sdp: offer.sdp}));
+      }
+      break;
+    case 'reject':
+      log('rejected: ' + (msg.reason || 'unknown'));
+      break;
+    case 'offer': {
+      await pc.setRemoteDescription({type: 'offer', sdp: msg.sdp});
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      ws.send(JSON.stringify({type: 'answer', sdp: answer.sdp}));
+      break;
+    }
+    case 'answer':
+      await pc.setRemoteDescription({type: 'answer', sdp: msg.sdp});
+      break;
+    case 'candidate':
+      if (msg.ice) {
+        try { await pc.addIceCandidate(msg.ice); }
+        catch (e) { log('addIceCandidate err: ' + e); }
+      }
+      break;
+    case 'ping':
+      ws.send(JSON.stringify({type: 'pong'}));
+      break;
+    case 'bye':
+      log('peer left');
+      break;
+  }
+};
+
+ws.onopen = async () => {
+  log('ws open');
+  let localStream;
   try {
     localStream = await navigator.mediaDevices.getUserMedia({
       video: {width: 320, height: 240, frameRate: 30},
       audio: false,
     });
     for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
-    vlocal.srcObject = localStream;
-    try { await vlocal.play(); } catch (_) {}
-    localLabel.textContent = 'local (camera)';
-    log('local media added (tracks=' + localStream.getTracks().length + ')');
+    document.getElementById('vlocal').srcObject = localStream;
+    log('camera attached');
   } catch (err) {
-    localLabel.textContent = 'local (getUserMedia failed)';
-    log('getUserMedia failed: ' + err + ' — falling back to recvonly');
-    pc.addTransceiver('video', {direction: 'recvonly'});
+    log('getUserMedia failed: ' + err);
+    return;
   }
-} else {
-  localLabel.textContent = 'local (recvonly — append ?bidir=1)';
-  pc.addTransceiver('video', {direction: 'recvonly'});
-}
-
-// Signal that we are ready to receive the offer. The Dart peer's
-// `signaling.dart` relay also forwards this to the other WS client
-// (e.g. the Flutter peer), which ignores unknown message types.
-if (ws.readyState !== WebSocket.OPEN) {
-  await new Promise((res) => ws.addEventListener('open', res, {once: true}));
-}
-ws.send(JSON.stringify({type: 'ready'}));
-log('signal: ready (sent)');
+  ws.send(JSON.stringify({
+    type: 'register',
+    roomId,
+    clientId,
+  }));
+};
 </script>
 </body>
 </html>

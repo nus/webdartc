@@ -68,7 +68,7 @@ flutter analyze
 
 # Flutter macOS demo (full Flutter ↔ browser WebRTC peer)
 cd flutter/example
-flutter run -d macos           # pair with dart/example/signaling + Chrome ?bidir=1
+flutter run -d macos           # pair with dart/example/signaling (Ayame) + Chrome
 ```
 
 The `flutter` package depends on `dart` via a local `path:` reference, so changes in `dart/` are picked up without republishing.
