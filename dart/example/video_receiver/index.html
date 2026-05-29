@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>webdartc video-receiver</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; margin: 20px; max-width: 600px; }
+    h2 { font-size: 1.4rem; }
+    video { background: #000; border: 1px solid #444; display: block; margin-top: 12px; }
+    #log { white-space: pre-wrap; font-size: 12px; color: #9c9; max-height: 200px; overflow: auto; border: 1px solid #333; padding: 8px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h2>webdartc video-receiver — browser sender</h2>
+  <p>The browser captures its camera and sends video to the Dart receiver,
+     which decodes the stream and logs frame stats.</p>
+  <video id="vlocal" autoplay playsinline muted width="320" height="240"></video>
+  <pre id="log"></pre>
+<script>
+'use strict';
+
+const log = (m) => {
+  console.log(m);
+  document.getElementById('log').textContent += m + '\n';
+};
+
+const pc = new RTCPeerConnection({iceServers: []});
+
+pc.onicecandidate = (e) => {
+  if (e.candidate) {
+    ws.send(JSON.stringify({
+      type: 'candidate',
+      candidate: {
+        candidate: e.candidate.candidate,
+        sdpMid: e.candidate.sdpMid,
+        sdpMLineIndex: e.candidate.sdpMLineIndex,
+      }
+    }));
+  }
+};
+
+pc.oniceconnectionstatechange = () => {
+  log('ICE: ' + pc.iceConnectionState);
+  window.__testState = window.__testState || {};
+  window.__testState.iceState = pc.iceConnectionState;
+};
+
+setInterval(async () => {
+  try {
+    const report = await pc.getStats();
+    for (const [, s] of report) {
+      if (s.type === 'outbound-rtp' && s.kind === 'video') {
+        window.__testState = window.__testState || {};
+        window.__testState.videoFramesSent = s.framesSent || 0;
+        window.__testState.videoBytesSent = s.bytesSent || 0;
+      }
+    }
+  } catch (_) {}
+}, 500);
+
+const ws = new WebSocket('ws://' + location.host);
+
+ws.onmessage = async (ev) => {
+  const msg = JSON.parse(ev.data);
+  log('signal: ' + msg.type);
+  if (msg.type === 'answer') {
+    await pc.setRemoteDescription({type: 'answer', sdp: msg.sdp});
+  } else if (msg.type === 'candidate' && msg.candidate) {
+    try { await pc.addIceCandidate(msg.candidate); } catch (e) { log('addIceCandidate err: ' + e); }
+  }
+};
+
+ws.onopen = async () => {
+  log('ws open');
+  let localStream;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: {width: 320, height: 240, frameRate: 30},
+      audio: false,
+    });
+    for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
+    document.getElementById('vlocal').srcObject = localStream;
+    log('camera attached');
+  } catch (err) {
+    log('getUserMedia failed: ' + err);
+    return;
+  }
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({type: 'offer', sdp: offer.sdp}));
+  log('offer sent');
+};
+</script>
+</body>
+</html>

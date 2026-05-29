@@ -1,7 +1,7 @@
 /// Full browser ↔ Flutter bidirectional video E2E.
 ///
 /// Spawns:
-///   1. example/media/bin/signaling.dart (signaling + web server)
+///   1. example/signaling/server.dart (signaling + web server)
 ///   2. Chrome with a fake camera, pointed at /?bidir=1
 ///   3. The built Flutter macOS example app, configured via
 ///      WEBDARTC_PORT to connect to the same signaling server
@@ -64,7 +64,7 @@ void main() {
     final port = await _findFreePort();
 
     final server = await _spawnDart(
-      'example/media/bin/signaling.dart',
+      'example/signaling/server.dart',
       ['--port=$port'],
     );
     server.stdout.transform(utf8.decoder).listen((line) {

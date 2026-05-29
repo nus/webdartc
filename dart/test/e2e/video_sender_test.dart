@@ -1,7 +1,7 @@
-/// E2E test for the video_call sample.
+/// E2E test for the video_sender sample.
 ///
 /// Runs the sample end-to-end:
-///   1. spawns example/media/bin/sender.dart (self-contained HTTP + WS + peer)
+///   1. spawns example/video_sender/server.dart (HTTP + WS + peer)
 ///   2. launches Chrome, points it at the sender's root
 ///   3. polls the browser's inbound-rtp stats until frames decode
 @Tags(['e2e'])
@@ -45,7 +45,7 @@ void main() {
 
       // 1. Start the self-contained sender (HTTP + WS + peer in one binary).
       final sender = await _spawnDart(
-        'example/media/bin/sender.dart',
+        'example/video_sender/server.dart',
         ['--port=$port', '--codec=$codec'],
       );
       sender.stdout.transform(utf8.decoder).listen((line) {

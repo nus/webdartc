@@ -6,14 +6,14 @@
 /// ShaderVideoRenderer.
 ///
 /// Signaling server and browser client come from
-/// `dart/example/media/` (run those first). This app knows the
+/// `dart/example/signaling/` (run those first). This app knows the
 /// server's port from the `WEBDARTC_PORT` env var (default `8080`).
 ///
 /// Run:
 /// ```
 /// # terminal 1
 /// cd dart
-/// dart run example/media/bin/signaling.dart --port=8080
+/// dart run example/signaling/server.dart --port=8080
 /// # open http://127.0.0.1:8080/?bidir=1 in Chrome
 ///
 /// # terminal 2

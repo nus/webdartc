@@ -1,0 +1,188 @@
+/// webdartc video-receiver example — receives a browser camera stream
+/// (VP8 or H.264 / SRTP / DTLS / ICE), depacketises (RFC 7741 /
+/// RFC 6184) and decodes (libvpx for VP8, VideoToolbox or OpenH264 for
+/// H.264).
+///
+/// HTTP + WebSocket + Dart peer in one binary. The browser is the
+/// offerer: it captures `getUserMedia({video:true})`, adds the track,
+/// and creates an offer. Dart answers with `recvonly` and starts
+/// decoding.
+///
+/// Usage:
+///   dart run example/video_receiver/server.dart \
+///     [--port=8080] [--codec=vp8|h264]
+///
+/// Then open `http://127.0.0.1:<port>` in Chrome and grant camera
+/// permission. On macOS the H.264 path uses VideoToolbox.
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:webdartc/rtp/packetizer.dart';
+import 'package:webdartc/webdartc.dart';
+
+int _port = 8080;
+String _codec = 'vp8';
+
+Future<void> main(List<String> args) async {
+  for (final a in args) {
+    if (a.startsWith('--port=')) _port = int.parse(a.substring(7));
+    if (a.startsWith('--codec=')) _codec = a.substring(8).toLowerCase();
+  }
+  if (_codec != 'vp8' && _codec != 'h264') {
+    stderr.writeln('Unsupported codec: $_codec (expected vp8 or h264)');
+    exit(2);
+  }
+  switch (_codec) {
+    case 'vp8':
+      registerVp8Codec();
+    case 'h264':
+      registerH264Codec();
+  }
+
+  final server = await HttpServer.bind(InternetAddress.anyIPv4, _port);
+  stdout.writeln(
+      '[video_receiver] listening on http://127.0.0.1:$_port (codec=$_codec)');
+  stdout.writeln('[video_receiver] open the URL above in Chrome (camera permission required)');
+
+  await for (final req in server) {
+    if (WebSocketTransformer.isUpgradeRequest(req)) {
+      final ws = await WebSocketTransformer.upgrade(req);
+      unawaited(_handleWs(ws));
+    } else {
+      await _serveStatic(req);
+    }
+  }
+}
+
+String _scriptDir() {
+  final script = Platform.script.toFilePath();
+  return script.substring(0, script.lastIndexOf('/'));
+}
+
+Future<void> _serveStatic(HttpRequest req) async {
+  var path = req.uri.path;
+  if (path == '/' || path.isEmpty) path = '/index.html';
+  final file = File('${_scriptDir()}$path');
+  if (!await file.exists()) {
+    req.response.statusCode = HttpStatus.notFound;
+    await req.response.close();
+    return;
+  }
+  final ext = path.split('.').last;
+  req.response.headers.contentType = ContentType.parse(switch (ext) {
+    'html' => 'text/html; charset=utf-8',
+    'js' => 'application/javascript; charset=utf-8',
+    'css' => 'text/css; charset=utf-8',
+    _ => 'application/octet-stream',
+  });
+  await req.response.addStream(file.openRead());
+  await req.response.close();
+}
+
+Future<void> _handleWs(WebSocket ws) async {
+  stdout.writeln('[video_receiver] WS client connected');
+
+  PeerConnection? pc;
+
+  ws.listen(
+    (data) async {
+      if (data is! String) return;
+      final msg = jsonDecode(data) as Map<String, dynamic>;
+      switch (msg['type']) {
+        case 'offer':
+          stdout.writeln('[video_receiver] received offer');
+          pc = PeerConnection(
+              configuration: const PeerConnectionConfiguration());
+          pc!.addTransceiver(
+            'video',
+            direction: 'recvonly',
+            preferredCodecs: [_codec.toUpperCase()],
+          );
+
+          pc!.onIceCandidate.listen((evt) {
+            ws.add(jsonEncode({
+              'type': 'candidate',
+              'candidate': {
+                'candidate': evt.candidate,
+                'sdpMid': evt.sdpMid,
+                'sdpMLineIndex': evt.sdpMLineIndex,
+              }
+            }));
+          });
+          pc!.onIceConnectionStateChange
+              .listen((s) => stdout.writeln('[video_receiver] ICE: $s'));
+          pc!.onConnectionStateChange
+              .listen((s) => stdout.writeln('[video_receiver] PC: $s'));
+          pc!.onTrack.listen((evt) {
+            if (evt.kind != 'video') return;
+            stdout.writeln(
+                '[video_receiver] onTrack kind=${evt.kind} ssrc=${evt.ssrc}');
+            _pipeIncoming(evt.receiver, _codec);
+          });
+
+          await pc!.setRemoteDescription(SessionDescription(
+            type: SessionDescriptionType.offer,
+            sdp: msg['sdp'] as String,
+          ));
+          final answer = await pc!.createAnswer();
+          await pc!.setLocalDescription(answer);
+          ws.add(jsonEncode({'type': 'answer', 'sdp': answer.sdp}));
+          stdout.writeln('[video_receiver] sent answer');
+
+        case 'candidate':
+          final c = msg['candidate'];
+          if (c is Map<String, dynamic> && pc != null) {
+            await pc!.addIceCandidate(IceCandidateInit(
+              candidate: (c['candidate'] as String?) ?? '',
+              sdpMid: (c['sdpMid'] as String?) ?? '0',
+              sdpMLineIndex: (c['sdpMLineIndex'] as int?) ?? 0,
+            ));
+          }
+      }
+    },
+    onDone: () async {
+      stdout.writeln('[video_receiver] WS client disconnected');
+      await pc?.close();
+    },
+    onError: (_) async => await pc?.close(),
+  );
+}
+
+void _pipeIncoming(RtpReceiver receiver, String codec) {
+  final VideoPayloadDepacketizer depack =
+      codec == 'h264' ? H264Depacketizer() : Vp8Depacketizer();
+  var decoded = 0;
+  var decoderConfigured = false;
+  final decoder = VideoDecoder(
+    output: (frame) {
+      decoded++;
+      if (decoded <= 3 || decoded % 30 == 0) {
+        stdout.writeln('[video_receiver] decoded #$decoded '
+            '${frame.codedWidth}x${frame.codedHeight} '
+            'ts=${frame.timestamp}');
+      }
+      frame.close();
+    },
+    error: (e) => stderr.writeln('[video_receiver] decoder error: $e'),
+  );
+
+  receiver.onRtp.listen((rtp) {
+    final chunk = depack.depacketize(
+      rtp.payload,
+      marker: rtp.marker,
+      timestamp: rtp.timestamp,
+    );
+    if (chunk == null) return;
+    if (!decoderConfigured) {
+      // Wait for the first keyframe so the H.264 decoder has SPS/PPS
+      // (or the VP8 decoder has a reference frame).
+      if (chunk.type != EncodedVideoChunkType.key) return;
+      decoder.configure(VideoDecoderConfig(codec: codec));
+      decoderConfigured = true;
+    }
+    decoder.decode(chunk);
+  });
+}

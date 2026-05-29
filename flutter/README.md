@@ -39,7 +39,7 @@ at [`example/`](example). It shows `local` (FakeVideoSource preview) and
 
 ```bash
 # Terminal 1 — from dart/: signaling + static HTTP server
-dart run example/media/bin/signaling.dart --port=8080
+dart run example/signaling/server.dart --port=8080
 
 # Terminal 2 — open http://127.0.0.1:8080/?bidir=1 in Chrome
 

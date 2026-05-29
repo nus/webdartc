@@ -1,10 +1,15 @@
-/// HTTP + WebSocket signaling server for the media sample.
+/// HTTP + WebSocket signaling relay.
 ///
-/// Serves the browser client HTML on `/` and relays signaling JSON messages
-/// between two WebSocket clients (Dart peer ↔ browser).
+/// Serves the browser client HTML on `/` and blindly forwards every JSON
+/// message between any two connected WebSocket clients. Used to pair two
+/// peers that both implement the WebRTC offer/answer/candidate dance
+/// themselves — e.g. the `flutter/example/` app talking to a browser.
+///
+/// For pure browser ↔ Dart demos, prefer the self-contained
+/// `example/video_sender/` or `example/video_receiver/` instead.
 ///
 /// Usage:
-///   dart run example/media/bin/signaling.dart [--port=8080]
+///   dart run example/signaling/server.dart [--port=8080]
 library;
 
 import 'dart:async';
@@ -16,11 +21,8 @@ Future<void> main(List<String> args) async {
     if (a.startsWith('--port=')) port = int.parse(a.substring(7));
   }
 
-  final webRoot = _resolveWebRoot();
-
   final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
-  stdout.writeln('media signaling server listening on http://127.0.0.1:$port');
-  stdout.writeln('web root: $webRoot');
+  stdout.writeln('signaling relay listening on http://127.0.0.1:$port');
 
   final clients = <WebSocket>[];
 
@@ -40,21 +42,20 @@ Future<void> main(List<String> args) async {
         onError: (_) => clients.remove(ws),
       );
     } else {
-      await _serveStatic(req, webRoot);
+      await _serveStatic(req);
     }
   }
 }
 
-String _resolveWebRoot() {
+String _scriptDir() {
   final script = Platform.script.toFilePath();
-  final dir = Directory(script).parent.parent;
-  return '${dir.path}/web';
+  return script.substring(0, script.lastIndexOf('/'));
 }
 
-Future<void> _serveStatic(HttpRequest req, String root) async {
+Future<void> _serveStatic(HttpRequest req) async {
   var path = req.uri.path;
   if (path == '/' || path.isEmpty) path = '/index.html';
-  final file = File('$root$path');
+  final file = File('${_scriptDir()}$path');
   if (!await file.exists()) {
     req.response.statusCode = HttpStatus.notFound;
     await req.response.close();

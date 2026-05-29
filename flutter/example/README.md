@@ -28,13 +28,13 @@ tile's label.
 ## Run
 
 You need the Dart signaling server and a browser peer from
-`dart/example/media/`.
+`dart/example/signaling/`.
 
 Terminal 1 — signaling + static HTTP server:
 
 ```bash
 cd dart
-dart run example/media/bin/signaling.dart --port=8080
+dart run example/signaling/server.dart --port=8080
 ```
 
 Terminal 2 — browser (grant camera permission):
@@ -68,7 +68,7 @@ helper is compiled automatically by `dart/hook/build.dart` during the build.
 
 `lib/ayame_main.dart` is an alternate entry point that talks to an
 [OpenAyame](https://github.com/OpenAyame/ayame-spec) signaling server
-instead of the local `dart/example/media/` server. Pair two clients
+instead of the local `dart/example/signaling/` server. Pair two clients
 on the same `roomId` (two instances of this app, the official
 `ayame-web-sdk` demo, etc.) for a 1-on-1 video chat.
 
