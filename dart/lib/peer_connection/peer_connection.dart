@@ -1245,9 +1245,11 @@ final class PeerConnection {
   }
 
   void _sendPli(int mediaSourceSsrc) {
-    // Queue PLI to be included in the next periodic compound RTCP that uses
-    // an active sender SSRC (known to Chrome from SDP).  Compounds sent with
-    // _localRtcpSsrc are rejected by Chrome because the SSRC is unknown.
+    // Queue PLI to be sent on the next periodic compound RTCP. The compound's
+    // sender SSRC is either an active video sender (preferred — Chrome
+    // already knows it from a=ssrc) or `_localRtcpSsrc` when this side is
+    // receive-only; the same `_localRtcpSsrc` carries the RR + SDES + REMB
+    // in that compound and Chrome accepts those, so PLI rides along.
     _pendingPliSsrcs.add(mediaSourceSsrc);
     if (_debug) _log('[pc] queued PLI for ssrc=$mediaSourceSsrc');
   }
@@ -1337,10 +1339,12 @@ final class PeerConnection {
       }
     }
 
-    // Pending keyframe requests (PLI + FIR, RFC 4585/5104).
-    // Only include when compound uses an active sender SSRC (known to
-    // Chrome from SDP).  Keep retrying until cleared externally.
-    if (_pendingPliSsrcs.isNotEmpty && activeSenders.isNotEmpty) {
+    // Pending keyframe requests (PLI + FIR, RFC 4585/5104). Piggybacks
+    // on the same compound that just carried RR + SDES (+ REMB) — all use
+    // `compoundSsrc`, which is the active video sender's SSRC when one
+    // exists and `_localRtcpSsrc` for receive-only sessions. Chrome
+    // accepts both. Keep retrying until cleared externally.
+    if (_pendingPliSsrcs.isNotEmpty) {
       for (final mediaSsrc in _pendingPliSsrcs) {
         // PLI (RFC 4585 §6.3.1)
         compound.addAll(RtcpPli(senderSsrc: compoundSsrc, mediaSourceSsrc: mediaSsrc).build());
