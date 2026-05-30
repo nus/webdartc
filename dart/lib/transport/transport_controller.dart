@@ -930,7 +930,9 @@ final class TransportController {
   }
 
   Result<ProcessResult, ProtocolError>? _dispatchTimeout(TimerToken token) {
-    if (token is IceTimerToken || token is IceKeepaliveToken || token is IceGatheringTimeoutToken) {
+    if (token is IceTimerToken ||
+        token is IceConsentToken ||
+        token is IceGatheringTimeoutToken) {
       return _ice?.handleTimeout(token) ?? const Ok(ProcessResult.empty);
     }
     if (token is DtlsRetransmitToken) {

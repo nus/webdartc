@@ -955,6 +955,11 @@ final class PeerConnection {
             remotePort: pair.remote.port,
           );
         }
+      case IceState.iceDisconnected:
+        // Consent freshness lapsed (RFC 7675) — signal the transient-loss
+        // state; a subsequent ICE restart can recover.
+        _setIceConnectionState(IceConnectionState.disconnected);
+        _setConnectionState(PeerConnectionState.disconnected);
       case IceState.iceFailed:
         _setIceConnectionState(IceConnectionState.failed);
         _setConnectionState(PeerConnectionState.failed);
