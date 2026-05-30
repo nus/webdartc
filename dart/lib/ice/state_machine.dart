@@ -524,6 +524,9 @@ final class IceStateMachine implements ProtocolStateMachine {
   /// Unsigned 64-bit `a >= b`. Tie-breakers fill all 64 bits, so the high
   /// bit can be set; comparing as signed Dart ints would mis-order them.
   /// Flipping the sign bit maps unsigned ordering onto signed comparison.
+  /// Assumes 64-bit ints (native VM); the `0x8000…` literal and full-width
+  /// tie-breakers don't survive the dart2js 53-bit int, but webdartc only
+  /// targets the native VM.
   static bool _tieBreakerGe(int a, int b) =>
       (a ^ 0x8000000000000000) >= (b ^ 0x8000000000000000);
 

@@ -83,6 +83,83 @@ void main() {
       }
     });
 
+    test('binding response with a bad MESSAGE-INTEGRITY is discarded', () {
+      // A success response whose HMAC doesn't verify must not complete the
+      // check — otherwise a blind attacker who knows the txId could force a
+      // bogus pair to be nominated. Send a check, then craft a response on
+      // its txId signed with the WRONG key and confirm the pair is neither
+      // selected nor the agent connected.
+      final ice = IceStateMachine(controlling: true);
+      final localParams = IceParameters(usernameFragment: 'loc', password: 'locpass');
+      final remoteParams = IceParameters(usernameFragment: 'rem', password: 'rempass');
+      ice.startGathering(localParams,
+          hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 30000)]);
+      ice.setRemoteParameters(remoteParams);
+      final checkOut = ice.addRemoteCandidate(IceCandidate(
+        foundation: '1', componentId: 1, transport: 'udp', priority: 1000,
+        ip: IpAddress.parse('127.0.0.1'), port: 30001,
+        type: IceCandidateType.host,
+      ));
+      // Capture the txId of the connectivity check the agent just sent.
+      final checkPkt = checkOut.value.outputPackets
+          .firstWhere((p) => StunParser.parse(p.data).value.type ==
+              StunMessageType.bindingRequest);
+      final checkTxId = StunParser.parse(checkPkt.data).value.transactionId;
+
+      final response = StunMessage(
+        type: StunMessageType.bindingSuccessResponse,
+        transactionId: checkTxId,
+        attributes: [
+          XorMappedAddress(address: IpAddress.parse('127.0.0.1'), port: 30000),
+        ],
+      );
+      final badRaw = StunMessageBuilder.buildWithIntegrity(
+          response, Uint8List.fromList('WRONG_KEY'.codeUnits));
+
+      ice.processInput(badRaw,
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 30001);
+      expect(ice.selectedPair, isNull,
+          reason: 'forged response must not nominate a pair');
+      expect(ice.state, isNot(equals(IceState.iceConnected)));
+    });
+
+    test('487 Role Conflict response flips role and re-issues the check', () {
+      // RFC 8445 §7.2.5.1: on a 487 the peer kept its role and we must
+      // switch, then re-check the same pair under the new role.
+      final ice = IceStateMachine(controlling: true);
+      final localParams = IceParameters(usernameFragment: 'loc', password: 'locpass');
+      final remoteParams = IceParameters(usernameFragment: 'rem', password: 'rempass');
+      ice.startGathering(localParams,
+          hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 31000)]);
+      ice.setRemoteParameters(remoteParams);
+      final checkOut = ice.addRemoteCandidate(IceCandidate(
+        foundation: '1', componentId: 1, transport: 'udp', priority: 1000,
+        ip: IpAddress.parse('127.0.0.1'), port: 31001,
+        type: IceCandidateType.host,
+      ));
+      final checkTxId = StunParser.parse(checkOut.value.outputPackets
+              .firstWhere((p) => StunParser.parse(p.data).value.type ==
+                  StunMessageType.bindingRequest)
+              .data)
+          .value
+          .transactionId;
+      expect(ice.controlling, isTrue);
+
+      final err = StunMessage(
+        type: StunMessageType.bindingErrorResponse,
+        transactionId: checkTxId,
+        attributes: [ErrorCodeAttr(code: 487, reason: 'Role Conflict')],
+      );
+      final result = ice.processInput(StunMessageBuilder.build(err),
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 31001);
+
+      expect(ice.controlling, isFalse, reason: 'role must flip on 487');
+      final reCheck = result.value.outputPackets.any((p) =>
+          StunParser.parse(p.data).value.type ==
+          StunMessageType.bindingRequest);
+      expect(reCheck, isTrue, reason: 'a fresh check must be re-issued');
+    });
+
     test('binding request response round-trip', () {
       // Two ICE agents — one sends a binding request, the other responds.
       final controllingIce = IceStateMachine(controlling: true);
