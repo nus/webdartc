@@ -32,6 +32,134 @@ void main() {
       expect(states, contains(IceState.iceGatheringComplete));
     });
 
+    test('role conflict — controlling agent receiving ICE-CONTROLLING '
+        'resolves per RFC 8445 §7.3.1.1', () {
+      // A controlling agent receives an authenticated Binding Request that
+      // also claims the controlling role. It must either keep its role and
+      // answer 487 Role Conflict, or yield to controlled — never silently
+      // accept the request as if there were no conflict.
+      final recv = IceStateMachine(controlling: true);
+      final recvParams = IceParameters(usernameFragment: 'recv', password: 'recvpass');
+      final sendParams = IceParameters(usernameFragment: 'send', password: 'sendpass');
+      recv.startGathering(recvParams,
+          hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 20000)]);
+      recv.setRemoteParameters(sendParams);
+
+      // Build a signed request from the (also-controlling) peer. The peer
+      // signs with the receiver's password (short-term credentials), and
+      // USERNAME is "<receiver-ufrag>:<sender-ufrag>".
+      final req = StunMessage(
+        type: StunMessageType.bindingRequest,
+        transactionId: Csprng.randomBytes(12),
+        attributes: [
+          UsernameAttr('recv:send'),
+          PriorityAttr(0x7E0000FF),
+          IceControllingAttr(0x1122334455667788),
+        ],
+      );
+      final raw = StunMessageBuilder.buildWithIntegrity(
+          req, Uint8List.fromList(recvParams.password.codeUnits));
+
+      final result = recv.processInput(raw,
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 20001);
+      expect(result.isOk, isTrue);
+
+      // Find the response (if any) and whether it is a 487.
+      final pkts = result.value.outputPackets;
+      final emitted487 = pkts.any((p) {
+        final parsed = StunParser.parse(p.data);
+        return parsed.isOk &&
+            parsed.value.type == StunMessageType.bindingErrorResponse &&
+            parsed.value.attribute<ErrorCodeAttr>()?.code == 487;
+      });
+
+      if (recv.controlling) {
+        // Kept its role → must have told the peer to yield with 487.
+        expect(emitted487, isTrue,
+            reason: 'controlling agent kept role but did not answer 487');
+      } else {
+        // Yielded to controlled → no 487, request answered normally.
+        expect(emitted487, isFalse);
+      }
+    });
+
+    test('binding response with a bad MESSAGE-INTEGRITY is discarded', () {
+      // A success response whose HMAC doesn't verify must not complete the
+      // check — otherwise a blind attacker who knows the txId could force a
+      // bogus pair to be nominated. Send a check, then craft a response on
+      // its txId signed with the WRONG key and confirm the pair is neither
+      // selected nor the agent connected.
+      final ice = IceStateMachine(controlling: true);
+      final localParams = IceParameters(usernameFragment: 'loc', password: 'locpass');
+      final remoteParams = IceParameters(usernameFragment: 'rem', password: 'rempass');
+      ice.startGathering(localParams,
+          hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 30000)]);
+      ice.setRemoteParameters(remoteParams);
+      final checkOut = ice.addRemoteCandidate(IceCandidate(
+        foundation: '1', componentId: 1, transport: 'udp', priority: 1000,
+        ip: IpAddress.parse('127.0.0.1'), port: 30001,
+        type: IceCandidateType.host,
+      ));
+      // Capture the txId of the connectivity check the agent just sent.
+      final checkPkt = checkOut.value.outputPackets
+          .firstWhere((p) => StunParser.parse(p.data).value.type ==
+              StunMessageType.bindingRequest);
+      final checkTxId = StunParser.parse(checkPkt.data).value.transactionId;
+
+      final response = StunMessage(
+        type: StunMessageType.bindingSuccessResponse,
+        transactionId: checkTxId,
+        attributes: [
+          XorMappedAddress(address: IpAddress.parse('127.0.0.1'), port: 30000),
+        ],
+      );
+      final badRaw = StunMessageBuilder.buildWithIntegrity(
+          response, Uint8List.fromList('WRONG_KEY'.codeUnits));
+
+      ice.processInput(badRaw,
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 30001);
+      expect(ice.selectedPair, isNull,
+          reason: 'forged response must not nominate a pair');
+      expect(ice.state, isNot(equals(IceState.iceConnected)));
+    });
+
+    test('487 Role Conflict response flips role and re-issues the check', () {
+      // RFC 8445 §7.2.5.1: on a 487 the peer kept its role and we must
+      // switch, then re-check the same pair under the new role.
+      final ice = IceStateMachine(controlling: true);
+      final localParams = IceParameters(usernameFragment: 'loc', password: 'locpass');
+      final remoteParams = IceParameters(usernameFragment: 'rem', password: 'rempass');
+      ice.startGathering(localParams,
+          hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 31000)]);
+      ice.setRemoteParameters(remoteParams);
+      final checkOut = ice.addRemoteCandidate(IceCandidate(
+        foundation: '1', componentId: 1, transport: 'udp', priority: 1000,
+        ip: IpAddress.parse('127.0.0.1'), port: 31001,
+        type: IceCandidateType.host,
+      ));
+      final checkTxId = StunParser.parse(checkOut.value.outputPackets
+              .firstWhere((p) => StunParser.parse(p.data).value.type ==
+                  StunMessageType.bindingRequest)
+              .data)
+          .value
+          .transactionId;
+      expect(ice.controlling, isTrue);
+
+      final err = StunMessage(
+        type: StunMessageType.bindingErrorResponse,
+        transactionId: checkTxId,
+        attributes: [ErrorCodeAttr(code: 487, reason: 'Role Conflict')],
+      );
+      final result = ice.processInput(StunMessageBuilder.build(err),
+          remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 31001);
+
+      expect(ice.controlling, isFalse, reason: 'role must flip on 487');
+      final reCheck = result.value.outputPackets.any((p) =>
+          StunParser.parse(p.data).value.type ==
+          StunMessageType.bindingRequest);
+      expect(reCheck, isTrue, reason: 'a fresh check must be re-issued');
+    });
+
     test('binding request response round-trip', () {
       // Two ICE agents — one sends a binding request, the other responds.
       final controllingIce = IceStateMachine(controlling: true);
