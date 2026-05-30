@@ -449,6 +449,39 @@ void main() {
         await pc.close();
       }
     });
+
+    test('setRemoteDescription rejects a weak SHA-1 fingerprint', () async {
+      // RFC 8827 §6.5 / RFC 8122 §5: SHA-1 is deprecated and must not be
+      // honoured. Reject at SDP ingest rather than failing deep in the
+      // DTLS handshake.
+      final pc = PeerConnection(configuration: PeerConnectionConfiguration());
+      const sha1Hex = 'AA:BB:CC:DD:EE:FF:00:11:22:33:'
+          '44:55:66:77:88:99:AA:BB:CC:DD';
+      final offerSdp = 'v=0\r\n'
+          'o=- 1 2 IN IP4 0.0.0.0\r\n'
+          's=-\r\n'
+          't=0 0\r\n'
+          'a=group:BUNDLE 0\r\n'
+          'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
+          'c=IN IP4 0.0.0.0\r\n'
+          'a=mid:0\r\n'
+          'a=sendrecv\r\n'
+          'a=rtpmap:111 opus/48000/2\r\n'
+          'a=ice-ufrag:abcd\r\n'
+          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+          'a=fingerprint:sha-1 $sha1Hex\r\n'
+          'a=setup:actpass\r\n'
+          'a=rtcp-mux\r\n';
+      try {
+        await expectLater(
+          pc.setRemoteDescription(SessionDescription(
+              type: SessionDescriptionType.offer, sdp: offerSdp)),
+          throwsA(isA<Exception>()),
+        );
+      } finally {
+        await pc.close();
+      }
+    });
   });
 }
 

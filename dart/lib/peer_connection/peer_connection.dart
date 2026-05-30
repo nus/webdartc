@@ -366,6 +366,17 @@ final class PeerConnection {
     final hex = spaceIdx > 0
         ? remoteFingerprint.substring(spaceIdx + 1)
         : remoteFingerprint;
+    // Reject cryptographically weak fingerprint hashes (RFC 8122 §5:
+    // SHA-1 and the MD family are deprecated; RFC 8827 §6.5 mandates
+    // SHA-256 for WebRTC). Stronger digests (sha-384/512) are left to
+    // pass through — only sha-256 actually verifies against our DTLS
+    // layer, but that capability gap is the handshake's concern, not a
+    // security one. A weak digest, by contrast, must never be honoured.
+    if (const {'sha-1', 'md5', 'md2'}.contains(algorithm.toLowerCase())) {
+      throw Exception(
+          'Remote a=fingerprint uses weak hash "$algorithm"; '
+          'WebRTC requires sha-256 (RFC 8827 §6.5, RFC 8122 §5)');
+    }
     _dtls.expectedRemoteFingerprint = hex;
     _remoteFp = (algorithm: algorithm, hex: hex);
 
