@@ -452,6 +452,16 @@ final class IceStateMachine implements ProtocolStateMachine {
       return _buildErrorResponse(msg.transactionId, 401, 'Unauthorized', remoteAddr, remotePort, localIp);
     }
 
+    // Role-conflict resolution (RFC 8445 §7.3.1.1). Both agents may
+    // momentarily believe they hold the same role (e.g. ICE restart, or
+    // an aggressive peer). The request carries the sender's role +
+    // tie-breaker; if it collides with ours, the larger tie-breaker
+    // keeps its role and the smaller switches. Checked only after
+    // MESSAGE-INTEGRITY so a spoofed request can't force a role flip.
+    final roleConflict = _resolveRoleConflict(msg, remoteAddr, remotePort,
+        localParams.password, localIp);
+    if (roleConflict != null) return roleConflict;
+
     // Check if NOMINATED (for controlled agent)
     final nominated = msg.attribute<UseCandidateAttr>() != null;
 
@@ -470,6 +480,46 @@ final class IceStateMachine implements ProtocolStateMachine {
     ];
     return Ok(ProcessResult(outputPackets: allPackets));
   }
+
+  /// RFC 8445 §7.3.1.1 role-conflict resolution. Returns a 487 error
+  /// response when this agent must keep its role (the peer should
+  /// switch), `null` when there is no conflict or when this agent
+  /// switched roles (the caller then proceeds to answer the request
+  /// normally under the new role).
+  Result<ProcessResult, ProtocolError>? _resolveRoleConflict(
+    StunMessage msg,
+    IpAddress remoteAddr,
+    int remotePort,
+    String localPassword,
+    IpAddress? localIp,
+  ) {
+    final theirControlling = msg.attribute<IceControllingAttr>();
+    final theirControlled = msg.attribute<IceControlledAttr>();
+
+    // Conflict only when both agents claim the same role.
+    if (controlling && theirControlling != null) {
+      if (_tieBreakerGe(_tieBreaker, theirControlling.tieBreaker)) {
+        // We win — keep controlling, tell the peer to yield.
+        return _buildErrorResponse(msg.transactionId, 487, 'Role Conflict',
+            remoteAddr, remotePort, localIp, signWith: localPassword);
+      }
+      controlling = false; // we yield
+    } else if (!controlling && theirControlled != null) {
+      if (_tieBreakerGe(_tieBreaker, theirControlled.tieBreaker)) {
+        controlling = true; // we take over
+      } else {
+        return _buildErrorResponse(msg.transactionId, 487, 'Role Conflict',
+            remoteAddr, remotePort, localIp, signWith: localPassword);
+      }
+    }
+    return null;
+  }
+
+  /// Unsigned 64-bit `a >= b`. Tie-breakers fill all 64 bits, so the high
+  /// bit can be set; comparing as signed Dart ints would mis-order them.
+  /// Flipping the sign bit maps unsigned ordering onto signed comparison.
+  static bool _tieBreakerGe(int a, int b) =>
+      (a ^ 0x8000000000000000) >= (b ^ 0x8000000000000000);
 
   Result<ProcessResult, ProtocolError> _handleBindingResponse(
     StunMessage msg,
@@ -528,6 +578,19 @@ final class IceStateMachine implements ProtocolStateMachine {
   Result<ProcessResult, ProtocolError> _handleBindingError(StunMessage msg) {
     final txId = _txIdString(msg.transactionId);
     final check = _pendingChecks.remove(txId);
+
+    // 487 Role Conflict (RFC 8445 §7.2.5.1): the peer kept its role and
+    // told us to switch. Flip our role and re-issue the check on the same
+    // pair so the connectivity check can complete under the new role.
+    final err = msg.attribute<ErrorCodeAttr>();
+    if (err?.code == 487 && check != null) {
+      controlling = !controlling;
+      check.pair.state = CandidatePairState.waiting;
+      return Ok(ProcessResult(
+          outputPackets:
+              _sendCheck(check.pair, nominated: controlling)));
+    }
+
     if (check != null) {
       check.pair.state = CandidatePairState.failed;
     }
@@ -969,14 +1032,21 @@ final class IceStateMachine implements ProtocolStateMachine {
     String reason,
     IpAddress remoteAddr,
     int remotePort,
-    IpAddress? localIp,
-  ) {
+    IpAddress? localIp, {
+    String? signWith,
+  }) {
     final msg = StunMessage(
       type: StunMessageType.bindingErrorResponse,
       transactionId: transactionId,
       attributes: [ErrorCodeAttr(code: code, reason: reason)],
     );
-    final raw = StunMessageBuilder.build(msg);
+    // 487 Role Conflict answers an already-authenticated request, so it
+    // carries MESSAGE-INTEGRITY; auth-failure errors (400/401) are sent
+    // unsigned since we couldn't validate the sender's credentials.
+    final raw = signWith != null
+        ? StunMessageBuilder.buildWithIntegrity(
+            msg, Uint8List.fromList(signWith.codeUnits))
+        : StunMessageBuilder.build(msg);
     return Ok(ProcessResult(
       outputPackets: [
         OutputPacket(
