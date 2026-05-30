@@ -117,25 +117,13 @@ abstract final class StunMessageBuilder {
         final forHmac = Uint8List(20 + bytesBeforeMi);
         forHmac.setRange(0, 20, hdr);
         forHmac.setRange(20, forHmac.length, raw, 20);
-        final expected = HmacSha1.compute(key, forHmac);
-        return _constantTimeEquals(expected, raw, valueStart);
+        return HmacSha1.verify(
+            key, forHmac, raw.sublist(valueStart, valueStart + 20));
       }
 
       offset = valueStart + ((attrLength + 3) & ~3);
     }
     return false; // no MESSAGE-INTEGRITY present
-  }
-
-  /// Constant-time compare of the 20-byte [expected] HMAC against the 20
-  /// bytes of [raw] starting at [rawOffset].
-  static bool _constantTimeEquals(
-      Uint8List expected, Uint8List raw, int rawOffset) {
-    if (rawOffset + expected.length > raw.length) return false;
-    var diff = 0;
-    for (var i = 0; i < expected.length; i++) {
-      diff |= expected[i] ^ raw[rawOffset + i];
-    }
-    return diff == 0;
   }
 
   static Uint8List _buildHeader(

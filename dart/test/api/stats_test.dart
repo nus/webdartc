@@ -417,28 +417,10 @@ void main() {
           'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:'
           'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:'
           'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99';
-      final offerSdp = 'v=0\r\n'
-          'o=- 1 2 IN IP4 0.0.0.0\r\n'
-          's=-\r\n'
-          't=0 0\r\n'
-          'a=group:BUNDLE 0\r\n'
-          'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
-          'c=IN IP4 0.0.0.0\r\n'
-          'a=mid:0\r\n'
-          'a=sendrecv\r\n'
-          'a=rtpmap:111 opus/48000/2\r\n'
-          'a=ice-ufrag:abcd\r\n'
-          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
-          'a=fingerprint:sha-384 $sha384Hex\r\n'
-          'a=setup:actpass\r\n'
-          'a=rtcp-mux\r\n';
       try {
-        await pc.setRemoteDescription(
-          SessionDescription(
+        await pc.setRemoteDescription(SessionDescription(
             type: SessionDescriptionType.offer,
-            sdp: offerSdp,
-          ),
-        );
+            sdp: _offerWithFingerprint('sha-384', sha384Hex)));
         final report = await pc.getStats();
         final remote =
             report['certificate-remote'] as CertificateStats?;
@@ -457,25 +439,11 @@ void main() {
       final pc = PeerConnection(configuration: PeerConnectionConfiguration());
       const sha1Hex = 'AA:BB:CC:DD:EE:FF:00:11:22:33:'
           '44:55:66:77:88:99:AA:BB:CC:DD';
-      final offerSdp = 'v=0\r\n'
-          'o=- 1 2 IN IP4 0.0.0.0\r\n'
-          's=-\r\n'
-          't=0 0\r\n'
-          'a=group:BUNDLE 0\r\n'
-          'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
-          'c=IN IP4 0.0.0.0\r\n'
-          'a=mid:0\r\n'
-          'a=sendrecv\r\n'
-          'a=rtpmap:111 opus/48000/2\r\n'
-          'a=ice-ufrag:abcd\r\n'
-          'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
-          'a=fingerprint:sha-1 $sha1Hex\r\n'
-          'a=setup:actpass\r\n'
-          'a=rtcp-mux\r\n';
       try {
         await expectLater(
           pc.setRemoteDescription(SessionDescription(
-              type: SessionDescriptionType.offer, sdp: offerSdp)),
+              type: SessionDescriptionType.offer,
+              sdp: _offerWithFingerprint('sha-1', sha1Hex))),
           throwsA(isA<Exception>()),
         );
       } finally {
@@ -484,6 +452,24 @@ void main() {
     });
   });
 }
+
+/// Minimal offer SDP carrying a single audio m-line and the given
+/// `a=fingerprint:<algo> <hex>`, for exercising the SDP-ingest path.
+String _offerWithFingerprint(String algo, String hex) => 'v=0\r\n'
+    'o=- 1 2 IN IP4 0.0.0.0\r\n'
+    's=-\r\n'
+    't=0 0\r\n'
+    'a=group:BUNDLE 0\r\n'
+    'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
+    'c=IN IP4 0.0.0.0\r\n'
+    'a=mid:0\r\n'
+    'a=sendrecv\r\n'
+    'a=rtpmap:111 opus/48000/2\r\n'
+    'a=ice-ufrag:abcd\r\n'
+    'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+    'a=fingerprint:$algo $hex\r\n'
+    'a=setup:actpass\r\n'
+    'a=rtcp-mux\r\n';
 
 /// Minimal `MediaStreamTrack` for tests that only need stable id+kind
 /// (e.g. asserting MediaSourceStats wiring). Doesn't actually produce

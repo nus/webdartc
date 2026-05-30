@@ -43,6 +43,10 @@ final class IceStateMachine implements ProtocolStateMachine {
   IceState _state = IceState.iceNew;
   IceParameters? _localParams;
   IceParameters? _remoteParams;
+  // Short-term-credential HMAC keys, derived once from the passwords so
+  // the per-packet check/response paths don't re-encode the password.
+  Uint8List? _localKey;
+  Uint8List? _remoteKey;
 
   final List<IceCandidate> _localCandidates = [];
   final List<IceCandidate> _remoteCandidates = [];
@@ -126,6 +130,7 @@ final class IceStateMachine implements ProtocolStateMachine {
       return Err(const StateError('ICE: startGathering requires at least one host binding'));
     }
     _localParams = localParams;
+    _localKey = Uint8List.fromList(localParams.password.codeUnits);
     _setState(IceState.iceGathering);
 
     // Under `IceTransportPolicy.relay` only TURN-derived relay candidates
@@ -323,6 +328,7 @@ final class IceStateMachine implements ProtocolStateMachine {
   Result<ProcessResult, ProtocolError> setRemoteParameters(
       IceParameters params) {
     _remoteParams = params;
+    _remoteKey = Uint8List.fromList(params.password.codeUnits);
     if (_state == IceState.iceGatheringComplete) {
       return Ok(_startChecks());
     }
@@ -447,8 +453,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     if (integrityAttr == null) {
       return _buildErrorResponse(msg.transactionId, 400, 'Bad Request', remoteAddr, remotePort, localIp);
     }
-    if (!StunMessageBuilder.verifyMessageIntegrity(
-        rawPacket, Uint8List.fromList(localParams.password.codeUnits))) {
+    if (!StunMessageBuilder.verifyMessageIntegrity(rawPacket, _localKey!)) {
       return _buildErrorResponse(msg.transactionId, 401, 'Unauthorized', remoteAddr, remotePort, localIp);
     }
 
@@ -458,8 +463,8 @@ final class IceStateMachine implements ProtocolStateMachine {
     // tie-breaker; if it collides with ours, the larger tie-breaker
     // keeps its role and the smaller switches. Checked only after
     // MESSAGE-INTEGRITY so a spoofed request can't force a role flip.
-    final roleConflict = _resolveRoleConflict(msg, remoteAddr, remotePort,
-        localParams.password, localIp);
+    final roleConflict =
+        _resolveRoleConflict(msg, remoteAddr, remotePort, localIp);
     if (roleConflict != null) return roleConflict;
 
     // Check if NOMINATED (for controlled agent)
@@ -471,7 +476,7 @@ final class IceStateMachine implements ProtocolStateMachine {
 
     // Build success response
     final successResult = _buildSuccessResponse(
-        msg.transactionId, remoteAddr, remotePort, localParams.password, localIp);
+        msg.transactionId, remoteAddr, remotePort, _localKey!, localIp);
     if (!successResult.isOk) return successResult;
 
     final allPackets = [
@@ -490,29 +495,30 @@ final class IceStateMachine implements ProtocolStateMachine {
     StunMessage msg,
     IpAddress remoteAddr,
     int remotePort,
-    String localPassword,
     IpAddress? localIp,
   ) {
-    final theirControlling = msg.attribute<IceControllingAttr>();
-    final theirControlled = msg.attribute<IceControlledAttr>();
+    // A conflict exists only when the peer claims the same role we hold;
+    // its tie-breaker is then in the matching attribute.
+    final theirTieBreaker = controlling
+        ? msg.attribute<IceControllingAttr>()?.tieBreaker
+        : msg.attribute<IceControlledAttr>()?.tieBreaker;
+    if (theirTieBreaker == null) return null;
 
-    // Conflict only when both agents claim the same role.
-    if (controlling && theirControlling != null) {
-      if (_tieBreakerGe(_tieBreaker, theirControlling.tieBreaker)) {
-        // We win — keep controlling, tell the peer to yield.
-        return _buildErrorResponse(msg.transactionId, 487, 'Role Conflict',
-            remoteAddr, remotePort, localIp, signWith: localPassword);
-      }
-      controlling = false; // we yield
-    } else if (!controlling && theirControlled != null) {
-      if (_tieBreakerGe(_tieBreaker, theirControlled.tieBreaker)) {
-        controlling = true; // we take over
-      } else {
-        return _buildErrorResponse(msg.transactionId, 487, 'Role Conflict',
-            remoteAddr, remotePort, localIp, signWith: localPassword);
-      }
+    if (_tieBreakerGe(_tieBreaker, theirTieBreaker)) {
+      // We win — keep our role and tell the peer to yield.
+      return _buildErrorResponse(msg.transactionId, 487, 'Role Conflict',
+          remoteAddr, remotePort, localIp, signWith: _localKey);
     }
+    _switchRole(); // we lose — yield to the peer
     return null;
+  }
+
+  /// Single chokepoint for ICE role flips (RFC 8445 §7.3.1). Both the
+  /// inbound-request resolver and the inbound-487 handler funnel through
+  /// here so the invariant "role only flips after a resolved conflict"
+  /// has one home.
+  void _switchRole() {
+    controlling = !controlling;
   }
 
   /// Unsigned 64-bit `a >= b`. Tie-breakers fill all 64 bits, so the high
@@ -537,10 +543,9 @@ final class IceStateMachine implements ProtocolStateMachine {
     // recompute the HMAC over the received bytes. A forged or unsigned
     // response is discarded — leave the pending check in place so a
     // genuine retransmit can still complete it.
-    final remoteParams = _remoteParams;
-    if (remoteParams == null ||
-        !StunMessageBuilder.verifyMessageIntegrity(
-            rawPacket, Uint8List.fromList(remoteParams.password.codeUnits))) {
+    final remoteKey = _remoteKey;
+    if (remoteKey == null ||
+        !StunMessageBuilder.verifyMessageIntegrity(rawPacket, remoteKey)) {
       return const Ok(ProcessResult.empty);
     }
     _pendingChecks.remove(txId);
@@ -584,7 +589,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     // pair so the connectivity check can complete under the new role.
     final err = msg.attribute<ErrorCodeAttr>();
     if (err?.code == 487 && check != null) {
-      controlling = !controlling;
+      _switchRole();
       check.pair.state = CandidatePairState.waiting;
       return Ok(ProcessResult(
           outputPackets:
@@ -663,8 +668,7 @@ final class IceStateMachine implements ProtocolStateMachine {
       attributes: attrs,
     );
 
-    final raw = StunMessageBuilder.buildWithIntegrity(
-        msg, Uint8List.fromList(remoteParams.password.codeUnits));
+    final raw = StunMessageBuilder.buildWithIntegrity(msg, _remoteKey!);
 
     _pendingChecks[_txIdString(txId)] = _PendingCheck(
       pair: pair,
@@ -1002,7 +1006,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     Uint8List transactionId,
     IpAddress remoteAddr,
     int remotePort,
-    String localPassword,
+    Uint8List localKey,
     IpAddress? localIp,
   ) {
     final msg = StunMessage(
@@ -1012,8 +1016,7 @@ final class IceStateMachine implements ProtocolStateMachine {
         XorMappedAddress(address: remoteAddr, port: remotePort),
       ],
     );
-    final raw = StunMessageBuilder.buildWithIntegrity(
-        msg, Uint8List.fromList(localPassword.codeUnits));
+    final raw = StunMessageBuilder.buildWithIntegrity(msg, localKey);
     return Ok(ProcessResult(
       outputPackets: [
         OutputPacket(
@@ -1033,7 +1036,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     IpAddress remoteAddr,
     int remotePort,
     IpAddress? localIp, {
-    String? signWith,
+    Uint8List? signWith,
   }) {
     final msg = StunMessage(
       type: StunMessageType.bindingErrorResponse,
@@ -1044,8 +1047,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     // carries MESSAGE-INTEGRITY; auth-failure errors (400/401) are sent
     // unsigned since we couldn't validate the sender's credentials.
     final raw = signWith != null
-        ? StunMessageBuilder.buildWithIntegrity(
-            msg, Uint8List.fromList(signWith.codeUnits))
+        ? StunMessageBuilder.buildWithIntegrity(msg, signWith)
         : StunMessageBuilder.build(msg);
     return Ok(ProcessResult(
       outputPackets: [
