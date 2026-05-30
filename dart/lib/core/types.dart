@@ -56,8 +56,10 @@ final class SctpT3RtxToken extends TimerToken {
   SctpT3RtxToken(this.tsn);
 }
 
-final class IceKeepaliveToken extends TimerToken {
-  IceKeepaliveToken();
+/// Fires the periodic STUN consent-freshness check on the selected pair
+/// (RFC 7675 §5.1) — also serves as the keepalive (§6).
+final class IceConsentToken extends TimerToken {
+  IceConsentToken();
 }
 
 final class IceGatheringTimeoutToken extends TimerToken {

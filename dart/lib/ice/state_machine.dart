@@ -71,8 +71,15 @@ final class IceStateMachine implements ProtocolStateMachine {
   // Timer counter for IceTimerToken IDs.
   int _timerIdCounter = 0;
 
-  // Keepalive interval: 15s (RFC 8445 §11)
-  static const Duration _keepaliveInterval = Duration(seconds: 15);
+  // Consent freshness (RFC 7675). Checks are paced at 5s randomized to
+  // [0.8, 1.2]× (§5.1). Consent is lost after ~30s without a valid
+  // response on the selected pair; tracked as a count of consecutive
+  // unanswered checks (30s / 5s = 6) rather than wall-clock, so the
+  // teardown is driven by the same timer the rest of the SM uses and
+  // stays deterministic under test. A valid response resets the count.
+  static const Duration _consentInterval = Duration(seconds: 5);
+  static const int _maxMissedConsentChecks = 6;
+  int _missedConsentChecks = 0;
 
   // Connectivity check retransmit timeout: 500ms base (RFC 8445 §14.3)
   static const Duration _checkTimeout = Duration(milliseconds: 500);
@@ -401,8 +408,8 @@ final class IceStateMachine implements ProtocolStateMachine {
     if (token is IceTimerToken) {
       return _handleIceTimer(token.id);
     }
-    if (token is IceKeepaliveToken) {
-      return _sendKeepalive();
+    if (token is IceConsentToken) {
+      return _handleConsentTimer();
     }
     if (token is IceGatheringTimeoutToken) {
       return _handleGatheringTimeout();
@@ -470,9 +477,14 @@ final class IceStateMachine implements ProtocolStateMachine {
     // Check if NOMINATED (for controlled agent)
     final nominated = msg.attribute<UseCandidateAttr>() != null;
 
-    // Find or create matching pair; may return triggered-check packets (RFC 8445 §7.3.1.4).
+    // Find or create matching pair; may return triggered-check packets
+    // (RFC 8445 §7.3.1.4) and, for a controlled agent honouring
+    // USE-CANDIDATE, transition us to connected.
+    final wasConnected = _state == IceState.iceConnected;
     final triggeredPackets =
         _updatePairFromRequest(remoteAddr, remotePort, nominated, localIp);
+    final justConnected =
+        !wasConnected && _state == IceState.iceConnected;
 
     // Build success response
     final successResult = _buildSuccessResponse(
@@ -483,7 +495,11 @@ final class IceStateMachine implements ProtocolStateMachine {
       ...successResult.value.outputPackets,
       ...triggeredPackets,
     ];
-    return Ok(ProcessResult(outputPackets: allPackets));
+    return Ok(ProcessResult(
+      outputPackets: allPackets,
+      // Arm the consent-freshness timer on the connect transition (RFC 7675).
+      nextTimeout: justConnected ? _consentTimeout() : null,
+    ));
   }
 
   /// RFC 8445 §7.3.1.1 role-conflict resolution. Returns a 487 error
@@ -553,6 +569,12 @@ final class IceStateMachine implements ProtocolStateMachine {
     }
     _pendingChecks.remove(txId);
 
+    // Any valid authenticated response on the selected pair refreshes
+    // consent (RFC 7675 §5.1) — including the periodic consent checks.
+    if (_state == IceState.iceConnected && check.pair == _selectedPair) {
+      _missedConsentChecks = 0;
+    }
+
     // Mark pair as succeeded
     check.pair.state = CandidatePairState.succeeded;
     check.pair.roundTripTimeMs =
@@ -568,11 +590,12 @@ final class IceStateMachine implements ProtocolStateMachine {
     }
 
     // Nominate if controlling
+    var justConnected = false;
     if (controlling && check.nominated) {
       check.pair.nominated = true;
-      _selectPair(check.pair);
+      justConnected = _selectPair(check.pair);
     } else if (!controlling && check.pair.nominated) {
-      _selectPair(check.pair);
+      justConnected = _selectPair(check.pair);
     }
 
     // Check if all pairs are done
@@ -580,6 +603,10 @@ final class IceStateMachine implements ProtocolStateMachine {
       _checkConnectivityComplete();
     }
 
+    // Arm the consent-freshness timer the moment we connect (RFC 7675).
+    if (justConnected) {
+      return Ok(ProcessResult(nextTimeout: _consentTimeout()));
+    }
     return const Ok(ProcessResult.empty);
   }
 
@@ -847,15 +874,24 @@ final class IceStateMachine implements ProtocolStateMachine {
     }
   }
 
-  void _selectPair(CandidatePair pair) {
+  /// Selects [pair]. Returns true if this call newly transitioned the
+  /// agent to `iceConnected`, so the caller can arm the consent-freshness
+  /// timer (RFC 7675) on the ProcessResult it returns.
+  bool _selectPair(CandidatePair pair) {
     if (_selectedPair == null || pair.priority > _selectedPair!.priority) {
+      final wasConnected = _state == IceState.iceConnected;
       _selectedPair = pair;
       // First nomination immediately concludes connectivity checking
       // (RFC 8445 §8.1.1).  Don't wait for in-progress pairs to time out.
       if (_state == IceState.iceChecking) {
         _setState(IceState.iceConnected);
       }
+      if (!wasConnected && _state == IceState.iceConnected) {
+        _missedConsentChecks = 0;
+        return true;
+      }
     }
+    return false;
   }
 
   Result<ProcessResult, ProtocolError> _handleIceTimer(int id) {
@@ -912,38 +948,42 @@ final class IceStateMachine implements ProtocolStateMachine {
     return Ok(ProcessResult(outputPackets: packets, nextTimeout: nextTimeout));
   }
 
-  Result<ProcessResult, ProtocolError> _sendKeepalive() {
+  /// Consent-freshness tick (RFC 7675 §5.1). After
+  /// [_maxMissedConsentChecks] consecutive checks without a valid response
+  /// on the selected pair, consent is lost and we cease transmission on the
+  /// pair (→ `iceDisconnected`). Otherwise send an authenticated check on
+  /// the selected pair (which doubles as the keepalive, §6) and re-arm.
+  Result<ProcessResult, ProtocolError> _handleConsentTimer() {
     final pair = _selectedPair;
     if (pair == null || _state != IceState.iceConnected) {
-      return const Ok(ProcessResult.empty);
+      return const Ok(ProcessResult.empty); // not connected — stop the timer
     }
-    final localParams = _localParams;
-    final remoteParams = _remoteParams;
-    if (localParams == null || remoteParams == null) return const Ok(ProcessResult.empty);
 
-    // Send a binding indication as keepalive (RFC 8445 §11)
-    final txId = Csprng.randomBytes(12);
-    final msg = StunMessage(
-      type: StunMessageType.bindingIndication,
-      transactionId: txId,
-    );
-    final raw = StunMessageBuilder.build(msg);
+    if (_missedConsentChecks >= _maxMissedConsentChecks) {
+      // Consent expired — abandon the pair and signal a transient loss.
+      pair.state = CandidatePairState.failed;
+      _selectedPair = null;
+      _setState(IceState.iceDisconnected);
+      return const Ok(ProcessResult.empty); // no re-arm
+    }
 
-    final nextTimeout = Timeout(
-      at: DateTime.now().add(_keepaliveInterval),
-      token: IceKeepaliveToken(),
-    );
+    _missedConsentChecks++; // reset to 0 when a valid response arrives
     return Ok(ProcessResult(
-      outputPackets: [
-        OutputPacket(
-          data: raw,
-          remoteIp: pair.remote.ip.toCanonical(),
-          remotePort: pair.remote.port,
-          localIp: pair.local.ip,
-        ),
-      ],
-      nextTimeout: nextTimeout,
+      outputPackets: _sendCheck(pair, nominated: false),
+      nextTimeout: _consentTimeout(),
     ));
+  }
+
+  /// Next consent check, paced at [_consentInterval] randomized to
+  /// [0.8, 1.2]× per RFC 7675 §5.1 to avoid synchronization across peers.
+  Timeout _consentTimeout() {
+    final jitterMicros = (_consentInterval.inMicroseconds *
+            (0.8 + 0.4 * (Csprng.randomUint32() / 0xFFFFFFFF)))
+        .round();
+    return Timeout(
+      at: DateTime.now().add(Duration(microseconds: jitterMicros)),
+      token: IceConsentToken(),
+    );
   }
 
   // ── STUN server gathering ─────────────────────────────────────────────────

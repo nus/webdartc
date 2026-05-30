@@ -554,4 +554,94 @@ void main() {
       expect(samePort, equals({IceCandidateType.host, IceCandidateType.prflx}));
     });
   });
+
+  group('consent freshness (RFC 7675)', () {
+    // Drive a controlling agent to `iceConnected` and return
+    // (ice, connectResult). The agent nominates the pair on the first
+    // valid response, which arms the consent timer.
+    (IceStateMachine, ProcessResult) establish() {
+      final ice = IceStateMachine(controlling: true);
+      final local = IceParameters(usernameFragment: 'loc', password: 'locpass');
+      final remote = IceParameters(usernameFragment: 'rem', password: 'rempass');
+      ice.startGathering(local,
+          hosts: [(ip: IpAddress.parse('127.0.0.1'), port: 40000)]);
+      ice.setRemoteParameters(remote);
+      final checkOut = ice.addRemoteCandidate(IceCandidate(
+        foundation: '1', componentId: 1, transport: 'udp', priority: 1000,
+        ip: IpAddress.parse('127.0.0.1'), port: 40001,
+        type: IceCandidateType.host,
+      ));
+      final connectResult =
+          ice.processInput(_signedResponseFor(checkOut.value, 'rempass'),
+              remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 40001);
+      return (ice, connectResult.value);
+    }
+
+    test('arms a consent timer on connect', () {
+      final (ice, connect) = establish();
+      expect(ice.state, IceState.iceConnected);
+      expect(connect.nextTimeout?.token, isA<IceConsentToken>());
+    });
+
+    test('consent tick sends an authenticated check and re-arms', () {
+      final (ice, _) = establish();
+      final tick = ice.handleTimeout(IceConsentToken());
+      expect(tick.value.nextTimeout?.token, isA<IceConsentToken>());
+      expect(_hasBindingRequest(tick.value), isTrue);
+      expect(ice.state, IceState.iceConnected);
+    });
+
+    test('six unanswered checks tear the pair down (→ disconnected)', () {
+      final (ice, _) = establish();
+      // Fire consent ticks without ever answering them; the 7th tick (after
+      // 6 unanswered checks, ≈30s at 5s pacing) abandons the pair.
+      var tick = ice.handleTimeout(IceConsentToken());
+      for (var i = 0; i < 6; i++) {
+        expect(ice.state, IceState.iceConnected, reason: 'still up at tick $i');
+        tick = ice.handleTimeout(IceConsentToken());
+      }
+      expect(ice.state, IceState.iceDisconnected);
+      expect(ice.selectedPair, isNull);
+      expect(tick.value.nextTimeout, isNull); // timer stops
+      expect(_hasBindingRequest(tick.value), isFalse);
+    });
+
+    test('a valid response refreshes consent and defers teardown', () {
+      final (ice, _) = establish();
+      // Answer every consent check; the agent stays connected well past the
+      // 6-check window that would otherwise tear it down.
+      for (var i = 0; i < 12; i++) {
+        final tick = ice.handleTimeout(IceConsentToken());
+        expect(ice.state, IceState.iceConnected, reason: 'tick $i');
+        ice.processInput(_signedResponseFor(tick.value, 'rempass'),
+            remoteIp: IpAddress.parse('127.0.0.1'), remotePort: 40001);
+      }
+      expect(ice.state, IceState.iceConnected);
+    });
+  });
+}
+
+bool _hasBindingRequest(ProcessResult r) => r.outputPackets.any((p) =>
+    StunParser.parse(p.data).value.type == StunMessageType.bindingRequest);
+
+/// Build a MESSAGE-INTEGRITY-signed success response for the (single)
+/// Binding Request in [r], keyed with [password].
+Uint8List _signedResponseFor(ProcessResult r, String password) {
+  final txId = StunParser.parse(r.outputPackets
+          .firstWhere((p) =>
+              StunParser.parse(p.data).value.type ==
+              StunMessageType.bindingRequest)
+          .data)
+      .value
+      .transactionId;
+  return StunMessageBuilder.buildWithIntegrity(
+    StunMessage(
+      type: StunMessageType.bindingSuccessResponse,
+      transactionId: txId,
+      attributes: [
+        XorMappedAddress(address: IpAddress.parse('127.0.0.1'), port: 40000),
+      ],
+    ),
+    Uint8List.fromList(password.codeUnits),
+  );
 }
