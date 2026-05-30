@@ -69,6 +69,66 @@ void main() {
       expect(fp, isNotNull);
     });
 
+    test('verifyMessageIntegrity accepts a correctly-signed message', () {
+      final msg = StunMessage(
+        type: StunMessageType.bindingRequest,
+        transactionId: Csprng.randomBytes(12),
+        attributes: [
+          UsernameAttr('local:remote'),
+          PriorityAttr(0x7E0000FF),
+          IceControllingAttr(0x1122334455667788),
+        ],
+      );
+      final key = Uint8List.fromList('s3cr3t'.codeUnits);
+      // With FINGERPRINT (the connectivity-check wire shape) and without.
+      for (final fingerprint in [true, false]) {
+        final raw =
+            StunMessageBuilder.buildWithIntegrity(msg, key, fingerprint: fingerprint);
+        expect(StunMessageBuilder.verifyMessageIntegrity(raw, key), isTrue,
+            reason: 'fingerprint=$fingerprint');
+      }
+    });
+
+    test('verifyMessageIntegrity rejects a wrong key', () {
+      final msg = StunMessage(
+        type: StunMessageType.bindingRequest,
+        transactionId: Csprng.randomBytes(12),
+        attributes: [UsernameAttr('local:remote')],
+      );
+      final raw = StunMessageBuilder.buildWithIntegrity(
+          msg, Uint8List.fromList('right'.codeUnits));
+      expect(
+          StunMessageBuilder.verifyMessageIntegrity(
+              raw, Uint8List.fromList('wrong'.codeUnits)),
+          isFalse);
+    });
+
+    test('verifyMessageIntegrity rejects a tampered attribute', () {
+      final msg = StunMessage(
+        type: StunMessageType.bindingRequest,
+        transactionId: Csprng.randomBytes(12),
+        attributes: [PriorityAttr(0x7E0000FF)],
+      );
+      final key = Uint8List.fromList('s3cr3t'.codeUnits);
+      final raw = StunMessageBuilder.buildWithIntegrity(msg, key);
+      // Flip a byte inside the PRIORITY value (offset 20 = first attr
+      // header, 24 = first value byte).
+      raw[24] ^= 0xFF;
+      expect(StunMessageBuilder.verifyMessageIntegrity(raw, key), isFalse);
+    });
+
+    test('verifyMessageIntegrity rejects a message with no integrity attr', () {
+      final raw = StunMessageBuilder.build(StunMessage(
+        type: StunMessageType.bindingRequest,
+        transactionId: Csprng.randomBytes(12),
+        attributes: [UsernameAttr('local:remote')],
+      ));
+      expect(
+          StunMessageBuilder.verifyMessageIntegrity(
+              raw, Uint8List.fromList('any'.codeUnits)),
+          isFalse);
+    });
+
     test('XorMappedAddress IPv4 encode/decode', () {
       final txId = Csprng.randomBytes(12);
       final msg = StunMessage(

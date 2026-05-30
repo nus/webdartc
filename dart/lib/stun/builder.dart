@@ -81,6 +81,63 @@ abstract final class StunMessageBuilder {
     return _buildHeader(msg.type, finalBody.length, msg.transactionId, finalBody);
   }
 
+  /// Verify the MESSAGE-INTEGRITY attribute in the raw STUN packet [raw]
+  /// against [key] (the short-term-credential password bytes, or
+  /// [longTermKey] output for long-term credentials).
+  ///
+  /// Returns true iff a MESSAGE-INTEGRITY attribute is present and its
+  /// HMAC-SHA1 matches a recomputation over the message up to — but not
+  /// including — that attribute, with the header Length field adjusted to
+  /// end at the MESSAGE-INTEGRITY attribute per RFC 8489 §14.6. Attributes
+  /// after MESSAGE-INTEGRITY (e.g. FINGERPRINT) are excluded from the HMAC,
+  /// as the RFC requires. The HMAC covers the literal received bytes, so a
+  /// peer that orders or pads attributes differently than [buildWithIntegrity]
+  /// still verifies correctly.
+  static bool verifyMessageIntegrity(Uint8List raw, Uint8List key) {
+    if (raw.length < 20) return false;
+    final msgLength = (raw[2] << 8) | raw[3];
+    final bodyEnd = 20 + msgLength;
+    if (raw.length < bodyEnd) return false;
+
+    var offset = 20;
+    while (offset + 4 <= bodyEnd) {
+      final attrType = (raw[offset] << 8) | raw[offset + 1];
+      final attrLength = (raw[offset + 2] << 8) | raw[offset + 3];
+      final valueStart = offset + 4;
+      if (valueStart + attrLength > bodyEnd) return false;
+
+      if (attrType == StunAttributeType.messageIntegrity) {
+        if (attrLength != 20) return false;
+        // The HMAC input is the header (with Length set to end at this
+        // attribute = bytes-before-MI + 24) followed by the on-wire bytes
+        // before the attribute.
+        final bytesBeforeMi = offset - 20;
+        final hdr = _buildHeaderBytes(
+            (raw[0] << 8) | raw[1], bytesBeforeMi + 24, raw.sublist(8, 20));
+        final forHmac = Uint8List(20 + bytesBeforeMi);
+        forHmac.setRange(0, 20, hdr);
+        forHmac.setRange(20, forHmac.length, raw, 20);
+        final expected = HmacSha1.compute(key, forHmac);
+        return _constantTimeEquals(expected, raw, valueStart);
+      }
+
+      offset = valueStart + ((attrLength + 3) & ~3);
+    }
+    return false; // no MESSAGE-INTEGRITY present
+  }
+
+  /// Constant-time compare of the 20-byte [expected] HMAC against the 20
+  /// bytes of [raw] starting at [rawOffset].
+  static bool _constantTimeEquals(
+      Uint8List expected, Uint8List raw, int rawOffset) {
+    if (rawOffset + expected.length > raw.length) return false;
+    var diff = 0;
+    for (var i = 0; i < expected.length; i++) {
+      diff |= expected[i] ^ raw[rawOffset + i];
+    }
+    return diff == 0;
+  }
+
   static Uint8List _buildHeader(
       int type, int bodyLength, Uint8List txId, Uint8List body) {
     final header = _buildHeaderBytes(type, bodyLength, txId);

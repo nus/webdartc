@@ -379,7 +379,7 @@ final class IceStateMachine implements ProtocolStateMachine {
       if (_stunServerRequests.containsKey(txId)) {
         return _handleStunServerResponse(msg, txId);
       }
-      return _handleBindingResponse(msg, remoteIp, remotePort);
+      return _handleBindingResponse(msg, remoteIp, remotePort, packet);
     } else if (msg.type == StunMessageType.bindingErrorResponse) {
       // Also check STUN server responses.
       final txId = _txIdString(msg.transactionId);
@@ -437,10 +437,19 @@ final class IceStateMachine implements ProtocolStateMachine {
       return _buildErrorResponse(msg.transactionId, 401, 'Unauthorized', remoteAddr, remotePort, localIp);
     }
 
-    // Validate MESSAGE-INTEGRITY
+    // Validate MESSAGE-INTEGRITY. The peer signs connectivity-check
+    // requests with our password (RFC 8445 §7.3.1.1 short-term
+    // credentials), so recompute the HMAC-SHA1 over the received bytes
+    // and reject a missing or forged tag with 401. Without this a blind
+    // attacker who has only learned the ufrags (e.g. from one leaked
+    // offer) could inject Binding Requests.
     final integrityAttr = msg.attribute<MessageIntegrityAttr>();
     if (integrityAttr == null) {
       return _buildErrorResponse(msg.transactionId, 400, 'Bad Request', remoteAddr, remotePort, localIp);
+    }
+    if (!StunMessageBuilder.verifyMessageIntegrity(
+        rawPacket, Uint8List.fromList(localParams.password.codeUnits))) {
+      return _buildErrorResponse(msg.transactionId, 401, 'Unauthorized', remoteAddr, remotePort, localIp);
     }
 
     // Check if NOMINATED (for controlled agent)
@@ -466,10 +475,25 @@ final class IceStateMachine implements ProtocolStateMachine {
     StunMessage msg,
     IpAddress remoteAddr,
     int remotePort,
+    Uint8List rawPacket,
   ) {
     final txId = _txIdString(msg.transactionId);
-    final check = _pendingChecks.remove(txId);
+    final check = _pendingChecks[txId];
     if (check == null) return const Ok(ProcessResult.empty);
+
+    // Verify MESSAGE-INTEGRITY before acting on the response. We signed
+    // the request with the peer's password, and the peer signs the
+    // success response with that same password (RFC 8445 §7.2.5.2.1), so
+    // recompute the HMAC over the received bytes. A forged or unsigned
+    // response is discarded — leave the pending check in place so a
+    // genuine retransmit can still complete it.
+    final remoteParams = _remoteParams;
+    if (remoteParams == null ||
+        !StunMessageBuilder.verifyMessageIntegrity(
+            rawPacket, Uint8List.fromList(remoteParams.password.codeUnits))) {
+      return const Ok(ProcessResult.empty);
+    }
+    _pendingChecks.remove(txId);
 
     // Mark pair as succeeded
     check.pair.state = CandidatePairState.succeeded;
