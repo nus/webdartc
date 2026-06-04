@@ -231,17 +231,6 @@ Each item:
 
 > Same 2026-05-29 audit; **unverified leads.**
 
-### Wrong PPID for empty DataChannel messages
-
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** RFC 8831 §8. `dcep.dart` appears to use `webrtcStringEmpty = 56`
-  / `webrtcBinaryEmpty = 57`; the spec assigns **52 = DOMString Empty** and
-  **54 = Binary Empty**. A wrong PPID makes Chrome reject empty messages.
-  [dart/lib/sctp/dcep.dart](dart/lib/sctp/dcep.dart).
-- **Why deferred:** Audit pass; trivial fix but needs an empty-message E2E.
-- **Acceptance:** Constants corrected to 52 / 54; an empty `send('')` /
-  `send(Uint8List(0))` round-trips against Chrome.
-
 ### DataChannel close doesn't send SCTP stream reset (RECONFIG)
 
 - **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**

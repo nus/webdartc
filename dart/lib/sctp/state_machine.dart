@@ -141,10 +141,16 @@ final class SctpStateMachine implements ProtocolStateMachine {
     final ssn = _sendSsn[streamId] ?? 0;
     if (ordered) { _sendSsn[streamId] = (ssn + 1) & 0xFFFF; }
 
+    // An empty user message can't ride in a zero-length SCTP DATA chunk
+    // (RFC 9260 requires ≥1 byte of user data). RFC 8831 §6.6 carries it
+    // as a single padding byte with a "WebRTC {String,Binary} Empty" PPID
+    // (set by the caller); the receiver discards the byte.
+    final isEmptyMessage = data.isEmpty;
+
     // Fragment if needed (MTU - SCTP overhead ~12+16 bytes)
     const maxUserData = _mtu - 28;
     final chunks = <SctpDataChunk>[];
-    for (var offset = 0; offset < data.length || data.isEmpty; ) {
+    for (var offset = 0; offset < data.length || isEmptyMessage; ) {
       final end = (offset + maxUserData).clamp(0, data.length);
       final isFirst = offset == 0;
       final isLast  = end == data.length;
@@ -153,17 +159,19 @@ final class SctpStateMachine implements ProtocolStateMachine {
                     (ordered ? 0 : SctpDataChunk.flagUnordered);
       final tsn = _localTsn;
       _localTsn = (_localTsn + 1) & 0xFFFFFFFF;
+      final userData = isEmptyMessage
+          ? Uint8List.fromList(const [0])
+          : data.sublist(offset, end);
       chunks.add(SctpDataChunk(
         flags: flags,
         tsn: tsn,
         streamId: streamId,
         streamSeqNum: ssn,
         ppid: ppid,
-        userData: data.isEmpty ? Uint8List(0) : data.sublist(offset, end),
+        userData: userData,
       ));
-      _pendingData(tsn, data.isEmpty ? Uint8List(0) : data.sublist(offset, end),
-          streamId, ssn, ppid, flags);
-      if (data.isEmpty) { break; }
+      _pendingData(tsn, userData, streamId, ssn, ppid, flags);
+      if (isEmptyMessage) { break; }
       offset = end;
     }
 
@@ -502,7 +510,11 @@ final class SctpStateMachine implements ProtocolStateMachine {
       _processDcep(streamId, data);
     } else {
       final isBinary = ppid == SctpPpid.webrtcBinary || ppid == SctpPpid.webrtcBinaryEmpty;
-      onData?.call(streamId, data, isBinary);
+      // An Empty-PPID message carries a single padding byte (RFC 8831
+      // §6.6) — deliver it to the application as a genuinely empty payload.
+      final isEmpty = ppid == SctpPpid.webrtcStringEmpty ||
+          ppid == SctpPpid.webrtcBinaryEmpty;
+      onData?.call(streamId, isEmpty ? Uint8List(0) : data, isBinary);
     }
   }
 
