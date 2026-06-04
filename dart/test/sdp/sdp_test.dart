@@ -181,4 +181,49 @@ a=candidate:1 1 udp 2122260223 192.168.1.1 9999 typ host
       expect(rtpmapLineFor(answer, '102'), equals('102 H264/90000'));
     });
   });
+
+  group('SdpBuilder.buildAnswerFromOffer a=setup (RFC 5763 §5)', () {
+    final fingerprintHex = 'AA:' * 31 + 'BB';
+
+    String offerWithSetup(String setup) => 'v=0\r\n'
+        'o=- 1 2 IN IP4 0.0.0.0\r\n'
+        's=-\r\n'
+        't=0 0\r\n'
+        'a=group:BUNDLE 0\r\n'
+        'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
+        'c=IN IP4 0.0.0.0\r\n'
+        'a=mid:0\r\n'
+        'a=sendrecv\r\n'
+        'a=rtpmap:111 opus/48000/2\r\n'
+        'a=ice-ufrag:abcd\r\n'
+        'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+        'a=fingerprint:sha-256 $fingerprintHex\r\n'
+        'a=setup:$setup\r\n'
+        'a=rtcp-mux\r\n';
+
+    String answerSetupFor(String offerSetup) {
+      final offer = SdpParser.parse(offerWithSetup(offerSetup)).value;
+      final answer = SdpBuilder.buildAnswerFromOffer(
+        remoteOffer: offer,
+        ufrag: 'u',
+        password: 'pwd0123456789012345678',
+        fingerprint: fingerprintHex,
+      );
+      return answer.media.single.setup!;
+    }
+
+    // The answerer takes the opposite committed role; only an `active`
+    // offer forces us passive. Previously the answer was hard-coded
+    // `active`, which contradicted our actual DTLS role for an `active`
+    // offer.
+    test('actpass offer → active answer', () {
+      expect(answerSetupFor('actpass'), 'active');
+    });
+    test('passive offer → active answer', () {
+      expect(answerSetupFor('passive'), 'active');
+    });
+    test('active offer → passive answer', () {
+      expect(answerSetupFor('active'), 'passive');
+    });
+  });
 }
