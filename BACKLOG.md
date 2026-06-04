@@ -200,18 +200,36 @@ Each item:
 - **Acceptance:** Both ClientHello and ServerHello include an ALPN extension
   with the single protocol `"webrtc"`; verified against captured bytes.
 
-### ClientHello offers only ECDHE-ECDSA, not ECDHE-RSA
+### No ECDHE-RSA support (RSA-cert peers can't complete DTLS)
 
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** RFC 7742 §6.1. ClientHello offers
-  `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256` (0xC02B) only;
-  `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` (0xC02F) is missing, so a peer
-  presenting an RSA cert in `a=fingerprint` would hit handshake_failure.
-  [dart/lib/dtls/state_machine.dart](dart/lib/dtls/state_machine.dart),
-  [dart/lib/dtls/cipher_suite.dart](dart/lib/dtls/cipher_suite.dart).
-- **Why deferred:** webdartc itself uses ECDSA certs; only matters interop-ing
-  with an RSA-cert peer.
-- **Acceptance:** Add 0xC02F to the `CipherSuite` enum and offer both suites.
+- **Found:** 2026-05-29, RFC/W3C divergence audit. **Verified 2026-05-30.**
+- **Detail:** RFC 7742 §6.1 wants both ECDSA- and RSA-cert support. The
+  `CipherSuite` enum ([dart/lib/dtls/cipher_suite.dart](dart/lib/dtls/cipher_suite.dart))
+  only has the two ECDHE-**ECDSA** suites (0xC02B, 0xC009), and the client
+  ServerKeyExchange handler hardcodes `EcdsaVerify.verifyP256Sha256`
+  ([dart/lib/dtls/state_machine.dart](dart/lib/dtls/state_machine.dart) ~L665).
+  So a peer that presents an RSA certificate (e.g. an app that called
+  `RTCPeerConnection.generateCertificate({name:'RSASSA-PKCS1-v1_5'})`)
+  fails the handshake. **Not just a missing cipher-suite constant** — making
+  it work needs real new crypto:
+  1. add `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` (0xC02F) to the enum +
+     ClientHello;
+  2. branch ServerKeyExchange / CertificateVerify on the negotiated suite
+     (or the signature-algorithm field) to pick ECDSA vs RSA;
+  3. an **RSA-PKCS1/PSS signature-verify primitive across all three crypto
+     backends** (macOS CommonCrypto/Security.framework, Linux OpenSSL,
+     Windows CNG — today only ECDSA verify is wired);
+  4. RSA public-key extraction in the cert parser (only EC keys are
+     extracted today).
+- **Why deferred:** Low payoff for the cost. webdartc always presents an
+  ECDSA self-signed cert, so it only ever needs ECDHE-RSA as the *client*
+  talking to an *RSA-cert server* — and Chrome/Firefox default to ECDSA P-256
+  for WebRTC, so the common case already works. RSA certs only appear when a
+  peer explicitly opts into them.
+- **Acceptance:** webdartc-as-client completes a DTLS handshake against a
+  peer presenting an RSA certificate (cipher suite 0xC02F), with the
+  ServerKeyExchange RSA signature verified on all three platforms; the
+  ECDSA path is unaffected.
 
 ### `use_srtp` offers only one SRTP profile
 
