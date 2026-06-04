@@ -269,19 +269,6 @@ Each item:
 
 > Same 2026-05-29 audit; **unverified leads.**
 
-### Answer `a=setup` is hard-coded to `active`
-
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** RFC 5763 §5. The answer builder emits `a=setup:active`
-  unconditionally. The answerer MUST pick `passive` when the offer is `active`,
-  and `active` only when the offer is `actpass` / `passive`; otherwise both
-  sides race to be DTLS client.
-  [dart/lib/sdp/parser.dart](dart/lib/sdp/parser.dart).
-- **Why deferred:** webdartc-as-offerer (the common e2e path) sends `actpass`,
-  so the bug only bites when the remote offers `active`.
-- **Acceptance:** Answer derives setup from the offer; an `a=setup:active`
-  offer yields an `a=setup:passive` answer.
-
 ### H.264 FU-A can emit S=1 and E=1 in the same fragment
 
 - **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**

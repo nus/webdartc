@@ -2,6 +2,10 @@ import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart';
 
 void main() {
+  // Dummy SHA-256 fingerprint (32 colon-separated octets) shared by the
+  // answer-builder groups below.
+  final fingerprintHex = 'AA:' * 31 + 'BB';
+
   group('SdpParser', () {
     const sampleOffer = '''v=0
 o=- 1234567890 2 IN IP4 127.0.0.1
@@ -98,7 +102,6 @@ a=candidate:1 1 udp 2122260223 192.168.1.1 9999 typ host
     // of echoing the offerer's bytes. Matches libwebrtc / Pion /
     // aiortc / Firefox behaviour and keeps `getStats().mimeType`
     // consistent with what browsers report.
-    final fingerprintHex = 'AA:' * 31 + 'BB';
 
     String minimalOffer({
       required String mediaType,
@@ -179,6 +182,66 @@ a=candidate:1 1 udp 2122260223 192.168.1.1 9999 typ host
         supportedVideoCodecs: ['H264'],
       );
       expect(rtpmapLineFor(answer, '102'), equals('102 H264/90000'));
+    });
+  });
+
+  group('SdpBuilder.buildAnswerFromOffer a=setup (RFC 5763 §5)', () {
+
+    String offerWithSetup(String setup) => 'v=0\r\n'
+        'o=- 1 2 IN IP4 0.0.0.0\r\n'
+        's=-\r\n'
+        't=0 0\r\n'
+        'a=group:BUNDLE 0\r\n'
+        'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
+        'c=IN IP4 0.0.0.0\r\n'
+        'a=mid:0\r\n'
+        'a=sendrecv\r\n'
+        'a=rtpmap:111 opus/48000/2\r\n'
+        'a=ice-ufrag:abcd\r\n'
+        'a=ice-pwd:abcdefghijklmnopqrstuv\r\n'
+        'a=fingerprint:sha-256 $fingerprintHex\r\n'
+        'a=setup:$setup\r\n'
+        'a=rtcp-mux\r\n';
+
+    String answerSetupFor(String offerSetup) {
+      final offer = SdpParser.parse(offerWithSetup(offerSetup)).value;
+      final answer = SdpBuilder.buildAnswerFromOffer(
+        remoteOffer: offer,
+        ufrag: 'u',
+        password: 'pwd0123456789012345678',
+        fingerprint: fingerprintHex,
+      );
+      return answer.media.single.setup!;
+    }
+
+    // The answerer takes the opposite committed role; only an `active`
+    // offer forces us passive. Previously the answer was hard-coded
+    // `active`, which contradicted our actual DTLS role for an `active`
+    // offer.
+    test('actpass offer → active answer', () {
+      expect(answerSetupFor('actpass'), 'active');
+    });
+    test('passive offer → active answer', () {
+      expect(answerSetupFor('passive'), 'active');
+    });
+    test('active offer → passive answer', () {
+      expect(answerSetupFor('active'), 'passive');
+    });
+
+    test('absent a=setup defaults to active offer → passive answer', () {
+      // RFC 4145 §4: absent setup defaults to `active`. This must match
+      // the default in PeerConnection.setRemoteDescription so the
+      // advertised role and the chosen DtlsRole stay consistent.
+      final offerNoSetup = offerWithSetup('active')
+          .replaceAll('a=setup:active\r\n', '');
+      final offer = SdpParser.parse(offerNoSetup).value;
+      final answer = SdpBuilder.buildAnswerFromOffer(
+        remoteOffer: offer,
+        ufrag: 'u',
+        password: 'pwd0123456789012345678',
+        fingerprint: fingerprintHex,
+      );
+      expect(answer.media.single.setup, 'passive');
     });
   });
 }

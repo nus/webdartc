@@ -345,7 +345,7 @@ abstract final class SdpBuilder {
           'ice-pwd': password,
           'ice-options': 'trickle',
           'fingerprint': 'sha-256 $fingerprint',
-          'setup': 'active',
+          'setup': _answerSetup(rm, remoteOffer),
           'sctp-port': rm.sctpPort ?? '5000',
           'max-message-size': '262144',
         };
@@ -441,7 +441,7 @@ abstract final class SdpBuilder {
           'ice-pwd': password,
           'ice-options': 'trickle',
           'fingerprint': 'sha-256 $fingerprint',
-          'setup': 'active',
+          'setup': _answerSetup(rm, remoteOffer),
           answerDir: '',
           'rtcp-mux': '',
         };
@@ -503,6 +503,20 @@ abstract final class SdpBuilder {
       case 'inactive': return 'inactive';
       default: return 'sendrecv';
     }
+  }
+
+  /// Answer-side DTLS role (RFC 5763 §5). The answerer takes the opposite
+  /// committed role: an `active` offer → `passive` answer; an `actpass` (or
+  /// `passive`) offer lets us be the client, so we answer `active`. An
+  /// absent `a=setup` defaults to `active` (RFC 4145 §4), which yields a
+  /// `passive` answer. This MUST stay consistent with the `DtlsRole`
+  /// chosen in PeerConnection.setRemoteDescription (same default, same
+  /// active→server mapping) — the two desyncing is the bug this guards.
+  static String _answerSetup(
+      SdpMediaDescription offerMedia, SdpSessionDescription offer) {
+    final offerSetup =
+        offerMedia.setup ?? offer.sessionAttributes['setup'] ?? 'active';
+    return offerSetup == 'active' ? 'passive' : 'active';
   }
 
   static IceCandidate _hostCandidate(IpAddress ip, int port) => IceCandidate(
