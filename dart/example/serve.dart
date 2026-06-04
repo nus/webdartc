@@ -11,11 +11,10 @@ import 'dart:io';
 
 /// Directory holding the running example's `server.dart` (and its
 /// `index.html`). Resolved from `Platform.script`, which points at the
-/// entrypoint being run — not this helper file.
-String exampleScriptDir() {
-  final script = Platform.script.toFilePath();
-  return script.substring(0, script.lastIndexOf('/'));
-}
+/// entrypoint being run — not this helper file. Uses the URI's parent so
+/// it is separator-correct on Windows (`toFilePath()` there yields
+/// backslashes, which a `lastIndexOf('/')` split would miss).
+String exampleScriptDir() => File.fromUri(Platform.script).parent.path;
 
 /// Serves a static file from the example's script directory. Maps `/` to
 /// `/index.html` and 404s anything missing. Content types cover the
