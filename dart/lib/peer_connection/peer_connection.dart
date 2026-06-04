@@ -444,12 +444,11 @@ final class PeerConnection {
       id: id,
     );
     channel._sendCallback = (Uint8List data, {bool binary = true}) {
-      final ppid = binary ? SctpPpid.webrtcBinary : SctpPpid.webrtcString;
       final result = _sctp.sendData(
         data: data,
         streamId: id,
         ordered: opts.ordered,
-        ppid: ppid,
+        ppid: _dataChannelPpid(data, binary),
       );
       if (result.isOk) {
         for (final pkt in result.value.outputPackets) {
@@ -1109,8 +1108,11 @@ final class PeerConnection {
       id: streamId,
     );
     channel._sendCallback = (Uint8List data, {bool binary = true}) {
-      final ppid = binary ? SctpPpid.webrtcBinary : SctpPpid.webrtcString;
-      _sctp.sendData(data: data, streamId: streamId, ordered: ordered, ppid: ppid);
+      _sctp.sendData(
+          data: data,
+          streamId: streamId,
+          ordered: ordered,
+          ppid: _dataChannelPpid(data, binary));
     };
     channel._open();
     _dataChannels[streamId] = channel;
@@ -1119,6 +1121,16 @@ final class PeerConnection {
 
   void _onSctpData(int streamId, Uint8List data, bool isBinary) {
     _dataChannels[streamId]?._deliverMessage(data, isBinary);
+  }
+
+  /// SCTP PPID for a data-channel message (RFC 8831 §6.6). An empty
+  /// message uses the "Empty" PPID so the SCTP layer can carry it as a
+  /// single padding byte instead of an invalid zero-length DATA chunk.
+  static int _dataChannelPpid(Uint8List data, bool binary) {
+    if (data.isEmpty) {
+      return binary ? SctpPpid.webrtcBinaryEmpty : SctpPpid.webrtcStringEmpty;
+    }
+    return binary ? SctpPpid.webrtcBinary : SctpPpid.webrtcString;
   }
 
   // ── RTP/RTCP handling ──────────────────────────────────────────────────────
