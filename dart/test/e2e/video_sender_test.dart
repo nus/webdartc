@@ -1,10 +1,9 @@
-/// E2E test for the video_call sample.
+/// E2E test for the video_sender sample.
 ///
 /// Runs the sample end-to-end:
-///   1. spawns example/video_call/bin/server.dart (HTTP + signaling WS)
-///   2. launches Chrome, points it at the server's root
-///   3. spawns example/video_call/bin/sender.dart
-///   4. polls the browser's inbound-rtp stats until frames decode
+///   1. spawns example/video_sender/server.dart (HTTP + WS + peer)
+///   2. launches Chrome, points it at the sender's root
+///   3. polls the browser's inbound-rtp stats until frames decode
 @Tags(['e2e'])
 @Timeout(Duration(seconds: 120))
 library;
@@ -44,18 +43,18 @@ void main() {
     test('browser decodes $codec video frames from Dart sender', () async {
       final port = await _findFreePort();
 
-      // 1. Start the sample server.
-      final server = await _spawnDart(
-        'example/video_call/bin/server.dart',
-        ['--port=$port'],
+      // 1. Start the self-contained sender (HTTP + WS + peer in one binary).
+      final sender = await _spawnDart(
+        'example/video_sender/server.dart',
+        ['--port=$port', '--codec=$codec'],
       );
-      server.stdout.transform(utf8.decoder).listen((line) {
+      sender.stdout.transform(utf8.decoder).listen((line) {
         // ignore: avoid_print
-        print('[server] $line');
+        print('[sender] $line');
       });
-      server.stderr.transform(utf8.decoder).listen((line) {
+      sender.stderr.transform(utf8.decoder).listen((line) {
         // ignore: avoid_print
-        print('[server-err] $line');
+        print('[sender-err] $line');
       });
 
       await waitFor(
@@ -72,7 +71,7 @@ void main() {
         timeout: const Duration(seconds: 10),
       );
 
-      // 2. Launch Chrome and navigate to the server root.
+      // 2. Launch Chrome and navigate to the sender's root.
       final cdp = await CdpBrowser.create(cft);
       await cdp.navigateTo('http://127.0.0.1:$port/');
 
@@ -87,28 +86,14 @@ void main() {
       if (!codecList.contains(wanted)) {
         markTestSkipped('browser lacks $wanted decoder (codecs=$codecList)');
         await cdp.quit();
-        server.kill();
-        await server.exitCode
+        sender.kill();
+        await sender.exitCode
             .timeout(const Duration(seconds: 3), onTimeout: () => -1);
         return;
       }
 
-      // 3. Start the sender.
-      final sender = await _spawnDart(
-        'example/video_call/bin/sender.dart',
-        ['--port=$port', '--codec=$codec'],
-      );
-      sender.stdout.transform(utf8.decoder).listen((line) {
-        // ignore: avoid_print
-        print('[sender] $line');
-      });
-      sender.stderr.transform(utf8.decoder).listen((line) {
-        // ignore: avoid_print
-        print('[sender-err] $line');
-      });
-
       try {
-        // 4. Poll browser until it reports decoded video frames.
+        // 3. Poll browser until it reports decoded video frames.
         await waitFor(
           () async {
             final decoded =
@@ -127,12 +112,9 @@ void main() {
             await browserState(cdp, 'videoFramesDecoded') ?? 0;
         expect((finalDecoded as num).toInt(), greaterThan(0));
       } finally {
-        sender.kill();
         await cdp.quit();
-        server.kill();
+        sender.kill();
         await sender.exitCode
-            .timeout(const Duration(seconds: 3), onTimeout: () => -1);
-        await server.exitCode
             .timeout(const Duration(seconds: 3), onTimeout: () => -1);
       }
     });

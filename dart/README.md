@@ -125,9 +125,12 @@ test/
 example/
 ├── ice_gather.dart            # ICE candidate gathering
 ├── opus_codec.dart            # Opus encode/decode round-trip + SNR check
-├── audio_send/                # Browser ↔ Dart audio call (Opus)
-├── reflect/                   # Audio/video reflection server + browser client
-└── video_call/                # Browser ↔ Dart video call (VP8 / H.264; sendonly or bidir)
+├── audio_send/                # Dart → browser audio (Opus)
+├── audio_receive/             # browser → Dart audio
+├── video_sender/              # Dart → browser video (VP8 / H.264 fake video)
+├── video_receiver/            # browser → Dart video (depacketize + decode)
+├── video_echo/                # browser → Dart → browser (RTP packet forward)
+└── signaling/                 # HTTP + WS relay (for the Flutter pairing)
 ```
 
 ## Running tests
@@ -150,18 +153,17 @@ grep -rn "RawDatagramSocket\|RawSocket" \
 # ICE candidate gathering with Google STUN server
 dart run example/ice_gather.dart stun:stun.l.google.com:19302
 
-# Audio/video reflection server
-dart run example/reflect/server.dart --port=8080
+# video_sender — Dart → browser, fake video (VP8 default)
+dart run example/video_sender/server.dart --port=8080 --codec=h264
 # Open http://localhost:8080 in Chrome
 
-# Video call — Dart sender → browser receiver (sendonly)
-dart run example/video_call/bin/server.dart --port=8080 &
-dart run example/video_call/bin/sender.dart --port=8080 --codec=h264
-# Open http://localhost:8080 in Chrome
+# video_receiver — browser camera → Dart VideoToolbox decoder (macOS)
+dart run example/video_receiver/server.dart --port=8080 --codec=h264
+# Open http://localhost:8080 in Chrome (grant camera permission)
 
-# Bidirectional: browser fake camera → Dart VideoToolbox decoder (macOS)
-dart run example/video_call/bin/sender.dart --port=8080 --codec=h264 --bidir
-# Open http://localhost:8080/?bidir=1 in Chrome
+# video_echo — browser camera → Dart RTP forward → browser
+dart run example/video_echo/server.dart --port=8080
+# Open http://localhost:8080 in Chrome (grant camera permission)
 ```
 
 ## Codec backends

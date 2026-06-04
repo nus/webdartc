@@ -1,10 +1,8 @@
-/// Bidirectional E2E: browser (fake camera) → Dart VT decoder.
-///
-/// The Dart sender runs with --bidir, which makes the transceiver
-/// `sendrecv`. Chrome is launched with `--use-fake-device-for-media-stream`
-/// so getUserMedia returns a canned green-bar video that the browser sends
-/// back. We poll the sender's stdout for `[sender] decoded #N` lines to
-/// verify the Dart-side decoder produced at least one frame.
+/// E2E for the video_receiver sample: browser (fake camera) → Dart VT
+/// decoder. Chrome is launched with `--use-fake-device-for-media-stream`
+/// so getUserMedia returns a canned green-bar video that the browser
+/// sends to the Dart receiver. We poll the receiver's stdout for
+/// `[video_receiver] decoded #N` lines to verify a frame decoded.
 @Tags(['e2e'])
 @TestOn('mac-os')
 @Timeout(Duration(seconds: 120))
@@ -40,21 +38,28 @@ void main() {
     cft = await ChromeForTesting.ensureAvailable();
   });
 
-  test('Dart sender decodes H.264 frames sent from browser fake camera',
+  test('Dart receiver decodes H.264 frames sent from browser fake camera',
       () async {
     final port = await _findFreePort();
 
-    final server = await _spawnDart(
-      'example/video_call/bin/server.dart',
-      ['--port=$port'],
+    final receiver = await _spawnDart(
+      'example/video_receiver/server.dart',
+      ['--port=$port', '--codec=h264'],
     );
-    server.stdout.transform(utf8.decoder).listen((line) {
+    final decodedController = StreamController<int>.broadcast();
+    final decodedRe = RegExp(r'\[video_receiver\] decoded #(\d+)');
+    receiver.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
       // ignore: avoid_print
-      stdout.write('[server] $line');
+      print('[receiver] $line');
+      final m = decodedRe.firstMatch(line);
+      if (m != null) decodedController.add(int.parse(m.group(1)!));
     });
-    server.stderr.transform(utf8.decoder).listen((line) {
+    receiver.stderr.transform(utf8.decoder).listen((line) {
       // ignore: avoid_print
-      stderr.write('[server-err] $line');
+      stderr.write('[receiver-err] $line');
     });
 
     await waitFor(() async {
@@ -73,7 +78,7 @@ void main() {
       '--use-fake-ui-for-media-stream',
       '--autoplay-policy=no-user-gesture-required',
     ]);
-    await cdp.navigateTo('http://127.0.0.1:$port/?bidir=1');
+    await cdp.navigateTo('http://127.0.0.1:$port/');
 
     // Skip when the browser build lacks an H.264 encoder (e.g. Playwright's
     // Chromium). We rely on the browser sending H.264 RTP back to Dart.
@@ -85,29 +90,11 @@ void main() {
     if (!codecList.contains('video/h264')) {
       markTestSkipped('browser lacks H.264 encoder (codecs=$codecList)');
       await cdp.quit();
-      server.kill();
+      receiver.kill();
+      await receiver.exitCode
+          .timeout(const Duration(seconds: 3), onTimeout: () => -1);
       return;
     }
-
-    final sender = await _spawnDart(
-      'example/video_call/bin/sender.dart',
-      ['--port=$port', '--codec=h264', '--bidir'],
-    );
-    final decodedController = StreamController<int>.broadcast();
-    final decodedRe = RegExp(r'\[sender\] decoded #(\d+)');
-    sender.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) {
-      // ignore: avoid_print
-      print('[sender] $line');
-      final m = decodedRe.firstMatch(line);
-      if (m != null) decodedController.add(int.parse(m.group(1)!));
-    });
-    sender.stderr.transform(utf8.decoder).listen((line) {
-      // ignore: avoid_print
-      stderr.write('[sender-err] $line');
-    });
 
     try {
       final first = await decodedController.stream
@@ -115,12 +102,9 @@ void main() {
           .timeout(const Duration(seconds: 60));
       expect(first, greaterThan(0));
     } finally {
-      sender.kill();
       await cdp.quit();
-      server.kill();
-      await sender.exitCode
-          .timeout(const Duration(seconds: 3), onTimeout: () => -1);
-      await server.exitCode
+      receiver.kill();
+      await receiver.exitCode
           .timeout(const Duration(seconds: 3), onTimeout: () => -1);
     }
   });

@@ -105,9 +105,9 @@ jobs:
           flavor: dart
           cache-chrome: 'true'
       - working-directory: dart
-        # Runs the sendonly video_call test with VP8 and H.264 (via
-        # OpenH264 on Linux). VP8 uses the bundled libvpx wrapper. The
-        # bidirectional test is @TestOn('mac-os') so skipped.
+        # Runs the video_sender test with VP8 and H.264 (via OpenH264
+        # on Linux). VP8 uses the bundled libvpx wrapper. The
+        # video_receiver test is @TestOn('mac-os') so skipped.
         run: dart test test/e2e/ --timeout=180s
 
   dart-test-e2e-windows:
@@ -155,7 +155,7 @@ jobs:
             echo "::group::Attempt $attempt"
             if dart test \
                  test/e2e/e2e_test.dart \
-                 test/e2e/video_call_sample_test.dart \
+                 test/e2e/video_sender_test.dart \
                  -n "Scenario 1b|Scenario 4|Scenario 5|vp8 video frames" \
                  --concurrency=1 \
                  --timeout=180s
@@ -181,13 +181,13 @@ jobs:
           flavor: dart
           cache-chrome: 'true'
       - working-directory: dart
-        # VideoToolbox-only coverage: sendonly sample (H.264 via VT) +
-        # bidirectional (browser → VT decoder). Chrome for Testing on
+        # VideoToolbox-only coverage: video_sender (H.264 via VT) +
+        # video_receiver (browser → VT decoder). Chrome for Testing on
         # macOS has H.264 bundled.
         run: |
           dart test \
-            test/e2e/video_call_sample_test.dart \
-            test/e2e/video_call_bidir_test.dart \
+            test/e2e/video_sender_test.dart \
+            test/e2e/video_receiver_test.dart \
             --timeout=180s
 
   # ── coturn-backed TURN integration ────────────────────────────────────

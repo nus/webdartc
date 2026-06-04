@@ -1,8 +1,8 @@
 /// Full browser ↔ Flutter bidirectional video E2E.
 ///
 /// Spawns:
-///   1. example/video_call/bin/server.dart (signaling + web server)
-///   2. Chrome with a fake camera, pointed at /?bidir=1
+///   1. example/signaling/server.dart (signaling + web server)
+///   2. Chrome with a fake camera, joins the default Ayame room
 ///   3. The built Flutter macOS example app, configured via
 ///      WEBDARTC_PORT to connect to the same signaling server
 ///
@@ -64,7 +64,7 @@ void main() {
     final port = await _findFreePort();
 
     final server = await _spawnDart(
-      'example/video_call/bin/server.dart',
+      'example/signaling/server.dart',
       ['--port=$port'],
     );
     server.stdout.transform(utf8.decoder).listen((line) {
@@ -92,7 +92,9 @@ void main() {
       '--use-fake-ui-for-media-stream',
       '--autoplay-policy=no-user-gesture-required',
     ]);
-    await cdp.navigateTo('http://127.0.0.1:$port/?bidir=1');
+    // Browser HTML uses the same Ayame room as the Flutter app's
+    // WEBDARTC_PORT auto-join default (`webdartc-demo`).
+    await cdp.navigateTo('http://127.0.0.1:$port/');
 
     // Skip if the browser build cannot handle H.264 either direction.
     final capsRaw = await cdp.executeScript(
