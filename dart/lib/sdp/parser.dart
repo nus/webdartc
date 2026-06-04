@@ -505,15 +505,17 @@ abstract final class SdpBuilder {
     }
   }
 
-  /// Answer-side DTLS role (RFC 5763 §5). The answerer must pick the
-  /// opposite role to an offerer that committed to one: `active` offer →
-  /// `passive` answer; an `actpass` (or absent / `passive`) offer lets us
-  /// be the client, so we answer `active`. This must stay consistent with
-  /// the `DtlsRole` chosen in PeerConnection.setRemoteDescription.
+  /// Answer-side DTLS role (RFC 5763 §5). The answerer takes the opposite
+  /// committed role: an `active` offer → `passive` answer; an `actpass` (or
+  /// `passive`) offer lets us be the client, so we answer `active`. An
+  /// absent `a=setup` defaults to `active` (RFC 4145 §4), which yields a
+  /// `passive` answer. This MUST stay consistent with the `DtlsRole`
+  /// chosen in PeerConnection.setRemoteDescription (same default, same
+  /// active→server mapping) — the two desyncing is the bug this guards.
   static String _answerSetup(
       SdpMediaDescription offerMedia, SdpSessionDescription offer) {
     final offerSetup =
-        offerMedia.setup ?? offer.sessionAttributes['setup'] ?? 'actpass';
+        offerMedia.setup ?? offer.sessionAttributes['setup'] ?? 'active';
     return offerSetup == 'active' ? 'passive' : 'active';
   }
 
