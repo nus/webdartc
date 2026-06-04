@@ -60,10 +60,11 @@ final class DataChannel {
   /// Fired on errors.
   Stream<Object> get onError => _errorController.stream;
 
-  /// Send a string message.
+  /// Send a string message. Encoded as UTF-8 per RFC 8831 §6.6 — sending
+  /// the UTF-16 code units would corrupt any non-ASCII text on the wire.
   void send(String data) {
     _assertOpen();
-    final bytes = Uint8List.fromList(data.codeUnits);
+    final bytes = utf8.encode(data);
     _sendCallback?.call(bytes, binary: false);
     _messagesSent++;
     _bytesSent += bytes.length;
@@ -121,7 +122,10 @@ final class DataChannelMessageEvent {
 
   const DataChannelMessageEvent({required this.data, required this.isBinary});
 
-  String get text => String.fromCharCodes(data);
+  /// The payload decoded as UTF-8 (RFC 8831 §6.6). Malformed sequences are
+  /// replaced with U+FFFD rather than throwing, so a non-conformant peer
+  /// can't crash a `text` read.
+  String get text => utf8.decode(data, allowMalformed: true);
 }
 
 /// Options for creating a data channel.

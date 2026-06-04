@@ -208,8 +208,11 @@ Future<int> _run(int sigPort, {int timeoutSec = 30}) async {
     });
   });
 
-  // Expected payloads for echo verification
-  final sentText = 'A' * 1024;
+  // Expected payloads for echo verification. The multi-byte prefix
+  // (emoji surrogate pair + Japanese) exercises the UTF-8 send/receive
+  // path end-to-end through Chrome — the old UTF-16-code-unit encoding
+  // would corrupt these and fail the echo match.
+  final sentText = '🎉日本語テスト ${'A' * 1024}';
   final sentBin = Uint8List(64 * 1024);
   for (var i = 0; i < sentBin.length; i++) { sentBin[i] = i & 0xFF; }
 

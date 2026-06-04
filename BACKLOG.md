@@ -242,19 +242,6 @@ Each item:
 - **Acceptance:** Constants corrected to 52 / 54; an empty `send('')` /
   `send(Uint8List(0))` round-trips against Chrome.
 
-### `send(String)` uses UTF-16 code units instead of UTF-8
-
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified, but high-confidence.**
-- **Detail:** RFC 8831 §6.6 / W3C. `DataChannel.send(String)` transmits via
-  `String.codeUnits` (UTF-16) and the receive path decodes with
-  `String.fromCharCodes`; non-ASCII text (emoji, Japanese) corrupts on the
-  wire. Spec mandates UTF-8.
-  [dart/lib/peer_connection/data_channel.dart](dart/lib/peer_connection/data_channel.dart).
-- **Why deferred:** Recording with the batch; this is a small, high-value fix
-  that could also ship on its own.
-- **Acceptance:** Send via `utf8.encode`, receive via `utf8.decode`; a
-  round-trip test with a multi-byte string (e.g. "🎉日本語") passes.
-
 ### DataChannel close doesn't send SCTP stream reset (RECONFIG)
 
 - **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
