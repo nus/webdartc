@@ -190,15 +190,32 @@ Each item:
 
 ### ALPN `webrtc` extension never sent in the DTLS handshake
 
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** RFC 7301. The `alpn = 0x0010` constant exists
-  ([dart/lib/dtls/v13/handshake.dart](dart/lib/dtls/v13/handshake.dart)) but no
-  flight (1.2 or 1.3) emits an ALPN extension carrying `"webrtc"`. Chrome sends
-  it; absence may degrade interop / future-proofing.
-  [dart/lib/dtls/handshake.dart](dart/lib/dtls/handshake.dart).
-- **Why deferred:** Audit pass only; needs a handshake-bytes test.
-- **Acceptance:** Both ClientHello and ServerHello include an ALPN extension
-  with the single protocol `"webrtc"`; verified against captured bytes.
+- **Found:** 2026-05-29, RFC/W3C divergence audit. **Verified 2026-06; very low
+  value — likely won't ship.**
+- **Detail:** The DTLS 1.2 ClientHello
+  ([dart/lib/dtls/handshake.dart](dart/lib/dtls/handshake.dart) `_buildClientHelloBody`)
+  emits only extended_master_secret / supported_groups / signature_algorithms /
+  use_srtp — no ALPN (0x0010). The `alpn = 0x0010` constant
+  ([dart/lib/dtls/v13/handshake.dart](dart/lib/dtls/v13/handshake.dart)) is
+  unused.
+- **Why deferred — no practical payoff:**
+  - **RFC 8833 makes ALPN optional**, not mandatory: a peer that omits it is
+    treated as having negotiated `webrtc`. RFC 8827 (WebRTC security) doesn't
+    mention ALPN at all.
+  - **libwebrtc doesn't use ALPN for the P2P DTLS connection.** Its
+    `rtc_base/openssl_stream_adapter.cc` configures no `SSL_set_alpn_protos`
+    (so Chrome **doesn't send** ALPN — the audit's "Chrome sends it" was wrong)
+    and no `SSL_CTX_set_alpn_select_cb` (so it **doesn't validate** a peer's
+    ALPN; a non-`webrtc` or absent value is ignored, never rejected).
+  - Our e2e completes DTLS with Chrome today with no ALPN on either side.
+  - So implementing it buys zero interop benefit; the only effect would be
+    future-proofing against a hypothetical ALPN-enforcing middlebox. Sending
+    it (ClientHello only, no server-side enforcement) is harmless if we ever
+    want the conformance checkbox.
+- **Acceptance (if ever done):** ClientHello carries an ALPN extension with the
+  single protocol `webrtc`; the server side does NOT enforce ALPN (must keep
+  accepting peers — like Chrome — that send none). Verified against captured
+  handshake bytes.
 
 ### No ECDHE-RSA support (RSA-cert peers can't complete DTLS)
 
