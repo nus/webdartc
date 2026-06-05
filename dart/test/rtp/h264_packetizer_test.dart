@@ -89,6 +89,40 @@ void main() {
       // F/NRI preserved from original NAL header across FU indicator.
       expect(parts.first.$1[0] & 0xE0, header & 0xE0);
     });
+
+    test('no FU-A fragment sets both S and E (RFC 6184 §5.8)', () {
+      // RFC 6184 §5.8 forbids a single fragment with S=1 and E=1 (that
+      // would mean the NAL fit in one packet and should have been a Single
+      // NAL Unit). The fragmentation threshold (`nal.length > maxPayloadSize`)
+      // plus the per-fragment 2-byte FU overhead guarantees at least two
+      // fragments — assert it holds right at the boundary and above.
+      const maxPayload = 100;
+      final packetizer = H264Packetizer(maxPayloadSize: maxPayload);
+      for (final nalLen in [
+        maxPayload + 1, // smallest NAL that fragments at all
+        maxPayload + 2,
+        maxPayload + 3,
+        2 * maxPayload,
+        2 * maxPayload + 1,
+        5 * maxPayload,
+      ]) {
+        final nal = Uint8List(nalLen)..[0] = 0x41; // type 1, NRI 2
+        for (var i = 1; i < nalLen; i++) {
+          nal[i] = i & 0xFF;
+        }
+        final parts = packetizer
+            .packetize(Uint8List.fromList([0, 0, 0, 1, ...nal]), isKeyFrame: false);
+        final fuParts =
+            parts.where((p) => (p.$1[0] & 0x1F) == 28).toList();
+        expect(fuParts.length, greaterThanOrEqualTo(2),
+            reason: 'NAL=$nalLen must fragment into ≥2 FU-A packets');
+        for (final p in fuParts) {
+          final sAndE = (p.$1[1] & 0x80) != 0 && (p.$1[1] & 0x40) != 0;
+          expect(sAndE, isFalse,
+              reason: 'NAL=$nalLen produced an FU-A with both S and E set');
+        }
+      }
+    });
   });
 
   group('H264Depacketizer', () {

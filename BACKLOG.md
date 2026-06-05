@@ -286,17 +286,6 @@ Each item:
 
 > Same 2026-05-29 audit; **unverified leads.**
 
-### H.264 FU-A can emit S=1 and E=1 in the same fragment
-
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** RFC 6184 §5.8. When a NAL is just over `maxPayloadSize`, a single
-  FU-A is emitted with both Start and End bits set, which the RFC forbids;
-  should fall back to a Single NAL Unit packet.
-  [dart/lib/rtp/packetizer.dart](dart/lib/rtp/packetizer.dart).
-- **Why deferred:** Edge case; only triggers at a specific NAL size.
-- **Acceptance:** A single-fragment case emits a Single NAL Unit packet; an
-  exactly-`maxPayloadSize+1` NAL decodes correctly in Chrome.
-
 ### FIR command sequence number hard-coded to 1
 
 - **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
