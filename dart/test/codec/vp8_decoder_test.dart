@@ -22,7 +22,7 @@ void main() {
       error: (e) => fail('encoder: $e'),
     );
     encoder.configure(const VideoEncoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       width: width,
       height: height,
       bitrate: 400000,
@@ -43,7 +43,7 @@ void main() {
       error: (e) => fail('decoder: $e'),
     );
     decoder.configure(const VideoDecoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       codedWidth: width,
       codedHeight: height,
     ));

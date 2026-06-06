@@ -41,13 +41,13 @@ class _Stream {
       error: decErrors.add,
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: width,
       height: height,
       bitrate: 200000,
       framerate: fps,
     ));
-    decoder.configure(const VideoDecoderConfig(codec: 'h264'));
+    decoder.configure(const VideoDecoderConfig(codec: VideoCodecName.h264));
   }
 
   /// Encode one frame, drain new chunks into the decoder.
@@ -82,8 +82,8 @@ class _Stream {
 
 void main() {
   setUpAll(() {
-    CodecRegistry.registerVideoEncoder('h264', VideoToolboxEncoderBackend.new);
-    CodecRegistry.registerVideoDecoder('h264', VideoToolboxDecoderBackend.new);
+    CodecRegistry.registerVideoEncoder(VideoCodecName.h264, VideoToolboxEncoderBackend.new);
+    CodecRegistry.registerVideoDecoder(VideoCodecName.h264, VideoToolboxDecoderBackend.new);
   });
 
   test('4 encoder+decoder pairs interleaved, 30 frames each', () async {

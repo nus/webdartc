@@ -13,7 +13,7 @@ import 'package:webdartc/rtp/packetizer.dart';
 
 void main() {
   setUpAll(() {
-    CodecRegistry.registerVideoEncoder('h264', VideoToolboxEncoderBackend.new);
+    CodecRegistry.registerVideoEncoder(VideoCodecName.h264, VideoToolboxEncoderBackend.new);
   });
 
   test('first encoded frame is a keyframe with SPS/PPS/IDR Annex B', () async {
@@ -23,7 +23,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: 160,
       height: 120,
       bitrate: 200000,
@@ -56,7 +56,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: 160,
       height: 120,
       bitrate: 200000,
@@ -86,7 +86,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: 160,
       height: 120,
       bitrate: 200000,

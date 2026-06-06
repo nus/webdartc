@@ -50,7 +50,7 @@ final class Vp8EncoderBackend implements VideoEncoderBackend {
     _inScratchSize = _width * _height * 3 ~/ 2;
     _inScratch = pkgffi.calloc<ffi.Uint8>(_inScratchSize);
     _decoderConfig = VideoDecoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       codedWidth: _width,
       codedHeight: _height,
     );

@@ -50,7 +50,7 @@ final class Vp9EncoderBackend implements VideoEncoderBackend {
     _inScratchSize = _width * _height * 3 ~/ 2;
     _inScratch = pkgffi.calloc<ffi.Uint8>(_inScratchSize);
     _decoderConfig = VideoDecoderConfig(
-      codec: 'vp9',
+      codec: VideoCodecName.vp9,
       codedWidth: _width,
       codedHeight: _height,
     );

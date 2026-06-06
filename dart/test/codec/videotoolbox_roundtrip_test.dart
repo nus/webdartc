@@ -12,8 +12,8 @@ import 'package:webdartc/media/video_frame.dart';
 
 void main() {
   setUpAll(() {
-    CodecRegistry.registerVideoEncoder('h264', VideoToolboxEncoderBackend.new);
-    CodecRegistry.registerVideoDecoder('h264', VideoToolboxDecoderBackend.new);
+    CodecRegistry.registerVideoEncoder(VideoCodecName.h264, VideoToolboxEncoderBackend.new);
+    CodecRegistry.registerVideoDecoder(VideoCodecName.h264, VideoToolboxDecoderBackend.new);
   });
 
   test('encoder -> decoder round-trip preserves dimensions and pts', () async {
@@ -23,7 +23,7 @@ void main() {
       error: (e) => fail('enc: $e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: 160,
       height: 120,
       bitrate: 200000,
@@ -41,7 +41,7 @@ void main() {
       output: decoded.add,
       error: (e) => fail('dec: $e'),
     );
-    decoder.configure(const VideoDecoderConfig(codec: 'h264'));
+    decoder.configure(const VideoDecoderConfig(codec: VideoCodecName.h264));
     for (final c in chunks) {
       decoder.decode(c);
     }
@@ -69,7 +69,7 @@ void main() {
       error: (e) => fail('enc: $e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: 160,
       height: 120,
       bitrate: 400000,
@@ -85,7 +85,7 @@ void main() {
       output: decoded.add,
       error: (e) => fail('dec: $e'),
     );
-    decoder.configure(const VideoDecoderConfig(codec: 'h264'));
+    decoder.configure(const VideoDecoderConfig(codec: VideoCodecName.h264));
     decoder.decode(chunks.first);
     await decoder.flush();
     decoder.close();

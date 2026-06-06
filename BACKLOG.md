@@ -37,17 +37,6 @@ Each item:
   in `crypto/macos_backend.dart` and `crypto/security_framework.dart` stay as
   they are.
 
-### Project-wide codec name constants
-
-- **Found:** 2026-05-04, in `opus-codec` /simplify
-- **Detail:** Codec keys (`'vp8'`, `'h264'`, `'opus'`) are stringly-typed at
-  every registration site, every `CodecRegistry.create*` call, and across all
-  tests. Refactoring just one codec would be inconsistent with the others.
-- **Why deferred:** Cross-codec change; not blocking shipping.
-- **Acceptance:** Introduce `VideoCodecName` / `AudioCodecName` constant
-  groups in `video_codec.dart` / `audio_codec.dart`. Update all backends and
-  tests to reference them.
-
 ### Android codec backend (MediaCodec via JNI)
 
 - **Found:** 2026-05-04, codec-status review

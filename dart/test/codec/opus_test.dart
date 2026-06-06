@@ -33,7 +33,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(const AudioEncoderConfig(
-      codec: 'opus',
+      codec: AudioCodecName.opus,
       sampleRate: _sampleRate,
       numberOfChannels: _channels,
       bitrate: 32000,
@@ -68,7 +68,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(const AudioEncoderConfig(
-      codec: 'opus',
+      codec: AudioCodecName.opus,
       sampleRate: _sampleRate,
       numberOfChannels: _channels,
     ));
@@ -90,7 +90,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(const AudioEncoderConfig(
-      codec: 'opus',
+      codec: AudioCodecName.opus,
       sampleRate: _sampleRate,
       numberOfChannels: _channels,
       bitrate: 64000,
@@ -108,7 +108,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     decoder.configure(const AudioDecoderConfig(
-      codec: 'opus',
+      codec: AudioCodecName.opus,
       sampleRate: _sampleRate,
       numberOfChannels: _channels,
     ));
@@ -142,7 +142,7 @@ void main() {
       error: errors.add,
     );
     encoder.configure(const AudioEncoderConfig(
-      codec: 'opus',
+      codec: AudioCodecName.opus,
       sampleRate: _sampleRate,
       numberOfChannels: _channels,
     ));
