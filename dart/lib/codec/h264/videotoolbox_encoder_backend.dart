@@ -47,7 +47,7 @@ final class VideoToolboxEncoderBackend implements VideoEncoderBackend {
     }
     _handle = handle;
     _decoderConfig = VideoDecoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       codedWidth: _width,
       codedHeight: _height,
     );

@@ -139,7 +139,7 @@ Future<List<EncodedAudioChunk>> _encodeAudio(
     error: (e) => fail('encoder error: $e'),
   );
   encoder.configure(AudioEncoderConfig(
-    codec: 'opus', sampleRate: sampleRate, numberOfChannels: channels,
+    codec: AudioCodecName.opus, sampleRate: sampleRate, numberOfChannels: channels,
     bitrate: bitrate,
   ));
   encoder.encode(input);
@@ -159,7 +159,7 @@ Future<List<AudioData>> _decodeAll(
     error: (e) => fail('decoder error: $e'),
   );
   decoder.configure(AudioDecoderConfig(
-    codec: 'opus', sampleRate: sampleRate, numberOfChannels: channels,
+    codec: AudioCodecName.opus, sampleRate: sampleRate, numberOfChannels: channels,
   ));
   for (final c in chunks) {
     decoder.decode(c);

@@ -16,7 +16,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       width: 160,
       height: 120,
       bitrate: 200000,
@@ -45,7 +45,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       width: 160,
       height: 120,
       bitrate: 200000,
@@ -81,7 +81,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       width: 160,
       height: 120,
       bitrate: 200000,
@@ -93,7 +93,7 @@ void main() {
     encoder.reset();
 
     encoder.configure(VideoEncoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       width: 320,
       height: 240,
       bitrate: 400000,
@@ -116,7 +116,7 @@ void main() {
       error: (e) => captured = e,
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       width: 160,
       height: 120,
       bitrate: 200000,

@@ -85,7 +85,7 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
     _residueFill = 0;
     _baseTimestampUs = null;
     _decoderConfig = AudioDecoderConfig(
-      codec: 'opus',
+      codec: AudioCodecName.opus,
       sampleRate: _sampleRate,
       numberOfChannels: _channels,
     );

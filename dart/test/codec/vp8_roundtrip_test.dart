@@ -22,7 +22,7 @@ void main() {
       error: (e) => fail('encoder error: $e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       width: width,
       height: height,
       bitrate: 400000,

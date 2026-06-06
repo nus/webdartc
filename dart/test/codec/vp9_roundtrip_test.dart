@@ -25,7 +25,7 @@ void main() {
       error: (e) => fail('encoder: $e'),
     );
     encoder.configure(const VideoEncoderConfig(
-      codec: 'vp9',
+      codec: VideoCodecName.vp9,
       width: width,
       height: height,
       bitrate: 400000,
@@ -47,7 +47,7 @@ void main() {
       error: (e) => fail('decoder: $e'),
     );
     decoder.configure(const VideoDecoderConfig(
-      codec: 'vp9',
+      codec: VideoCodecName.vp9,
       codedWidth: width,
       codedHeight: height,
     ));

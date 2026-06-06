@@ -20,7 +20,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: 160,
       height: 120,
       bitrate: 200000,
@@ -64,7 +64,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: 160,
       height: 120,
       bitrate: 200000,
@@ -94,7 +94,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: 160,
       height: 120,
       bitrate: 200000,

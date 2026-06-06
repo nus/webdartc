@@ -40,14 +40,14 @@ class _Stream {
       error: decErrors.add,
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'vp9',
+      codec: VideoCodecName.vp9,
       width: width,
       height: height,
       bitrate: 200000,
       framerate: fps,
     ));
     decoder.configure(VideoDecoderConfig(
-      codec: 'vp9',
+      codec: VideoCodecName.vp9,
       codedWidth: width,
       codedHeight: height,
     ));

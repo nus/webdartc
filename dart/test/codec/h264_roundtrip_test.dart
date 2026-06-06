@@ -26,7 +26,7 @@ void main() {
       error: (e) => fail('encoder: $e'),
     );
     encoder.configure(const VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: width,
       height: height,
       bitrate: 400000,
@@ -48,7 +48,7 @@ void main() {
       error: (e) => fail('decoder: $e'),
     );
     decoder.configure(const VideoDecoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       codedWidth: width,
       codedHeight: height,
     ));

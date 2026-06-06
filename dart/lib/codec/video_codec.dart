@@ -8,6 +8,22 @@ import 'dart:typed_data';
 import '../media/video_frame.dart';
 import 'codec_registry.dart';
 
+// ── Codec identifiers ───────────────────────────────────────────────────────
+
+/// Canonical WebCodecs identifiers for the built-in video backends.
+///
+/// These are the keys used by [CodecRegistry] and the `codec` field of
+/// [VideoEncoderConfig] / [VideoDecoderConfig]. They are distinct from the
+/// IANA RTP names advertised in SDP (e.g. `'VP8'`, `'H264'` — see
+/// `MediaEngine`), which live in their own case-preserved namespace.
+abstract final class VideoCodecName {
+  VideoCodecName._();
+
+  static const String vp8 = 'vp8';
+  static const String vp9 = 'vp9';
+  static const String h264 = 'h264';
+}
+
 // ── Encoded data ────────────────────────────────────────────────────────────
 
 enum EncodedVideoChunkType { key, delta }

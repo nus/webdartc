@@ -9,6 +9,20 @@ import '../media/audio_data.dart';
 import 'codec_registry.dart';
 import 'video_codec.dart' show CodecState;
 
+// ── Codec identifiers ───────────────────────────────────────────────────────
+
+/// Canonical WebCodecs identifiers for the built-in audio backends.
+///
+/// These are the keys used by [CodecRegistry] and the `codec` field of
+/// [AudioEncoderConfig] / [AudioDecoderConfig]. This is a separate namespace
+/// from the IANA RTP name advertised in SDP (see `MediaEngine`); for Opus the
+/// two spellings happen to coincide, but they are not the same identifier.
+abstract final class AudioCodecName {
+  AudioCodecName._();
+
+  static const String opus = 'opus';
+}
+
 // ── Encoded data ────────────────────────────────────────────────────────────
 
 enum EncodedAudioChunkType { key, delta }

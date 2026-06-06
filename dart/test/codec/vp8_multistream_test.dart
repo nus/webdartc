@@ -42,14 +42,14 @@ class _Stream {
       error: decErrors.add,
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       width: width,
       height: height,
       bitrate: 200000,
       framerate: fps,
     ));
     decoder.configure(VideoDecoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       codedWidth: width,
       codedHeight: height,
     ));

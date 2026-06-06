@@ -48,14 +48,14 @@ class _Stream {
       error: decErrors.add,
     );
     encoder.configure(VideoEncoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       width: width,
       height: height,
       bitrate: 200000,
       framerate: fps,
     ));
     decoder.configure(VideoDecoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       codedWidth: width,
       codedHeight: height,
     ));

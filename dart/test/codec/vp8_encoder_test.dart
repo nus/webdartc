@@ -30,7 +30,7 @@ void main() {
       error: (e) => fail('$e'),
     );
     encoder.configure(const VideoEncoderConfig(
-      codec: 'vp8',
+      codec: VideoCodecName.vp8,
       width: 320,
       height: 240,
       bitrate: 400000,

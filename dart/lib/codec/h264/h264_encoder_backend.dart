@@ -28,11 +28,15 @@ import 'videotoolbox_encoder_backend.dart';
 /// `dart/hook/build.dart`; see `lib/codec/h264/_openh264.dart`).
 void registerH264Codec() {
   if (Platform.isMacOS || Platform.isIOS) {
-    CodecRegistry.registerVideoEncoder('h264', VideoToolboxEncoderBackend.new);
-    CodecRegistry.registerVideoDecoder('h264', VideoToolboxDecoderBackend.new);
+    CodecRegistry.registerVideoEncoder(
+        VideoCodecName.h264, VideoToolboxEncoderBackend.new);
+    CodecRegistry.registerVideoDecoder(
+        VideoCodecName.h264, VideoToolboxDecoderBackend.new);
   } else {
-    CodecRegistry.registerVideoEncoder('h264', H264EncoderBackend.new);
-    CodecRegistry.registerVideoDecoder('h264', H264DecoderBackend.new);
+    CodecRegistry.registerVideoEncoder(
+        VideoCodecName.h264, H264EncoderBackend.new);
+    CodecRegistry.registerVideoDecoder(
+        VideoCodecName.h264, H264DecoderBackend.new);
   }
 }
 
@@ -117,7 +121,7 @@ final class H264EncoderBackend implements VideoEncoderBackend {
 
     _encoder = handle;
     _decoderConfig = VideoDecoderConfig(
-      codec: 'h264',
+      codec: VideoCodecName.h264,
       codedWidth: _width,
       codedHeight: _height,
     );
