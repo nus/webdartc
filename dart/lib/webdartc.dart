@@ -44,6 +44,7 @@ export 'crypto/hmac_sha1.dart';
 export 'crypto/sha1.dart';
 export 'crypto/sha256.dart';
 export 'crypto/hkdf.dart';
+export 'crypto/tls_prf.dart';
 export 'crypto/aes_cm.dart';
 export 'crypto/aes_gcm.dart';
 export 'crypto/chacha20_poly1305.dart';
@@ -54,7 +55,7 @@ export 'crypto/ecdsa.dart';
 export 'stun/message.dart';
 export 'stun/parser.dart';
 export 'stun/builder.dart';
-export 'stun/crc32c.dart';
+export 'stun/crc32.dart';
 
 // SRTP
 export 'srtp/context.dart';

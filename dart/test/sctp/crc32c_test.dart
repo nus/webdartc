@@ -19,7 +19,7 @@ void main() {
     test('CRC-32c differs from CRC-32', () {
       final data = Uint8List.fromList('123456789'.codeUnits);
       final crc32c = SctpCrc32c.compute(data);
-      final crc32 = Crc32c.compute(data); // ITU V.42 CRC-32
+      final crc32 = Crc32.compute(data); // ITU V.42 CRC-32 (STUN)
       expect(crc32c, isNot(equals(crc32)),
           reason: 'CRC-32c and CRC-32 must produce different results');
     });

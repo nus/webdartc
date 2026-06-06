@@ -4,7 +4,7 @@ import 'attributes.dart';
 
 export 'attributes.dart';
 
-/// A STUN message (RFC 5389 §6).
+/// A STUN message (RFC 8489 §5).
 final class StunMessage {
   /// Message type (e.g. [StunMessageType.bindingRequest]).
   final int type;
