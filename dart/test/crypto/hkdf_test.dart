@@ -34,13 +34,6 @@ void main() {
       // First byte of OKM from RFC 5869 Appendix A.1 = 0x3c
       expect(okm[0], equals(0x3c));
     });
-
-    test('prfSha256 returns correct length', () {
-      final secret = Uint8List.fromList('secret'.codeUnits);
-      final seed   = Uint8List.fromList('seed'.codeUnits);
-      final out    = Hkdf.prfSha256(secret, seed, 48);
-      expect(out.length, equals(48));
-    });
   });
 
   // RFC 8448 §3 "Simple 1-RTT Handshake" test vectors for TLS 1.3 key

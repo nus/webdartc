@@ -1,11 +1,12 @@
 import 'dart:typed_data';
 
-/// CRC-32 (ITU V.42 / ISO 3309) — used by STUN FINGERPRINT (RFC 5389 §15.5).
+/// CRC-32 (ITU V.42 / ISO 3309) — used by STUN FINGERPRINT (RFC 8489 §14.7).
 ///
 /// Pure Dart table-driven implementation using the standard CRC-32 polynomial.
-/// Note: Despite the file name, STUN uses standard CRC-32, not CRC-32c.
-abstract final class Crc32c {
-  Crc32c._();
+/// Note: STUN uses standard CRC-32, not CRC-32c (which is the SCTP checksum,
+/// implemented separately in `sctp/crc32c.dart`).
+abstract final class Crc32 {
+  Crc32._();
 
   static final List<int> _table = _buildTable();
 

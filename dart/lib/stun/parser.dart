@@ -5,7 +5,7 @@ import '../core/result.dart';
 import '../core/state_machine.dart' show ParseError;
 import 'message.dart';
 
-/// STUN message parser (RFC 5389).
+/// STUN message parser (RFC 8489).
 abstract final class StunParser {
   StunParser._();
 
@@ -166,7 +166,7 @@ abstract final class StunParser {
 
   /// Parse a STUN address attribute body (1 reserved + 1 family + 2 port +
   /// N address bytes). When [xorTxId] is non-null, port and address are
-  /// XOR-decoded per RFC 5389 §15.2 — first 4 address bytes against the
+  /// XOR-decoded per RFC 8489 §14.2 — first 4 address bytes against the
   /// magic cookie, remaining 12 (IPv6 only) against the transaction ID.
   static (IpAddress, int)? _parseAddress(Uint8List value, List<int>? xorTxId) {
     if (value.length < 8) return null;

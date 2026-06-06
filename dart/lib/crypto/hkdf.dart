@@ -127,29 +127,4 @@ abstract final class Hkdf {
       prefix: prefix,
     );
   }
-
-  /// DTLS/TLS PRF-SHA256 as used in RFC 5705 / DTLS 1.2 with SHA-256.
-  ///
-  /// P_SHA256(secret, seed) = HMAC_SHA256(secret, A(1)+seed) ||
-  ///                          HMAC_SHA256(secret, A(2)+seed) || ...
-  /// where A(0) = seed, A(i) = HMAC_SHA256(secret, A(i-1))
-  static Uint8List prfSha256(Uint8List secret, Uint8List seed, int length) {
-    final out = <int>[];
-    var a = Uint8List.fromList(seed); // A(0)
-    while (out.length < length) {
-      // A(i) = HMAC_SHA256(secret, A(i-1))
-      a = _hmacSha256(secret, a);
-      // HMAC_SHA256(secret, A(i) + seed)
-      final combined = Uint8List(a.length + seed.length);
-      combined.setRange(0, a.length, a);
-      combined.setRange(a.length, combined.length, seed);
-      out.addAll(_hmacSha256(secret, combined));
-    }
-    return Uint8List.fromList(out.sublist(0, length));
-  }
-
-  static Uint8List _hmacSha256(Uint8List key, Uint8List data) {
-    final hmac = pkg_crypto.Hmac(pkg_crypto.sha256, key);
-    return Uint8List.fromList(hmac.convert(data).bytes);
-  }
 }

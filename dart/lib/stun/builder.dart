@@ -3,10 +3,10 @@ import 'dart:typed_data';
 import '../core/ip_address.dart';
 import '../crypto/hmac_sha1.dart';
 import '../crypto/md5.dart';
-import 'crc32c.dart';
+import 'crc32.dart';
 import 'message.dart';
 
-/// STUN message builder (RFC 5389).
+/// STUN message builder (RFC 8489).
 abstract final class StunMessageBuilder {
   StunMessageBuilder._();
 
@@ -17,7 +17,7 @@ abstract final class StunMessageBuilder {
   }
 
   /// Long-term credential key: MD5(username:realm:password) per
-  /// RFC 5389 §15.4. Used as the HMAC-SHA1 key for MESSAGE-INTEGRITY
+  /// RFC 8489 §14.5. Used as the HMAC-SHA1 key for MESSAGE-INTEGRITY
   /// on TURN messages and any other long-term-authenticated STUN flow.
   /// SASLprep on `username`/`realm` is a no-op for ASCII inputs.
   static Uint8List longTermKey(String username, String realm, String password) {
@@ -30,7 +30,7 @@ abstract final class StunMessageBuilder {
   /// [key] is the HMAC-SHA1 key — either the raw password (short-term
   /// credential) or [longTermKey] output (long-term credential).
   /// [fingerprint] controls whether a FINGERPRINT attribute is appended;
-  /// STUN-over-multiplexed-transport (RFC 5389 §15.5) wants it, plain
+  /// STUN-over-multiplexed-transport (RFC 8489 §14.7) wants it, plain
   /// TURN-over-its-own-socket doesn't and most TURN servers reject the
   /// connection-id-style FINGERPRINT.
   static Uint8List buildWithIntegrity(StunMessage msg, Uint8List key,
@@ -73,7 +73,7 @@ abstract final class StunMessageBuilder {
     forFp.setRange(0, headerForFp.length, headerForFp);
     forFp.setRange(headerForFp.length, forFp.length, bodyWithIntegrity);
 
-    final crc = Crc32c.compute(forFp) ^ 0x5354554E;
+    final crc = Crc32.compute(forFp) ^ 0x5354554E;
     final fpAttr = FingerprintAttr(crc);
 
     final allWithFp = [...allAttrs, fpAttr];
@@ -197,8 +197,8 @@ abstract final class StunMessageBuilder {
         return Uint8List.fromList(username.codeUnits);
       case MessageIntegrityAttr(:final hmac):
         return Uint8List.fromList(hmac);
-      case FingerprintAttr(:final crc32c):
-        return _uint32Bytes(crc32c);
+      case FingerprintAttr(:final crc32):
+        return _uint32Bytes(crc32);
       case PriorityAttr(:final priority):
         return _uint32Bytes(priority);
       case UseCandidateAttr():
@@ -232,12 +232,12 @@ abstract final class StunMessageBuilder {
       case LifetimeAttr(:final seconds):
         return _uint32Bytes(seconds);
       case RequestedTransportAttr(:final protocol):
-        // 1 byte protocol + 3 bytes reserved (RFC 5766 §14.7).
+        // 1 byte protocol + 3 bytes reserved (RFC 8656 §18.8).
         final out = Uint8List(4);
         out[0] = protocol & 0xFF;
         return out;
       case ChannelNumberAttr(:final channel):
-        // 2 bytes channel + 2 bytes reserved (RFC 5766 §14.1).
+        // 2 bytes channel + 2 bytes reserved (RFC 8656 §18.1).
         final out = Uint8List(4);
         out[0] = (channel >> 8) & 0xFF;
         out[1] = channel & 0xFF;
@@ -251,7 +251,7 @@ abstract final class StunMessageBuilder {
 
   /// Encode a STUN address attribute body. Layout: 1 reserved + 1 family +
   /// 2 port + N address bytes (4 for IPv4, 16 for IPv6). When [xorTxId]
-  /// is non-null, port and address are XOR'd per RFC 5389 §15.2 — first
+  /// is non-null, port and address are XOR'd per RFC 8489 §14.2 — first
   /// 4 bytes against the magic cookie, remaining 12 (IPv6 only) against
   /// the transaction ID.
   static Uint8List _encodeAddress(

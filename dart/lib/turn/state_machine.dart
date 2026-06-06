@@ -1,4 +1,4 @@
-/// TURN allocation client state machine (RFC 5766 / RFC 8656).
+/// TURN allocation client state machine (RFC 8656).
 ///
 /// Pure state machine — no I/O.
 library;
@@ -92,10 +92,10 @@ final class TurnServer {
 }
 
 /// IANA protocol number for UDP — the value the client puts in
-/// REQUESTED-TRANSPORT per RFC 5766 §14.7.
+/// REQUESTED-TRANSPORT per RFC 8656 §18.8.
 const int turnRequestedTransportUdp = 17;
 
-/// RFC 5766 §6.2 default allocation lifetime in seconds. The server may
+/// RFC 8656 §6 default allocation lifetime in seconds. The server may
 /// grant a different value in the Allocate success response.
 const int turnDefaultLifetimeSeconds = 600;
 
@@ -107,7 +107,7 @@ final class _PendingRequest {
       : sentAt = sentAt ?? DateTime.now();
 }
 
-/// Per RFC 5389 §7.2.1, total STUN retransmit budget is RTO × (2^Rc − 1) ≈
+/// Per RFC 8489 §6.2.1, total STUN retransmit budget is RTO × (2^Rc − 1) ≈
 /// 39.5 s; prune `_pending` entries older than that so a server that drops
 /// a response can't leak indefinitely.
 const Duration _pendingTtl = Duration(seconds: 40);
@@ -124,7 +124,7 @@ final class TurnAllocation implements ProtocolStateMachine {
   final int requestedLifetime;
 
   /// Pad ChannelData frames to a 4-byte boundary. Required on TCP/TLS
-  /// per RFC 5766 §11.5 to keep subsequent frames aligned; optional on
+  /// per RFC 8656 §12.5 to keep subsequent frames aligned; optional on
   /// UDP where each datagram is its own frame.
   final bool padChannelData;
 
@@ -529,7 +529,7 @@ final class TurnAllocation implements ProtocolStateMachine {
       onChannelResult?.call(channel, peerIp, peerPort, false);
       return Ok(ProcessResult.empty);
     }
-    // ChannelBind grants the per-IP permission implicitly (RFC 5766 §9).
+    // ChannelBind grants the per-IP permission implicitly (RFC 8656 §12).
     _permissions.add(peerIp);
     onChannelResult?.call(channel, peerIp, peerPort, true);
     return Ok(ProcessResult(
@@ -570,7 +570,7 @@ final class TurnAllocation implements ProtocolStateMachine {
         remotePort: serverPort,
       );
 
-  // RFC 5766: permissions expire after 5 min, channels after 10. Refresh
+  // RFC 8656: permissions expire after 5 min, channels after 10. Refresh
   // a minute early so a server-side expiry never catches us mid-RTT.
   static const int _permissionRefreshSeconds = 240;
   static const int _channelRefreshSeconds = 540;

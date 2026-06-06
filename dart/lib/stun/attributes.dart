@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 import '../core/ip_address.dart';
 
-/// STUN attribute types (RFC 5389 + RFC 8445 + RFC 5766 TURN).
+/// STUN attribute types (RFC 8489 + RFC 8445 + RFC 8656 TURN).
 abstract final class StunAttributeType {
   StunAttributeType._();
 
@@ -27,7 +27,7 @@ abstract final class StunAttributeType {
   static const int iceControlled    = 0x8029;
   static const int iceControlling   = 0x802A;
 
-  // TURN (RFC 5766 / RFC 8656)
+  // TURN (RFC 8656)
   static const int channelNumber       = 0x000C;
   static const int lifetime            = 0x000D;
   static const int xorPeerAddress      = 0x0012;
@@ -37,12 +37,12 @@ abstract final class StunAttributeType {
   static const int dontFragment        = 0x001A;
 }
 
-/// ERROR-CODE values from RFC 5389 §15.6 and RFC 5766 §15 (TURN-specific).
+/// ERROR-CODE values from RFC 8489 §14.8 and RFC 8656 §19 (TURN-specific).
 /// Wire layout is `class * 100 + number`, exposed by [ErrorCodeAttr.code].
 abstract final class StunErrorCode {
   StunErrorCode._();
 
-  // RFC 5389
+  // RFC 8489
   static const int tryAlternate     = 300;
   static const int badRequest       = 400;
   static const int unauthorized     = 401;
@@ -50,7 +50,7 @@ abstract final class StunErrorCode {
   static const int staleNonce       = 438;
   static const int serverError      = 500;
 
-  // RFC 5766 (TURN)
+  // RFC 8656 (TURN)
   static const int forbidden                    = 403;
   static const int allocationMismatch           = 437;
   static const int wrongCredentials             = 441;
@@ -59,7 +59,7 @@ abstract final class StunErrorCode {
   static const int insufficientCapacity         = 508;
 }
 
-/// STUN message types (RFC 5389) and TURN extensions (RFC 5766 / RFC 8656).
+/// STUN message types (RFC 8489) and TURN extensions (RFC 8656).
 abstract final class StunMessageType {
   StunMessageType._();
 
@@ -84,7 +84,7 @@ abstract final class StunMessageType {
   static const int channelBindErrorResponse      = 0x0119;
 }
 
-/// Magic cookie (RFC 5389 §6).
+/// Magic cookie (RFC 8489 §5).
 const int stunMagicCookie = 0x2112A442;
 
 // ── Attribute data classes ────────────────────────────────────────────────────
@@ -125,8 +125,9 @@ final class MessageIntegrityAttr extends StunAttribute {
 }
 
 final class FingerprintAttr extends StunAttribute {
-  final int crc32c;
-  const FingerprintAttr(this.crc32c) : super(StunAttributeType.fingerprint);
+  /// CRC-32 of the message (RFC 8489 §14.7), XOR'd with 0x5354554E.
+  final int crc32;
+  const FingerprintAttr(this.crc32) : super(StunAttributeType.fingerprint);
 }
 
 final class PriorityAttr extends StunAttribute {
@@ -165,7 +166,7 @@ final class RawAttribute extends StunAttribute {
   const RawAttribute(super.type, this.value);
 }
 
-// ── TURN attribute data classes (RFC 5766 / RFC 8656) ────────────────────────
+// ── TURN attribute data classes (RFC 8656) ────────────────────────
 
 final class RealmAttr extends StunAttribute {
   final String realm;
@@ -208,7 +209,7 @@ final class RequestedTransportAttr extends StunAttribute {
       : super(StunAttributeType.requestedTransport);
 }
 
-/// Channel number (RFC 5766 §11). Valid range 0x4000–0x7FFF; numbers
+/// Channel number (RFC 8656 §12). Valid range 0x4000–0x7FFF; numbers
 /// outside that range are reserved or for future use.
 final class ChannelNumberAttr extends StunAttribute {
   final int channel;

@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import '../crypto/aes_gcm.dart';
-import '../crypto/hkdf.dart';
+import '../crypto/tls_prf.dart';
 
 /// Supported DTLS 1.2 cipher suites.
 enum CipherSuite {
@@ -57,7 +57,7 @@ final class DtlsKeyBlock {
     );
 
     // For AES-128-GCM: 2*(16 key + 4 IV) = 40 bytes
-    final keyMaterial = Hkdf.prfSha256(masterSecret, seed, 40);
+    final keyMaterial = TlsPrf.sha256(masterSecret, seed, 40);
 
     return DtlsKeyBlock(
       clientWriteKey: keyMaterial.sublist(0, 16),

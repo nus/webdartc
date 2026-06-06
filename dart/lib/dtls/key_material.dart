@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import '../crypto/hkdf.dart';
+import '../crypto/tls_prf.dart';
 
 /// DTLS SRTP key material derivation (RFC 5764 §4.2, RFC 5705).
 ///
@@ -46,7 +46,7 @@ abstract final class DtlsKeyMaterial {
     seed.setRange(
         labelBytes.length + clientRandom.length, seed.length, serverRandom);
 
-    return Hkdf.prfSha256(masterSecret, seed, length);
+    return TlsPrf.sha256(masterSecret, seed, length);
   }
 
   /// Compute the DTLS 1.2 master secret from the premaster secret.
@@ -68,7 +68,7 @@ abstract final class DtlsKeyMaterial {
         seed.length,
         serverRandom);
 
-    return Hkdf.prfSha256(premasterSecret, seed, 48);
+    return TlsPrf.sha256(premasterSecret, seed, 48);
   }
 
   /// Compute extended master secret (RFC 7627).
@@ -86,7 +86,7 @@ abstract final class DtlsKeyMaterial {
     final seed = Uint8List(labelBytes.length + sessionHash.length);
     seed.setRange(0, labelBytes.length, labelBytes);
     seed.setRange(labelBytes.length, seed.length, sessionHash);
-    return Hkdf.prfSha256(premasterSecret, seed, 48);
+    return TlsPrf.sha256(premasterSecret, seed, 48);
   }
 
   /// Compute Finished verify_data (RFC 5246 §7.4.9).
@@ -102,6 +102,6 @@ abstract final class DtlsKeyMaterial {
     final seed = Uint8List(labelBytes.length + handshakeHash.length);
     seed.setRange(0, labelBytes.length, labelBytes);
     seed.setRange(labelBytes.length, seed.length, handshakeHash);
-    return Hkdf.prfSha256(masterSecret, seed, 12);
+    return TlsPrf.sha256(masterSecret, seed, 12);
   }
 }

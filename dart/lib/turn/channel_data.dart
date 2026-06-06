@@ -1,4 +1,4 @@
-/// ChannelData framing (RFC 5766 §11.4).
+/// ChannelData framing (RFC 8656 §12.4).
 ///
 /// Distinguishable from STUN by the first 2 bits: STUN = 00, ChannelData
 /// = 01 (channel range 0x4000-0x7FFF). Padding to a 4-byte boundary is
@@ -10,7 +10,7 @@ import 'dart:typed_data';
 const int channelNumberMin = 0x4000;
 const int channelNumberMax = 0x7FFF;
 
-/// STUN message header length (RFC 5389 §6) — fixed at 20 bytes
+/// STUN message header length (RFC 8489 §5) — fixed at 20 bytes
 /// (type 2 + length 2 + magic cookie 4 + transaction id 12).
 const int stunHeaderBytes = 20;
 
@@ -18,7 +18,7 @@ const int stunHeaderBytes = 20;
 /// TURN-TCP stream:
 ///   * `00` — STUN (`stunHeaderBytes` + body length).
 ///   * `01` — ChannelData (4-byte header + body, padded to 4-byte
-///     multiple on TCP per RFC 5766 §11.5).
+///     multiple on TCP per RFC 8656 §12.5).
 /// Anything else means the byte stream is out of sync.
 const int _turnTcpClassMask = 0xC0;
 const int _turnTcpStunClass = 0x00;
@@ -44,7 +44,7 @@ final class ChannelDataFrame {
 }
 
 /// [pad] forces 4-byte alignment for transport-agnostic builders even on
-/// UDP, where the padding is optional per RFC 5766 §11.4.
+/// UDP, where the padding is optional per RFC 8656 §12.4.
 Uint8List buildChannelData(int channel, Uint8List payload, {bool pad = false}) {
   if (!isValidChannelNumber(channel)) {
     throw ArgumentError('Channel $channel outside [0x4000, 0x7FFF]');
@@ -63,7 +63,7 @@ Uint8List buildChannelData(int channel, Uint8List payload, {bool pad = false}) {
 }
 
 /// Result of inspecting the head of a TURN-over-TCP receive buffer
-/// (RFC 5766 §11.5). The wire is a back-to-back stream of STUN messages
+/// (RFC 8656 §12.5). The wire is a back-to-back stream of STUN messages
 /// and ChannelData frames, each with a self-describing length; the
 /// receiver peels them off using only the first four bytes plus the
 /// declared length.
