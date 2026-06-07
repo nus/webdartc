@@ -34,4 +34,36 @@ void main() {
       expect(evt.text, contains('B'));
     });
   });
+
+  group('DataChannel.close lifecycle', () {
+    test('with no SCTP association: closing → closed, both events fire',
+        () async {
+      final dc = DataChannel(label: 'x', id: 0);
+      final events = <String>[];
+      dc.onClosing.listen((_) => events.add('closing'));
+      dc.onClose.listen((_) => events.add('close'));
+
+      expect(dc.readyState, DataChannelState.connecting);
+      dc.close();
+      // No close callback wired → the close finalizes immediately.
+      expect(dc.readyState, DataChannelState.closed);
+
+      await Future<void>.delayed(Duration.zero);
+      expect(events, ['closing', 'close']);
+    });
+
+    test('close() is idempotent', () {
+      final dc = DataChannel(label: 'x', id: 0);
+      dc.close();
+      expect(dc.readyState, DataChannelState.closed);
+      expect(dc.close, returnsNormally); // second call is a no-op
+      expect(dc.readyState, DataChannelState.closed);
+    });
+
+    test('send after close throws', () {
+      final dc = DataChannel(label: 'x', id: 0);
+      dc.close();
+      expect(() => dc.send('hi'), throwsStateError);
+    });
+  });
 }

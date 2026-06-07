@@ -461,6 +461,7 @@ final class PeerConnection {
         _transport.scheduleSctpTimeout(result.value.nextTimeout);
       }
     };
+    channel._closeCallback = () => _resetSctpStream(id);
     _dataChannels[id] = channel;
 
     // Send DCEP OPEN when SCTP is established
@@ -849,7 +850,9 @@ final class PeerConnection {
     _rtcpTimer?.cancel();
     for (final r in _receivers.values) { r._close(); }
     _receivers.clear();
-    for (final ch in _dataChannels.values) { ch.close(); }
+    // Tear down channels immediately — the whole transport is going away, so
+    // a graceful SCTP stream reset would never complete.
+    for (final ch in _dataChannels.values) { ch._finalizeClose(); }
     _dataChannels.clear();
     await _transport.stop();
     unawaited(_iceCandidateController.close());
@@ -915,6 +918,7 @@ final class PeerConnection {
     _sctp.onEstablished = _notifySctpEstablished;
     _sctp.onDataChannelOpen = _onRemoteDataChannelOpen;
     _sctp.onData = _onSctpData;
+    _sctp.onStreamReset = _onSctpStreamReset;
 
     _transport.attachIce(_ice);
     _transport.attachDtls(_dtls);
@@ -1114,6 +1118,7 @@ final class PeerConnection {
           ordered: ordered,
           ppid: _dataChannelPpid(data, binary));
     };
+    channel._closeCallback = () => _resetSctpStream(streamId);
     channel._open();
     _dataChannels[streamId] = channel;
     _dataChannelController.add(DataChannelEvent(channel));
@@ -1121,6 +1126,22 @@ final class PeerConnection {
 
   void _onSctpData(int streamId, Uint8List data, bool isBinary) {
     _dataChannels[streamId]?._deliverMessage(data, isBinary);
+  }
+
+  /// Initiate an SCTP stream reset to close a data channel (RFC 8831 §6.7).
+  void _resetSctpStream(int streamId) {
+    final result = _sctp.resetStreams([streamId]);
+    if (result.isOk) {
+      for (final pkt in result.value.outputPackets) {
+        _transport.sendSctp(pkt.data);
+      }
+      _transport.scheduleSctpTimeout(result.value.nextTimeout);
+    }
+  }
+
+  /// A stream reset completed (RFC 6525) — finalize the channel's close.
+  void _onSctpStreamReset(int streamId) {
+    _dataChannels[streamId]?._finalizeClose();
   }
 
   /// SCTP PPID for a data-channel message (RFC 8831 §6.6). An empty

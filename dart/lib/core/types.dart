@@ -56,6 +56,11 @@ final class SctpT3RtxToken extends TimerToken {
   SctpT3RtxToken(this.tsn);
 }
 
+/// Retransmit timer for an outstanding RE-CONFIG request (RFC 6525 §5.1).
+final class SctpReconfigToken extends TimerToken {
+  SctpReconfigToken();
+}
+
 /// Fires the periodic STUN consent-freshness check on the selected pair
 /// (RFC 7675 §5.1) — also serves as the keepalive (§6).
 final class IceConsentToken extends TimerToken {

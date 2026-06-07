@@ -266,6 +266,119 @@ final class SctpShutdownCompleteChunk extends SctpChunk {
   Uint8List encode() => _wrapChunk(type, flags, Uint8List(0));
 }
 
+/// RE-CONFIG chunk (RFC 6525 §3.1) — carries one or two reconfiguration
+/// parameters. Used by WebRTC data channels to reset (close) streams
+/// (RFC 8831 §6.7).
+final class SctpReconfigChunk extends SctpChunk {
+  final List<SctpReconfigParameter> parameters;
+  const SctpReconfigChunk(this.parameters) : super(SctpChunkType.reconfig, 0);
+
+  @override
+  Uint8List encode() =>
+      _wrapChunk(type, flags, _concatBytes([for (final p in parameters) p.encode()]));
+}
+
+// ── RE-CONFIG parameters (RFC 6525 §4) ──────────────────────────────────────────
+
+/// RE-CONFIG parameter types (RFC 6525 §4).
+abstract final class SctpReconfigParamType {
+  SctpReconfigParamType._();
+  static const int outgoingSsnReset = 13; // 0x000D — §4.1
+  static const int incomingSsnReset = 14; // 0x000E — §4.2
+  static const int reconfigResponse = 16; // 0x0010 — §4.4
+}
+
+sealed class SctpReconfigParameter {
+  final int type;
+  const SctpReconfigParameter(this.type);
+
+  /// The parameter value (everything after the 4-byte TLV header).
+  Uint8List encodeValue();
+
+  /// Encode as a TLV, padded to a 4-byte boundary (padding not counted in
+  /// the length field, RFC 6525 §4).
+  Uint8List encode() => _encodeTlv(type, encodeValue());
+}
+
+/// Outgoing SSN Reset Request Parameter (RFC 6525 §4.1) — asks the peer to
+/// reset the sender's outgoing streams (i.e. the peer's incoming streams).
+/// An empty [streams] list means "all streams".
+final class SctpOutgoingSsnResetRequest extends SctpReconfigParameter {
+  final int requestSeq;
+  final int responseSeq;
+  final int lastAssignedTsn;
+  final List<int> streams;
+  const SctpOutgoingSsnResetRequest({
+    required this.requestSeq,
+    required this.responseSeq,
+    required this.lastAssignedTsn,
+    this.streams = const [],
+  }) : super(SctpReconfigParamType.outgoingSsnReset);
+
+  @override
+  Uint8List encodeValue() {
+    final out = Uint8List(12 + streams.length * 2);
+    _writeU32(out, 0, requestSeq);
+    _writeU32(out, 4, responseSeq);
+    _writeU32(out, 8, lastAssignedTsn);
+    var offset = 12;
+    for (final s in streams) {
+      _writeU16(out, offset, s);
+      offset += 2;
+    }
+    return out;
+  }
+}
+
+/// Incoming SSN Reset Request Parameter (RFC 6525 §4.2) — asks the peer to
+/// reset its outgoing streams (our incoming). An empty [streams] list means
+/// "all streams".
+final class SctpIncomingSsnResetRequest extends SctpReconfigParameter {
+  final int requestSeq;
+  final List<int> streams;
+  const SctpIncomingSsnResetRequest({
+    required this.requestSeq,
+    this.streams = const [],
+  }) : super(SctpReconfigParamType.incomingSsnReset);
+
+  @override
+  Uint8List encodeValue() {
+    final out = Uint8List(4 + streams.length * 2);
+    _writeU32(out, 0, requestSeq);
+    var offset = 4;
+    for (final s in streams) {
+      _writeU16(out, offset, s);
+      offset += 2;
+    }
+    return out;
+  }
+}
+
+/// Re-configuration Response Parameter (RFC 6525 §4.4).
+final class SctpReconfigResponse extends SctpReconfigParameter {
+  // Result codes (RFC 6525 §4.4).
+  static const int resultSuccessNop = 0;
+  static const int resultSuccessPerformed = 1;
+  static const int resultDenied = 2;
+  static const int resultErrorWrongSsn = 3;
+  static const int resultErrorRequestInProgress = 4;
+  static const int resultErrorBadSequence = 5;
+  static const int resultInProgress = 6;
+
+  final int responseSeq;
+  final int result;
+  const SctpReconfigResponse({required this.responseSeq, required this.result})
+      : super(SctpReconfigParamType.reconfigResponse);
+
+  @override
+  Uint8List encodeValue() {
+    final out = Uint8List(8);
+    _writeU32(out, 0, responseSeq);
+    _writeU32(out, 4, result);
+    return out;
+  }
+}
+
 // ── Parameters ────────────────────────────────────────────────────────────────
 
 sealed class SctpParameter {
@@ -383,9 +496,59 @@ SctpChunk? _parseChunk(int type, int flags, Uint8List body) {
       return const SctpShutdownAckChunk();
     case SctpChunkType.shutdownComplete:
       return const SctpShutdownCompleteChunk();
+    case SctpChunkType.reconfig:
+      return SctpReconfigChunk(_parseReconfigParams(body));
     default:
       return null;
   }
+}
+
+List<SctpReconfigParameter> _parseReconfigParams(Uint8List body) {
+  final params = <SctpReconfigParameter>[];
+  var offset = 0;
+  while (offset + 4 <= body.length) {
+    final type = _u16(body, offset);
+    final len = _u16(body, offset + 2);
+    if (len < 4 || offset + len > body.length) break; // malformed
+    final end = offset + len;
+    switch (type) {
+      case SctpReconfigParamType.outgoingSsnReset:
+        if (len >= 16) {
+          final streams = <int>[];
+          for (var o = offset + 16; o + 2 <= end; o += 2) {
+            streams.add(_u16(body, o));
+          }
+          params.add(SctpOutgoingSsnResetRequest(
+            requestSeq: _u32(body, offset + 4),
+            responseSeq: _u32(body, offset + 8),
+            lastAssignedTsn: _u32(body, offset + 12),
+            streams: streams,
+          ));
+        }
+      case SctpReconfigParamType.incomingSsnReset:
+        if (len >= 8) {
+          final streams = <int>[];
+          for (var o = offset + 8; o + 2 <= end; o += 2) {
+            streams.add(_u16(body, o));
+          }
+          params.add(SctpIncomingSsnResetRequest(
+            requestSeq: _u32(body, offset + 4),
+            streams: streams,
+          ));
+        }
+      case SctpReconfigParamType.reconfigResponse:
+        if (len >= 12) {
+          params.add(SctpReconfigResponse(
+            responseSeq: _u32(body, offset + 4),
+            result: _u32(body, offset + 8),
+          ));
+        }
+      default:
+        break; // ignore unknown reconfig parameters
+    }
+    offset += (len + 3) & ~3;
+  }
+  return params;
 }
 
 Uint8List _extractCookie(Uint8List params) {
@@ -419,28 +582,29 @@ Uint8List _wrapChunk(int type, int flags, Uint8List body) {
   return out;
 }
 
-Uint8List _encodeParams(List<SctpParameter> params) {
-  final parts = <Uint8List>[];
-  for (final p in params) {
-    final val = p.encodeValue();
-    final len = 4 + val.length;
-    final padded = (len + 3) & ~3;
-    final out = Uint8List(padded);
-    out[0] = (p.type >> 8) & 0xFF;
-    out[1] = p.type & 0xFF;
-    out[2] = (len >> 8) & 0xFF;
-    out[3] = len & 0xFF;
-    out.setRange(4, 4 + val.length, val);
-    parts.add(out);
-  }
-  final total = parts.fold(0, (s, p) => s + p.length);
-  final result = Uint8List(total);
+Uint8List _encodeParams(List<SctpParameter> params) =>
+    _concatBytes([for (final p in params) _encodeTlv(p.type, p.encodeValue())]);
+
+/// Encode a `type`/`length`/`value` parameter, padded to a 4-byte boundary
+/// (padding is not counted in the length field — RFC 4960 §3.2.1, RFC 6525 §4).
+Uint8List _encodeTlv(int type, Uint8List value) {
+  final len = 4 + value.length;
+  final out = Uint8List((len + 3) & ~3);
+  _writeU16(out, 0, type);
+  _writeU16(out, 2, len);
+  out.setRange(4, 4 + value.length, value);
+  return out;
+}
+
+Uint8List _concatBytes(List<Uint8List> parts) {
+  final total = parts.fold<int>(0, (s, p) => s + p.length);
+  final out = Uint8List(total);
   var offset = 0;
   for (final p in parts) {
-    result.setRange(offset, offset + p.length, p);
+    out.setRange(offset, offset + p.length, p);
     offset += p.length;
   }
-  return result;
+  return out;
 }
 
 void _writeU16(Uint8List d, int o, int v) {

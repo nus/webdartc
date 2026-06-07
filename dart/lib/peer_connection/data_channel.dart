@@ -30,11 +30,17 @@ final class DataChannel {
 
   final _messageController = StreamController<DataChannelMessageEvent>.broadcast();
   final _openController = StreamController<void>.broadcast();
+  final _closingController = StreamController<void>.broadcast();
   final _closeController = StreamController<void>.broadcast();
   final _errorController = StreamController<Object>.broadcast();
 
   // Callback set by PeerConnection to send data via SCTP.
   void Function(Uint8List data, {bool binary})? _sendCallback;
+
+  // Callback set by PeerConnection to initiate an SCTP stream reset when the
+  // channel is closed (RFC 8831 §6.7). Null until wired or when there is no
+  // association to reset.
+  void Function()? _closeCallback;
 
   DataChannel({
     required this.label,
@@ -53,6 +59,10 @@ final class DataChannel {
 
   /// Fired when the channel opens.
   Stream<void> get onOpen => _openController.stream;
+
+  /// Fired when the channel begins closing (W3C `onclosing`) — i.e. the SCTP
+  /// stream reset has been initiated but not yet completed.
+  Stream<void> get onClosing => _closingController.stream;
 
   /// Fired when the channel closes.
   Stream<void> get onClose => _closeController.stream;
@@ -78,9 +88,29 @@ final class DataChannel {
     _bytesSent += data.length;
   }
 
+  /// Begin closing the channel (W3C close procedure). Transitions to
+  /// `closing`, fires `onClosing`, and initiates the SCTP stream reset
+  /// (RFC 8831 §6.7). The transition to `closed` (and `onClose`) happens in
+  /// [_finalizeClose] once the reset completes. With no association to reset
+  /// (e.g. SCTP not established) it closes immediately.
   void close() {
-    if (_readyState == DataChannelState.closed) return;
+    if (_readyState == DataChannelState.closed ||
+        _readyState == DataChannelState.closing) {
+      return;
+    }
     _readyState = DataChannelState.closing;
+    _closingController.add(null);
+    final cb = _closeCallback;
+    if (cb != null) {
+      cb();
+    } else {
+      _finalizeClose();
+    }
+  }
+
+  /// Complete the close once the SCTP stream reset finishes. Idempotent.
+  void _finalizeClose() {
+    if (_readyState == DataChannelState.closed) return;
     _readyState = DataChannelState.closed;
     _closeController.add(null);
     _disposeControllers();
@@ -109,6 +139,7 @@ final class DataChannel {
   void _disposeControllers() {
     _messageController.close();
     _openController.close();
+    _closingController.close();
     _closeController.close();
     _errorController.close();
   }

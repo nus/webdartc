@@ -166,19 +166,22 @@ final class _WsClient {
 void main(List<String> args) async {
   int port = 8080;
   int timeoutSec = 30;
+  var closeChannel = false;
   for (final arg in args) {
     if (arg.startsWith('--port=')) {
       port = int.parse(arg.substring('--port='.length));
     } else if (arg.startsWith('--timeout=')) {
       timeoutSec = int.parse(arg.substring('--timeout='.length));
+    } else if (arg == '--close-dc') {
+      closeChannel = true;
     }
   }
 
-  final exitCode = await _run(port, timeoutSec: timeoutSec);
+  final exitCode = await _run(port, timeoutSec: timeoutSec, closeChannel: closeChannel);
   exit(exitCode);
 }
 
-Future<int> _run(int sigPort, {int timeoutSec = 30}) async {
+Future<int> _run(int sigPort, {int timeoutSec = 30, bool closeChannel = false}) async {
   final ws = await _WsClient.connect(sigPort);
   ws.sendJson({'type': 'register', 'role': 'offerer'});
 
@@ -194,6 +197,15 @@ Future<int> _run(int sigPort, {int timeoutSec = 30}) async {
   var textEchoed   = false;
   var binaryEchoed = false;
   final done = Completer<int>();
+
+  // When --close-dc is set, after both echoes the offerer closes the data
+  // channel and waits for its own onClose to fire (RFC 8831 §6.7). onClose
+  // only fires once the SCTP stream reset round-trips with Chrome, so a
+  // clean exit 0 proves both peers tore the channel down.
+  dc.onClose.listen((_) {
+    stdout.writeln('[offerer] DataChannel onClose fired (stream reset complete)');
+    if (!done.isCompleted) done.complete(0);
+  });
 
   // ICE candidates → relay.
   pc.onIceCandidate.listen((evt) {
@@ -254,8 +266,13 @@ Future<int> _run(int sigPort, {int timeoutSec = 30}) async {
       }
     }
     if (textEchoed && binaryEchoed && !done.isCompleted) {
-      stdout.writeln('[offerer] PASS');
-      done.complete(0);
+      if (closeChannel) {
+        stdout.writeln('[offerer] echoes OK — closing data channel');
+        dc.close(); // exit 0 deferred to dc.onClose (stream reset complete)
+      } else {
+        stdout.writeln('[offerer] PASS');
+        done.complete(0);
+      }
     }
   });
 

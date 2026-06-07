@@ -154,6 +154,57 @@ void main() {
       final received = await browserState(d, 'receivedCount');
       expect(received, greaterThanOrEqualTo(2));
     });
+
+    test('webdartc closes the data channel → both peers observe onclose '
+        '(RFC 6525 stream reset)', () async {
+      final d = driver!;
+      final sig = sigServer!;
+
+      final url =
+          'http://127.0.0.1:$htmlPort/?port=${sig.port}'
+          '&role=answerer&scenario=data';
+      await d.navigateTo(url);
+
+      await waitFor(
+        () async => await browserState(d, 'ready') == true,
+        timeout: const Duration(seconds: 10),
+      );
+
+      // webdartc offerer: send echoes, then close the channel and wait for
+      // its own onClose (which only fires once the SCTP stream reset
+      // round-trips with Chrome).
+      final offererFuture = _runWebdartcOfferer(sig.port, closeChannel: true);
+
+      try {
+        await waitFor(
+          () async {
+            final v = await browserState(d, 'iceState');
+            return v == 'connected' || v == 'completed';
+          },
+          timeout: const Duration(seconds: 30),
+          interval: const Duration(seconds: 3),
+        );
+      } catch (e) {
+        _printChromeLog();
+        rethrow;
+      }
+
+      await waitFor(
+        () async => await browserState(d, 'dcOpen') == true,
+        timeout: const Duration(seconds: 15),
+      );
+
+      // webdartc peer fires onClose → the helper exits 0.
+      await offererFuture.timeout(const Duration(seconds: 30));
+
+      // Chrome peer must observe its data channel closing too (its onclose
+      // handler sets dcClosed). Give the RE-CONFIG response a moment to land.
+      await waitFor(
+        () async => await browserState(d, 'dcClosed') == true,
+        timeout: const Duration(seconds: 10),
+      );
+      expect(await browserState(d, 'dcClosed'), isTrue);
+    });
   });
 
   // ── Scenario 1b: Data channel (Chrome offerer ↔ webdartc answerer) ────────
@@ -1085,7 +1136,8 @@ Future<void> _runWebdartcEcho(int signalingPort) async {
 
 /// Runs the webdartc offerer as a subprocess, streaming stderr to the console.
 /// Returns when the exchange is complete (exit 0) or throws on failure.
-Future<void> _runWebdartcOfferer(int signalingPort, {int timeoutSec = 30}) async {
+Future<void> _runWebdartcOfferer(int signalingPort,
+    {int timeoutSec = 30, bool closeChannel = false}) async {
   final proc = await Process.start(
     Platform.resolvedExecutable,
     [
@@ -1093,6 +1145,7 @@ Future<void> _runWebdartcOfferer(int signalingPort, {int timeoutSec = 30}) async
       'test/e2e/webdartc_offerer_helper.dart',
       '--port=$signalingPort',
       '--timeout=$timeoutSec',
+      if (closeChannel) '--close-dc',
     ],
     environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
   );

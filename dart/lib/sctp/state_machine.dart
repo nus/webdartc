@@ -45,6 +45,37 @@ final class SctpStateMachine implements ProtocolStateMachine {
   // Retransmission queue keyed by TSN
   final Map<int, _PendingData> _retransmitQueue = {};
 
+  // ── Stream reconfiguration (RFC 6525 / RFC 8831 §6.7) ──────────────────────
+  // Our next outgoing Re-config Request Sequence Number.
+  int _reconfigReqSeq = 0;
+  // The request sequence currently awaiting a response (null = none in flight).
+  int? _outstandingReqSeq;
+  List<int> _outstandingStreams = const [];
+  SctpReconfigChunk? _outstandingReconfigChunk;
+  int _reconfigRetransmitCount = 0;
+  static const int _maxReconfigRetransmit = 10;
+
+  /// Parameters advertised in every INIT / INIT-ACK: ForwardTSN (RFC 3758)
+  /// and the Supported Extensions list (RFC 5061 §4.2.7) enabling RE-CONFIG
+  /// stream resets (RFC 6525). Without the latter Chrome's dcSCTP rejects
+  /// close() with UNSUPPORTED_OPERATION. Both handshake sides advertise these
+  /// identically.
+  static const List<SctpParameter> _handshakeParameters = [
+    SctpForwardTsnSupportedParameter(),
+    SctpSupportedExtensionsParameter(
+        [SctpChunkType.reconfig, SctpChunkType.forwardTsn]),
+  ];
+  // Last peer request sequence we processed (for duplicate detection).
+  int _lastRemoteReqSeq = 0;
+  // Cached response to the last request, resent if the peer retransmits.
+  SctpReconfigChunk? _lastReconfigResponseChunk;
+  // Streams already reported via [onStreamReset] (fire once per stream).
+  final Set<int> _resetNotified = {};
+  // Streams whose outgoing side we have already reset.
+  final Set<int> _localOutgoingResetDone = {};
+  // Streams queued for an outgoing reset (sent one request at a time).
+  final Set<int> _pendingResetStreams = {};
+
   int _retransmitCount = 0;
   // Set when we yield to a simultaneous-open INIT — prevents the peer's
   // INIT-ACK (for our abandoned INIT) from overwriting remote tags.
@@ -76,6 +107,10 @@ final class SctpStateMachine implements ProtocolStateMachine {
 
   /// Called when data arrives on a stream.
   void Function(int streamId, Uint8List data, bool isBinary)? onData;
+
+  /// Called when a stream has been reset (RFC 6525) — i.e. the corresponding
+  /// data channel has closed. Fired once per stream.
+  void Function(int streamId)? onStreamReset;
 
   SctpStateMachine({bool isClient = true}) : _isClient = isClient;
 
@@ -251,6 +286,9 @@ final class SctpStateMachine implements ProtocolStateMachine {
     if (token is SctpT3RtxToken) {
       return _retransmit(token.tsn);
     }
+    if (token is SctpReconfigToken) {
+      return _retransmitReconfig();
+    }
     return const Ok(ProcessResult.empty);
   }
 
@@ -270,6 +308,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
       case SctpShutdownChunk(): return _handleShutdown(chunk);
       case SctpShutdownAckChunk(): return _handleShutdownAck();
       case SctpShutdownCompleteChunk(): return _handleShutdownComplete();
+      case SctpReconfigChunk(): return _handleReconfig(chunk);
     }
   }
 
@@ -326,6 +365,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
       numInboundStreams: 1024,
       initialTsn: _localInitialTsn,
       cookie: cookie,
+      parameters: _handshakeParameters,
     );
     _state = SctpState.cookieWait; // server waits for COOKIE-ECHO
     return Ok(ProcessResult(outputPackets: [_buildPacket([ack])]));
@@ -362,7 +402,10 @@ final class SctpStateMachine implements ProtocolStateMachine {
     // paths may complete).
     final wasEstablished = _state == SctpState.established;
     _state = SctpState.established;
-    if (!wasEstablished) onEstablished?.call();
+    if (!wasEstablished) {
+      _initReconfigState();
+      onEstablished?.call();
+    }
     final ack = const SctpCookieAckChunk();
     return Ok(ProcessResult(outputPackets: [_buildPacket([ack])]));
   }
@@ -370,6 +413,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
   Result<ProcessResult, ProtocolError> _handleCookieAck() {
     if (_state != SctpState.cookieEchoed) { return const Ok(ProcessResult.empty); }
     _state = SctpState.established;
+    _initReconfigState();
     onEstablished?.call();
     return const Ok(ProcessResult.empty);
   }
@@ -596,6 +640,180 @@ final class SctpStateMachine implements ProtocolStateMachine {
     return const Ok(ProcessResult.empty);
   }
 
+  // ── Stream reconfiguration (RFC 6525 / RFC 8831 §6.7) ──────────────────────
+
+  /// Initialise RE-CONFIG sequence numbers once the association is up. The
+  /// initial Re-config Request Sequence Number is the initial TSN (RFC 6525
+  /// §4.1); the expected first remote request sequence is the peer's.
+  void _initReconfigState() {
+    _reconfigReqSeq = _localInitialTsn;
+    _lastRemoteReqSeq = (_remoteInitialTsn - 1) & 0xFFFFFFFF;
+  }
+
+  /// Reset (close) the given outgoing streams (RFC 8831 §6.7). Sends an
+  /// Outgoing SSN Reset Request; each stream's reset is reported via
+  /// [onStreamReset] once it completes in both directions.
+  Result<ProcessResult, ProtocolError> resetStreams(List<int> streamIds) {
+    if (_state != SctpState.established) {
+      return Err(const StateError('SCTP: not established'));
+    }
+    _queueOutgoingReset(streamIds);
+    return Ok(_maybeSendReconfig());
+  }
+
+  /// Queue [streams] for an outgoing reset, skipping any already reset or in
+  /// flight (so a peer-triggered reset can't loop back on itself).
+  void _queueOutgoingReset(Iterable<int> streams) {
+    for (final s in streams) {
+      if (!_localOutgoingResetDone.contains(s) &&
+          !_outstandingStreams.contains(s)) {
+        _pendingResetStreams.add(s);
+      }
+    }
+  }
+
+  /// Send a RE-CONFIG for any queued streams, if no request is in flight
+  /// (RFC 6525 allows only one outstanding outgoing reset request). Returns
+  /// the packet(s) to emit, or [ProcessResult.empty] when nothing is sent.
+  ProcessResult _maybeSendReconfig() {
+    if (_outstandingReqSeq != null || _pendingResetStreams.isEmpty) {
+      return ProcessResult.empty;
+    }
+    final streams = _pendingResetStreams.toList()..sort();
+    _pendingResetStreams.clear();
+    final reqSeq = _reconfigReqSeq;
+    _reconfigReqSeq = (_reconfigReqSeq + 1) & 0xFFFFFFFF;
+    final chunk = SctpReconfigChunk([
+      SctpOutgoingSsnResetRequest(
+        requestSeq: reqSeq,
+        responseSeq: _lastRemoteReqSeq,
+        lastAssignedTsn: (_localTsn - 1) & 0xFFFFFFFF,
+        streams: streams,
+      ),
+    ]);
+    _outstandingReqSeq = reqSeq;
+    _outstandingStreams = streams;
+    _outstandingReconfigChunk = chunk;
+    _reconfigRetransmitCount = 0;
+    return ProcessResult(
+      outputPackets: [_buildPacket([chunk])],
+      nextTimeout: _reconfigTimeout(0),
+    );
+  }
+
+  Timeout _reconfigTimeout(int retransmitCount) => Timeout(
+        at: DateTime.now().add(Duration(
+            milliseconds: (_t3RtxMs * (1 << retransmitCount)).clamp(0, 60000))),
+        token: SctpReconfigToken(),
+      );
+
+  Result<ProcessResult, ProtocolError> _handleReconfig(SctpReconfigChunk chunk) {
+    final out = <OutputPacket>[];
+    Timeout? timeout;
+    for (final param in chunk.parameters) {
+      final ProcessResult r;
+      switch (param) {
+        case SctpOutgoingSsnResetRequest():
+          r = _handleOutgoingResetRequest(param);
+        case SctpReconfigResponse():
+          r = _handleReconfigResponse(param);
+        case SctpIncomingSsnResetRequest():
+          // Peer asks us to reset our outgoing streams.
+          _queueOutgoingReset(param.streams);
+          r = _maybeSendReconfig();
+      }
+      out.addAll(r.outputPackets);
+      timeout = r.nextTimeout ?? timeout;
+    }
+    return Ok(ProcessResult(outputPackets: out, nextTimeout: timeout));
+  }
+
+  /// Handle a peer's Outgoing SSN Reset Request — reset our incoming state
+  /// for the listed streams, respond, and (for a full data-channel close)
+  /// reset our own outgoing side too.
+  ProcessResult _handleOutgoingResetRequest(SctpOutgoingSsnResetRequest req) {
+    // Duplicate request → resend the cached response.
+    if (req.requestSeq == _lastRemoteReqSeq && _lastReconfigResponseChunk != null) {
+      return ProcessResult(
+          outputPackets: [_buildPacket([_lastReconfigResponseChunk!])]);
+    }
+
+    // Empty stream list means "all streams" (RFC 6525 §4.1).
+    final streams = req.streams.isNotEmpty
+        ? req.streams
+        : <int>{..._recvSsn.keys, ..._channelLabels.keys}.toList();
+    for (final s in streams) {
+      _recvSsn.remove(s);
+      _reassemblyBuffer.remove(s);
+      _notifyStreamReset(s);
+    }
+    _lastRemoteReqSeq = req.requestSeq;
+
+    final response = SctpReconfigChunk([
+      SctpReconfigResponse(
+        responseSeq: req.requestSeq,
+        result: SctpReconfigResponse.resultSuccessPerformed,
+      ),
+    ]);
+    _lastReconfigResponseChunk = response;
+
+    // Reset our outgoing side for these streams too, so the channel closes
+    // both ways (_queueOutgoingReset skips streams already reset or in
+    // flight, avoiding a reset loop).
+    _queueOutgoingReset(streams);
+    final sent = _maybeSendReconfig();
+    return ProcessResult(
+      outputPackets: [_buildPacket([response]), ...sent.outputPackets],
+      nextTimeout: sent.nextTimeout,
+    );
+  }
+
+  /// Handle a Re-config Response to our outstanding outgoing reset request.
+  ProcessResult _handleReconfigResponse(SctpReconfigResponse resp) {
+    if (_outstandingReqSeq == null || resp.responseSeq != _outstandingReqSeq) {
+      return ProcessResult.empty;
+    }
+    // The peer is still working on it — keep the retransmit timer running.
+    if (resp.result == SctpReconfigResponse.resultInProgress) {
+      return ProcessResult.empty;
+    }
+    // Success (or a terminal error): consider the outgoing reset finished so
+    // the channel never hangs.
+    _completeOutstandingReset();
+    return _maybeSendReconfig();
+  }
+
+  void _completeOutstandingReset() {
+    for (final s in _outstandingStreams) {
+      _sendSsn.remove(s);
+      _localOutgoingResetDone.add(s);
+      _notifyStreamReset(s);
+    }
+    _outstandingReqSeq = null;
+    _outstandingStreams = const [];
+    _outstandingReconfigChunk = null;
+    _reconfigRetransmitCount = 0;
+  }
+
+  void _notifyStreamReset(int streamId) {
+    if (_resetNotified.add(streamId)) { onStreamReset?.call(streamId); }
+  }
+
+  Result<ProcessResult, ProtocolError> _retransmitReconfig() {
+    final chunk = _outstandingReconfigChunk;
+    if (chunk == null) { return const Ok(ProcessResult.empty); }
+    if (_reconfigRetransmitCount >= _maxReconfigRetransmit) {
+      // Give up after Max.Retrans so the channel doesn't hang forever.
+      _completeOutstandingReset();
+      return const Ok(ProcessResult.empty);
+    }
+    _reconfigRetransmitCount++;
+    return Ok(ProcessResult(
+      outputPackets: [_buildPacket([chunk])],
+      nextTimeout: _reconfigTimeout(_reconfigRetransmitCount),
+    ));
+  }
+
   // ── Init / connect ────────────────────────────────────────────────────────
 
   Result<ProcessResult, ProtocolError> _sendInit() {
@@ -606,7 +824,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
       numOutboundStreams: 1024,
       numInboundStreams: 1024,
       initialTsn: _localInitialTsn,
-      parameters: const [SctpForwardTsnSupportedParameter()],
+      parameters: _handshakeParameters,
     );
     final timeout = Timeout(
       at: DateTime.now().add(const Duration(milliseconds: 1000)),
