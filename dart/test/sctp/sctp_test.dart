@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart';
 
+import 'sctp_test_helpers.dart';
+
 void main() {
   group('SctpStateMachine', () {
     test('connect sends INIT packet', () {
@@ -77,7 +79,7 @@ void main() {
       // RFC 8831 §6.6: an empty application message rides as a single
       // padding byte with a "WebRTC {String,Binary} Empty" PPID — a
       // zero-length SCTP DATA chunk is illegal (RFC 9260).
-      final (client, server) = _establish();
+      final (client, server) = establishSctpPair();
       final delivered = <(Uint8List, bool)>[];
       server.onData =
           (int _, Uint8List data, bool isBinary) => delivered.add((data, isBinary));
@@ -122,28 +124,4 @@ void main() {
       expect(decoded.channelType, equals(DcepChannelType.reliable));
     });
   });
-}
-
-/// Run the four-way SCTP handshake and return both ends in the
-/// `established` state (client at port 5000, server at 5001).
-(SctpStateMachine, SctpStateMachine) _establish() {
-  final client = SctpStateMachine(isClient: true);
-  final server = SctpStateMachine(isClient: false);
-  final clientIp = IpAddress.parse('127.0.0.1');
-  final serverIp = IpAddress.parse('127.0.0.1');
-  const clientPort = 5000;
-  const serverPort = 5001;
-
-  final init = client.connect(remoteIp: serverIp, remotePort: serverPort);
-  final initAck = server.processInput(init.value.outputPackets.first.data,
-      remoteIp: clientIp, remotePort: clientPort);
-  final cookieEcho = client.processInput(initAck.value.outputPackets.first.data,
-      remoteIp: serverIp, remotePort: serverPort);
-  final cookieAck = server.processInput(
-      cookieEcho.value.outputPackets.first.data,
-      remoteIp: clientIp,
-      remotePort: clientPort);
-  client.processInput(cookieAck.value.outputPackets.first.data,
-      remoteIp: serverIp, remotePort: serverPort);
-  return (client, server);
 }

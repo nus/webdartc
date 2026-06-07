@@ -251,26 +251,6 @@ Each item:
 
 ---
 
-## SCTP / Data Channel
-
-> Same 2026-05-29 audit; **unverified leads.**
-
-### DataChannel close doesn't send SCTP stream reset (RECONFIG)
-
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** RFC 6525 / RFC 8831 §6.7. `DataChannel.close()` flips local state
-  only; no `OUTGOING_SSN_RESET_REQUEST` is sent, and the SCTP layer doesn't
-  parse the `reconfig` chunk (declared but unhandled). Also the W3C `closing`
-  state is effectively skipped (set + cleared in one tick; `onclosing` never
-  fires).
-  [dart/lib/sctp/state_machine.dart](dart/lib/sctp/state_machine.dart),
-  [dart/lib/peer_connection/data_channel.dart](dart/lib/peer_connection/data_channel.dart).
-- **Why deferred:** Needs RECONFIG send + parse + handler and an E2E close test.
-- **Acceptance:** Close initiates a stream reset, awaits the peer's reset,
-  fires `onclosing` then `onclose`; RECONFIG round-trips against Chrome.
-
----
-
 ## RTP / RTCP / SDP
 
 > Same 2026-05-29 audit; **unverified leads.**
