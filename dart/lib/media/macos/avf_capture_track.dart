@@ -19,6 +19,7 @@ abstract base class _AvfCaptureTrack<TEvent> extends MediaStreamTrack {
   final String _id;
   final String _label;
   final Duration _pollInterval;
+  final MediaTrackSettings _settings;
   bool _enabled = true;
   // Eagerly constructed so the `close_sinks` lint can trace the
   // controller's lifetime through [stop]. Polling starts when a listener
@@ -30,7 +31,10 @@ abstract base class _AvfCaptureTrack<TEvent> extends MediaStreamTrack {
   );
   Timer? _timer;
 
-  _AvfCaptureTrack(this._id, this._label, this._pollInterval);
+  _AvfCaptureTrack(this._id, this._label, this._pollInterval, this._settings);
+
+  @override
+  MediaTrackSettings getSettings() => _settings;
 
   /// Pop and emit a single native frame. Returns false when the queue is
   /// empty so the drain loop can stop.
@@ -67,6 +71,7 @@ abstract base class _AvfCaptureTrack<TEvent> extends MediaStreamTrack {
     _timer = null;
     _disposeNativeCapture();
     unawaited(_events.close());
+    notifyEnded();
   }
 
   void _ensureTimer() {
@@ -91,7 +96,8 @@ abstract base class _AvfCaptureTrack<TEvent> extends MediaStreamTrack {
 final class AvfCaptureVideoTrack extends _AvfCaptureTrack<VideoFrame> {
   final NativeVideoCapture _capture;
 
-  AvfCaptureVideoTrack._(this._capture, super.id, super.label, super.interval);
+  AvfCaptureVideoTrack._(
+      this._capture, super.id, super.label, super.interval, super.settings);
 
   static AvfCaptureVideoTrack? create({
     String? deviceId,
@@ -112,7 +118,12 @@ final class AvfCaptureVideoTrack extends _AvfCaptureTrack<VideoFrame> {
         microseconds:
             ((1000000 / framerate) / 2).round().clamp(2000, 33000));
     return AvfCaptureVideoTrack._(
-        cap, Csprng.randomHex(16), label, interval);
+        cap, Csprng.randomHex(16), label, interval,
+        MediaTrackSettings(
+            deviceId: deviceId,
+            width: width,
+            height: height,
+            frameRate: framerate));
   }
 
   @override
@@ -153,8 +164,9 @@ final class AvfCaptureVideoTrack extends _AvfCaptureTrack<VideoFrame> {
 final class AvfCaptureAudioTrack extends _AvfCaptureTrack<AudioData> {
   final NativeAudioCapture _capture;
 
-  AvfCaptureAudioTrack._(this._capture, String id, String label)
-      : super(id, label, const Duration(milliseconds: 10));
+  AvfCaptureAudioTrack._(
+      this._capture, String id, String label, MediaTrackSettings settings)
+      : super(id, label, const Duration(milliseconds: 10), settings);
 
   static AvfCaptureAudioTrack? create({
     String? deviceId,
@@ -169,7 +181,11 @@ final class AvfCaptureAudioTrack extends _AvfCaptureTrack<AudioData> {
       cap.release();
       return null;
     }
-    return AvfCaptureAudioTrack._(cap, Csprng.randomHex(16), label);
+    return AvfCaptureAudioTrack._(cap, Csprng.randomHex(16), label,
+        MediaTrackSettings(
+            deviceId: deviceId,
+            sampleRate: sampleRate,
+            channelCount: channels));
   }
 
   @override
