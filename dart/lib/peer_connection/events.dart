@@ -115,6 +115,51 @@ enum DtlsTransportState {
   failed,
 }
 
+/// W3C `RTCRtpTransceiverDirection`.
+enum RtpTransceiverDirection {
+  sendrecv,
+  sendonly,
+  recvonly,
+  inactive,
+  stopped;
+
+  /// SDP direction token (`a=sendrecv` etc.). A stopped transceiver maps to
+  /// `inactive` on the wire.
+  String get sdpToken => switch (this) {
+        RtpTransceiverDirection.sendrecv => 'sendrecv',
+        RtpTransceiverDirection.sendonly => 'sendonly',
+        RtpTransceiverDirection.recvonly => 'recvonly',
+        RtpTransceiverDirection.inactive => 'inactive',
+        RtpTransceiverDirection.stopped => 'inactive',
+      };
+
+  /// Parse an SDP direction token; unknown tokens fall back to `sendrecv`.
+  static RtpTransceiverDirection fromToken(String token) => switch (token) {
+        'sendonly' => RtpTransceiverDirection.sendonly,
+        'recvonly' => RtpTransceiverDirection.recvonly,
+        'inactive' => RtpTransceiverDirection.inactive,
+        _ => RtpTransceiverDirection.sendrecv,
+      };
+
+  /// The negotiated direction (W3C `currentDirection`) from our preferred
+  /// [local] direction and the [remote] direction on its SDP m-line — the
+  /// intersection: we send only if we want to and the peer will receive,
+  /// and vice-versa.
+  static RtpTransceiverDirection negotiated(
+      RtpTransceiverDirection local, RtpTransceiverDirection remote) {
+    bool sends(RtpTransceiverDirection d) =>
+        d == sendrecv || d == sendonly;
+    bool receives(RtpTransceiverDirection d) =>
+        d == sendrecv || d == recvonly;
+    final send = sends(local) && receives(remote);
+    final recv = receives(local) && sends(remote);
+    if (send && recv) return sendrecv;
+    if (send) return sendonly;
+    if (recv) return recvonly;
+    return inactive;
+  }
+}
+
 /// RTP sender — sends media RTP packets via SRTP.
 ///
 /// Obtained via [PeerConnection.addTrack] or from a transceiver.
@@ -229,5 +274,64 @@ final class RtpSender {
     _octetsSent += payload.length;
     _lastRtpTimestamp = _timestamp;
     _sendCallback?.call(rtp.build());
+  }
+}
+
+/// W3C `RTCRtpTransceiver` — a paired [RtpSender] / [RtpReceiver] for one
+/// media m-line. Created by [PeerConnection.addTransceiver] /
+/// [PeerConnection.addTrack] and listed by [PeerConnection.getTransceivers].
+final class RtpTransceiver {
+  /// Media kind: 'audio' or 'video'.
+  final String kind;
+
+  /// Codec names this transceiver prefers to offer, in order (internal).
+  final List<String>? preferredCodecs;
+
+  /// The sender for outgoing media, or null for a receive-only transceiver.
+  RtpSender? sender;
+
+  RtpReceiver? _receiver;
+  String? _mid;
+  RtpTransceiverDirection _direction;
+  RtpTransceiverDirection? _currentDirection;
+
+  RtpTransceiver._({
+    required this.kind,
+    RtpTransceiverDirection direction = RtpTransceiverDirection.sendrecv,
+    this.preferredCodecs,
+  }) : _direction = direction;
+
+  /// The receiver for incoming media, or null until media arrives on this
+  /// transceiver.
+  RtpReceiver? get receiver => _receiver;
+
+  /// The negotiated media-line identifier (BUNDLE `a=mid`), or null before
+  /// the first negotiation.
+  String? get mid => _mid;
+
+  /// Preferred direction applied at the next negotiation (W3C `direction`).
+  RtpTransceiverDirection get direction => _direction;
+
+  /// Direction negotiated at the last offer/answer, or null before the first
+  /// negotiation completes (W3C `currentDirection`).
+  RtpTransceiverDirection? get currentDirection => _currentDirection;
+
+  /// Whether [stop] has been called (W3C `stopped`).
+  bool get stopped => _direction == RtpTransceiverDirection.stopped;
+
+  /// W3C: set the preferred [direction] for the next negotiation.
+  void setDirection(RtpTransceiverDirection direction) {
+    if (stopped) throw StateError('RtpTransceiver has been stopped');
+    _direction = direction;
+  }
+
+  /// W3C: stop the transceiver. It stops sending/receiving and negotiates as
+  /// `inactive`; a subsequent [setDirection] throws.
+  void stop() {
+    if (stopped) return;
+    _direction = RtpTransceiverDirection.stopped;
+    _currentDirection = RtpTransceiverDirection.stopped;
+    sender?._track = null;
+    _receiver?._close();
   }
 }

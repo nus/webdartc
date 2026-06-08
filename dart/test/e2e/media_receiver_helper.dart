@@ -169,6 +169,35 @@ void main(List<String> args) async {
   exit(exitCode);
 }
 
+/// Verify each transceiver got a negotiated `mid` + `currentDirection`
+/// after Chrome's answer (PR #42). Returns true on success; on failure logs
+/// and completes [done] with exit code 2.
+bool _checkTransceivers(PeerConnection pc, Completer<int> done) {
+  final txs = pc.getTransceivers();
+  if (txs.isEmpty) {
+    stderr.writeln('[media-receiver] FAIL: no transceivers after answer');
+    if (!done.isCompleted) done.complete(2);
+    return false;
+  }
+  for (final t in txs) {
+    if (t.mid == null) {
+      stderr.writeln('[media-receiver] FAIL: ${t.kind} transceiver has no '
+          'mid after answer');
+      if (!done.isCompleted) done.complete(2);
+      return false;
+    }
+    if (t.currentDirection != RtpTransceiverDirection.recvonly) {
+      stderr.writeln('[media-receiver] FAIL: ${t.kind} currentDirection='
+          '${t.currentDirection} (expected recvonly)');
+      if (!done.isCompleted) done.complete(2);
+      return false;
+    }
+  }
+  stdout.writeln('[media-receiver] transceivers negotiated: ${txs.map((t) =>
+      '${t.kind} mid=${t.mid} ${t.currentDirection!.name}').join(', ')}');
+  return true;
+}
+
 Future<int> _run(int sigPort, String kind) async {
   final ws = await _WsClient.connect(sigPort);
   ws.sendJson({'type': 'register', 'role': 'offerer'});
@@ -235,6 +264,10 @@ Future<int> _run(int sigPort, String kind) async {
           type: SessionDescriptionType.answer,
           sdp: msg['sdp'] as String,
         ));
+        // Verify W3C RtpTransceiver negotiation against Chrome (PR #42):
+        // we offered recvonly, Chrome answers sendonly, so every
+        // transceiver must now carry a mid and currentDirection=recvonly.
+        if (!_checkTransceivers(pc, done)) return;
       case 'candidate':
         final cand = msg['candidate'];
         if (cand != null && cand is Map<String, dynamic>) {

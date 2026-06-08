@@ -324,18 +324,21 @@ Each item:
 - **Acceptance:** `bufferedAmount` tracks queued bytes (decrement on SCTP ack),
   the threshold + low event fire, `binaryType` is honoured.
 
-### RtpSender / RtpReceiver / RtpTransceiver surface is minimal
+### RtpSender / RtpReceiver surface is minimal
 
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** W3C §5. Sender has only `replaceTrack` (missing `getParameters`,
-  `setParameters`, `getStats`, `transport`); receiver lacks
-  `getContributingSources` / `getSynchronizationSources` / `getStats`; there is
-  no public `RtpTransceiver` (only a private `_MediaTransceiver`) with `mid`,
-  `direction`, `currentDirection`, `setDirection`, `stop`.
+- **Found:** 2026-05-29, RFC/W3C divergence audit. RtpTransceiver shipped 2026-06.
+- **Detail:** W3C §5. The public `RtpTransceiver` (with `mid`, `direction`,
+  `currentDirection`, `setDirection`, `stop`, `sender`, `receiver`) and the
+  `RtpTransceiverDirection` enum now exist, and `PeerConnection` exposes
+  `getTransceivers()` / `getReceivers()` (`addTransceiver` returns the
+  transceiver). Still missing: sender `getParameters` / `setParameters` /
+  `getStats`; receiver `getContributingSources` /
+  `getSynchronizationSources` / `getStats`.
   [dart/lib/peer_connection/events.dart](dart/lib/peer_connection/events.dart).
-- **Why deferred:** Surface-area work behind the negotiation core.
-- **Acceptance:** At minimum `getParameters` / `setParameters` on the sender and
-  a public `RtpTransceiver`; `RtpTransceiverDirection` enum introduced.
+- **Why deferred:** Surface-area work behind the negotiation core; `setParameters`
+  in particular pulls in encoding-parameter / simulcast plumbing.
+- **Acceptance:** `getParameters` / `setParameters` on the sender (at least
+  active + bitrate), and CSRC tracking behind the receiver source methods.
 
 ### MediaStreamTrack: constraints surface
 
