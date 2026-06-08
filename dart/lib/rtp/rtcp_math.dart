@@ -83,6 +83,15 @@ int currentCompactNtp(DateTime now) {
   return compactNtpOf(ts.high, ts.low);
 }
 
+/// Convert a 64-bit NTP timestamp (32-bit seconds `ntpHigh` + 32-bit
+/// fraction `ntpLow`, as carried in an RTCP SR) to a UTC [DateTime]. Used
+/// for the W3C `remote-outbound-rtp` `remoteTimestamp` field. Pure.
+DateTime ntpToDateTime(int ntpHigh, int ntpLow) {
+  final unixSeconds = ntpHigh - ntpEpochOffsetSeconds;
+  final millis = unixSeconds * 1000 + (ntpLow * 1000) ~/ ntpFracUnitsPerSecond;
+  return DateTime.fromMillisecondsSinceEpoch(millis, isUtc: true);
+}
+
 /// Compute the round-trip time between sending a Sender Report and
 /// receiving the matching Receiver Report block, per RFC 3550 §6.4.1.
 ///

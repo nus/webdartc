@@ -13,6 +13,7 @@ import '../ice/state_machine.dart';
 import '../media/media_stream.dart';
 import '../media/media_stream_track.dart';
 import '../rtp/parser.dart';
+import '../rtp/receive_stats.dart';
 import '../rtp/rtcp_math.dart';
 import '../rtp/rtp_transport.dart';
 import '../sctp/state_machine.dart';
@@ -343,6 +344,17 @@ final class PeerConnection {
       for (final fmt in m.formats) {
         final pt = int.tryParse(fmt);
         if (pt != null) _ptKindMap[pt] = m.type;
+      }
+      // PT→clock-rate from a=rtpmap ("<PT> <codec>/<clock>[/<ch>]"), used by
+      // the receive path for RFC 3550 §A.8 jitter.
+      for (final rtpmap in m.getAll('rtpmap')) {
+        final space = rtpmap.indexOf(' ');
+        if (space < 0) continue;
+        final pt = int.tryParse(rtpmap.substring(0, space));
+        if (pt == null) continue;
+        final parts = rtpmap.substring(space + 1).split('/');
+        final rate = parts.length > 1 ? int.tryParse(parts[1]) : null;
+        if (rate != null) _ptClockRateMap[pt] = rate;
       }
     }
 
@@ -722,15 +734,33 @@ final class PeerConnection {
       // stream that doesn't exist.
       if (s.packetsReceived == 0) continue;
       final id = 'inbound-rtp-${s.ssrc}';
-      // PT for an inbound stream isn't tracked per-SSRC yet; best
-      // effort: leave codecId null when we don't know.
       entries[id] = InboundRtpStats(
         id: id,
         timestamp: now,
         ssrc: s.ssrc,
+        kind: s.kind,
         packetsReceived: s.packetsReceived,
         bytesReceived: s.bytesReceived,
+        packetsLost: s.cumulativeLost,
+        jitter: s.jitterSeconds,
+        codecId: codecIdByPt[s.payloadType],
       );
+      // Pair a remote-outbound entry from the remote's SR, when one has
+      // arrived (the SR describes the sending side of this inbound SSRC).
+      if (s.reportsReceived > 0) {
+        final remoteId = 'remote-outbound-rtp-${s.ssrc}';
+        entries[remoteId] = RemoteOutboundRtpStats(
+          id: remoteId,
+          timestamp: now,
+          ssrc: s.ssrc,
+          kind: s.kind,
+          localId: id,
+          packetsSent: s.srPacketCount,
+          bytesSent: s.srOctetCount,
+          remoteTimestamp: ntpToDateTime(s.srNtpHigh, s.srNtpLow),
+          reportsReceived: s.reportsReceived,
+        );
+      }
     }
 
     // DTLS certificates. The local cert is sha-256 by impl
@@ -1163,9 +1193,23 @@ final class PeerConnection {
     final ssrc = rtp.ssrc;
     if (_debug) _log('[pc] RTP received: ssrc=$ssrc pt=${rtp.payloadType} seq=${rtp.sequenceNumber}');
 
-    // Update reception stats for RTCP RR + getStats inboundRtp.
+    // Update reception stats for RTCP RR + getStats inboundRtp. Resolve the
+    // codec (kind + clock rate) once, on first bind — not per packet.
     final stats = _rtpRecvStats.putIfAbsent(ssrc, () => _RtpRecvStats(ssrc));
-    stats.update(rtp.sequenceNumber, rtp.payload.length);
+    if (!stats.isBound) {
+      final recvKind = _resolveTrackKind(rtp.payloadType);
+      stats.bind(
+        kind: recvKind,
+        payloadType: rtp.payloadType,
+        clockRate: _clockRateForPt(rtp.payloadType, recvKind),
+      );
+    }
+    stats.update(
+      seq: rtp.sequenceNumber,
+      rtpTimestamp: rtp.timestamp,
+      arrivalUs: arrivalUs,
+      payloadBytes: rtp.payload.length,
+    );
 
     // Extract transport-cc sequence number from header extension
     if (_twccExtId > 0) {
@@ -1210,8 +1254,15 @@ final class PeerConnection {
     }
   }
 
-  // Dynamic PT→kind map built from SDP negotiation.
+  // Dynamic PT→kind / PT→clock-rate maps built from SDP negotiation.
   final Map<int, String> _ptKindMap = {};
+  final Map<int, int> _ptClockRateMap = {};
+
+  /// RTP clock rate for [payloadType] — from the negotiated `a=rtpmap`,
+  /// falling back to the WebRTC defaults (Opus 48 kHz, video 90 kHz) for
+  /// static or unmapped PTs.
+  int _clockRateForPt(int payloadType, String kind) =>
+      _ptClockRateMap[payloadType] ?? (kind == 'audio' ? 48000 : 90000);
 
   String _resolveTrackKind(int payloadType) {
     // Check dynamically negotiated PTs first (populated from SDP).
@@ -1234,13 +1285,17 @@ final class PeerConnection {
     for (final pkt in result.value) {
       if (_debug) _log('[pc] RTCP received: ${pkt.runtimeType}');
       if (pkt is RtcpSenderReport) {
-        // Update stats with SR info and send RR back
-        final stats = _rtpRecvStats[pkt.ssrc];
-        if (stats != null) {
-          stats.lastSrNtp = compactNtpOf(
-              pkt.ntpTimestampHigh, pkt.ntpTimestampLow);
-          stats.lastSrReceivedAt = DateTime.now();
-        }
+        // Update stats with SR info and send RR back. The SR describes the
+        // remote's own outbound stream (our inbound SSRC) — capture it for
+        // `remote-outbound-rtp`.
+        final stats =
+            _rtpRecvStats.putIfAbsent(pkt.ssrc, () => _RtpRecvStats(pkt.ssrc));
+        stats.lastSrReceivedAt = DateTime.now();
+        stats.srPacketCount = pkt.packetCount;
+        stats.srOctetCount = pkt.octetCount;
+        stats.srNtpHigh = pkt.ntpTimestampHigh;
+        stats.srNtpLow = pkt.ntpTimestampLow;
+        stats.reportsReceived++;
         _ingestReportBlocks(pkt.reportBlocks);
         _sendRtcpRR();
       } else if (pkt is RtcpReceiverReport) {
@@ -1302,7 +1357,7 @@ final class PeerConnection {
     // Only include RR blocks for SSRCs that have actually sent packets.
     final blocks = <RtcpReportBlock>[];
     for (final stats in _rtpRecvStats.values) {
-      if (stats.highestSeq == 0 && stats.packetsReceived == 0) continue;
+      if (stats.packetsReceived == 0) continue;
       final dlsr = stats.lastSrReceivedAt != null
           ? ((DateTime.now().difference(stats.lastSrReceivedAt!).inMicroseconds *
                   65536) ~/
@@ -1310,10 +1365,11 @@ final class PeerConnection {
           : 0;
       blocks.add(RtcpReportBlock(
         ssrc: stats.ssrc,
-        fractionLost: 0,
-        cumulativeLost: 0,
-        extendedHighestSeq: stats.highestSeq,
-        jitter: 0,
+        fractionLost: stats.takeFractionLost(),
+        // RR cumulative-lost is a 24-bit two's-complement field.
+        cumulativeLost: stats.cumulativeLost & 0xFFFFFF,
+        extendedHighestSeq: stats.extendedHighestSeq,
+        jitter: stats.jitterRtpUnits.round(),
         lastSr: stats.lastSrNtp,
         delaySinceLastSr: dlsr,
       ));
@@ -1514,18 +1570,58 @@ final class PeerConnection {
 
 final class _RtpRecvStats {
   final int ssrc;
-  int highestSeq = 0;
-  int packetsReceived = 0;
+  String kind = '';
+  int payloadType = -1;
   int bytesReceived = 0;
-  int lastSrNtp = 0;
+
+  // RFC 3550 loss + interarrival jitter. Bound on the first packet, once
+  // the PT (and hence clock rate) is known via [bind] — entries
+  // pre-populated from SDP SSRC attributes or an SR start unbound.
+  RtpReceptionTracker? _tracker;
+
+  // Latest RTCP SR detail for this (remote) SSRC — the remote's view of
+  // its own outbound stream, surfaced as `remote-outbound-rtp`.
   DateTime? lastSrReceivedAt;
+  int srPacketCount = 0;
+  int srOctetCount = 0;
+  int srNtpHigh = 0;
+  int srNtpLow = 0;
+  int reportsReceived = 0;
 
   _RtpRecvStats(this.ssrc);
 
-  void update(int seq, int payloadBytes) {
-    packetsReceived++;
+  bool get isBound => _tracker != null;
+  int get packetsReceived => _tracker?.packetsReceived ?? 0;
+  int get extendedHighestSeq => _tracker?.extendedHighestSeq ?? 0;
+  int get cumulativeLost => _tracker?.cumulativeLost ?? 0;
+  double get jitterRtpUnits => _tracker?.jitter ?? 0;
+  double get jitterSeconds => _tracker?.jitterSeconds ?? 0;
+  int takeFractionLost() => _tracker?.takeFractionLost() ?? 0;
+
+  /// Compact NTP of the last SR, echoed back as our RR's `lastSr`
+  /// (0 until an SR has arrived).
+  int get lastSrNtp =>
+      reportsReceived > 0 ? compactNtpOf(srNtpHigh, srNtpLow) : 0;
+
+  /// Bind the loss/jitter tracker once the stream's codec is known.
+  void bind({
+    required String kind,
+    required int payloadType,
+    required int clockRate,
+  }) {
+    this.kind = kind;
+    this.payloadType = payloadType;
+    _tracker = RtpReceptionTracker(clockRate);
+  }
+
+  void update({
+    required int seq,
+    required int rtpTimestamp,
+    required int arrivalUs,
+    required int payloadBytes,
+  }) {
+    _tracker!.onPacket(seq: seq, rtpTimestamp: rtpTimestamp, arrivalUs: arrivalUs);
     bytesReceived += payloadBytes;
-    if (seq > highestSeq) highestSeq = seq;
   }
 }
 
