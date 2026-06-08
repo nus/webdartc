@@ -105,7 +105,7 @@ final class PeerConnection {
   int _nextDataChannelId = 0; // even for offerer, odd for answerer
 
   // Media transceivers
-  final List<_MediaTransceiver> _transceivers = [];
+  final List<RtpTransceiver> _transceivers = [];
   final Map<int, RtpReceiver> _receivers = {}; // SSRC → receiver
 
   // RTP reception stats for RTCP RR
@@ -217,7 +217,7 @@ final class PeerConnection {
             : mediaEngine.resolveVideoCodecs(t.preferredCodecs);
         return MediaTrack(
           type: t.kind,
-          direction: t.direction,
+          direction: t.direction.sdpToken,
           senderSsrc: t.sender?.ssrc,
           codecs: codecs,
         );
@@ -278,7 +278,7 @@ final class PeerConnection {
 
     // PT must come from the answer (the codec we narrowed down to), not the
     // offer (which lists every PT the remote was willing to use).
-    _assignMidToSenders(sdp);
+    _assignMidToTransceivers(sdp);
 
     return SessionDescription(type: SessionDescriptionType.answer, sdp: answerSdp);
   }
@@ -331,7 +331,7 @@ final class PeerConnection {
     // negotiated MID/PT to our senders so outgoing RTP uses the remote's
     // expected payload type.
     if (desc.type == SessionDescriptionType.answer) {
-      _assignMidToSenders(sdp);
+      _assignMidToTransceivers(sdp);
     }
 
     if (sdp.media.isEmpty) return;
@@ -499,14 +499,16 @@ final class PeerConnection {
   ///
   /// [preferredCodecs] is an ordered list of codec names (e.g. `['H264', 'VP8']`)
   /// to offer, in preference order. If null, a library default is used.
-  void addTransceiver(String kind, {
+  RtpTransceiver addTransceiver(String kind, {
     String direction = 'sendrecv',
     List<String>? preferredCodecs,
   }) {
-    final t = _MediaTransceiver(
-      kind: kind, direction: direction, preferredCodecs: preferredCodecs);
+    final dir = RtpTransceiverDirection.fromToken(direction);
+    final t = RtpTransceiver._(
+      kind: kind, direction: dir, preferredCodecs: preferredCodecs);
     // Create sender if direction includes sending
-    if (direction == 'sendrecv' || direction == 'sendonly') {
+    if (dir == RtpTransceiverDirection.sendrecv ||
+        dir == RtpTransceiverDirection.sendonly) {
       final pt = kind == 'audio' ? 111 : 96;
       final clockRate = kind == 'audio' ? 48000 : 90000;
       t.sender = RtpSender._(
@@ -518,6 +520,7 @@ final class PeerConnection {
       t.sender!._sendCallback = _sendSrtpRtp;
     }
     _transceivers.add(t);
+    return t;
   }
 
   /// W3C: Add a MediaStreamTrack to the connection.
@@ -531,8 +534,14 @@ final class PeerConnection {
   }
 
   /// Get all RTP senders (for sending media).
-  List<RtpSender> getSenders() =>
-      _transceivers.where((t) => t.sender != null).map((t) => t.sender!).toList();
+  List<RtpSender> getSenders() => List.unmodifiable(
+      _transceivers.where((t) => t.sender != null).map((t) => t.sender!));
+
+  /// W3C: all media transceivers, in creation order.
+  List<RtpTransceiver> getTransceivers() => List.unmodifiable(_transceivers);
+
+  /// W3C: all RTP receivers that have produced an incoming stream.
+  List<RtpReceiver> getReceivers() => List.unmodifiable(_receivers.values);
 
   /// Codec names to advertise in the answer for [kind], filtered by the
   /// matching transceiver's preferredCodecs (if any). m-lines without a
@@ -549,10 +558,11 @@ final class PeerConnection {
     return [for (final c in resolved) c.name];
   }
 
-  /// Align senders to the remote SDP: set MID, MID header-extension ID (if
-  /// negotiated), and the negotiated payload type. Runs for both offerer
-  /// (after receiving the answer) and answerer (when building the answer).
-  void _assignMidToSenders(SdpSessionDescription remoteSdp) {
+  /// Align transceivers to the remote SDP: record each transceiver's MID +
+  /// currentDirection, and set its sender's MID, MID header-extension ID (if
+  /// negotiated), and negotiated payload type. Runs for both offerer (after
+  /// receiving the answer) and answerer (when building the answer).
+  void _assignMidToTransceivers(SdpSessionDescription remoteSdp) {
     int midExtId = 0;
     for (final m in remoteSdp.media) {
       for (final extmap in m.getAll('extmap')) {
@@ -566,23 +576,31 @@ final class PeerConnection {
     // Pair each m-line with the first unassigned matching-kind sender.
     // Walking transceivers in lockstep with m-lines breaks when the two
     // lists diverge (e.g. offer m=audio+m=video, only video transceiver).
-    final assigned = <RtpSender>{};
+    final assigned = <RtpTransceiver>{};
     for (var i = 0; i < remoteSdp.media.length; i++) {
       final m = remoteSdp.media[i];
       if (m.type == 'application' || m.port == 0) continue;
       final mid = m.mid ?? '$i';
       for (final t in _transceivers) {
-        if (t.kind != m.type) continue;
+        if (t.kind != m.type || assigned.contains(t) || t.stopped) continue;
+        // Record the negotiated mid + currentDirection on the transceiver
+        // (W3C): currentDirection is the intersection of our preferred
+        // direction and the remote m-line's direction.
+        t._mid = mid;
+        t._currentDirection = RtpTransceiverDirection.negotiated(
+            t._direction, RtpTransceiverDirection.fromToken(m.direction));
+        // Align the sender (if any) to the negotiated mid + payload type.
         final sender = t.sender;
-        if (sender == null || assigned.contains(sender)) continue;
-        sender._mid = mid;
-        sender._midExtId = midExtId;
-        if (m.formats.isNotEmpty) {
-          final negotiatedPt = int.tryParse(m.formats.first);
-          if (negotiatedPt != null) sender.payloadType = negotiatedPt;
+        if (sender != null) {
+          sender._mid = mid;
+          sender._midExtId = midExtId;
+          if (m.formats.isNotEmpty) {
+            final negotiatedPt = int.tryParse(m.formats.first);
+            if (negotiatedPt != null) sender.payloadType = negotiatedPt;
+          }
+          if (_debug) _log('[pc] sender ${t.kind} mid=$mid extId=$midExtId pt=${sender.payloadType}');
         }
-        assigned.add(sender);
-        if (_debug) _log('[pc] sender ${t.kind} mid=$mid extId=$midExtId pt=${sender.payloadType}');
+        assigned.add(t);
         break;
       }
     }
@@ -1243,6 +1261,14 @@ final class PeerConnection {
       final kind = _resolveTrackKind(rtp.payloadType);
       final receiver = RtpReceiver._(kind: kind, ssrc: ssrc);
       _receivers[ssrc] = receiver;
+      // Associate the receiver with a matching transceiver (W3C: each
+      // transceiver has one receiver) so getTransceivers() reflects it.
+      for (final t in _transceivers) {
+        if (t.kind == kind && t.receiver == null && !t.stopped) {
+          t._receiver = receiver;
+          break;
+        }
+      }
       _trackController.add(TrackEvent(kind: kind, ssrc: ssrc, receiver: receiver));
       receiver._deliver(rtp);
       if (_debug) _log('[pc] onTrack fired: kind=$kind ssrc=$ssrc');
@@ -1643,14 +1669,3 @@ final class _TwccEntry {
   const _TwccEntry(this.seq, this.arrivalUs);
 }
 
-final class _MediaTransceiver {
-  final String kind; // 'audio' or 'video'
-  final String direction; // 'sendrecv', 'recvonly', 'sendonly', 'inactive'
-  final List<String>? preferredCodecs;
-  RtpSender? sender;
-  _MediaTransceiver({
-    required this.kind,
-    this.direction = 'sendrecv',
-    this.preferredCodecs,
-  });
-}

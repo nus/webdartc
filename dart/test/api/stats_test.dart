@@ -214,6 +214,17 @@ void main() {
         expect(outboundA.bytesSent, packetCount * payload.length);
         expect(outboundA.id, 'outbound-rtp-${senderA.ssrc}');
 
+        // Negotiation populated each transceiver's mid + currentDirection,
+        // and the receiver got linked to pcB's transceiver (W3C).
+        final txA = pcA.getTransceivers().single;
+        expect(txA.mid, isNotNull);
+        expect(txA.currentDirection, RtpTransceiverDirection.sendrecv);
+        final txB = pcB.getTransceivers().single;
+        expect(txB.mid, isNotNull);
+        expect(txB.receiver, isNotNull);
+        expect(txB.receiver!.ssrc, senderA.ssrc);
+        expect(pcB.getReceivers().map((r) => r.ssrc), contains(senderA.ssrc));
+
         // Inbound on the receiver side: keyed by the same SSRC.
         final inboundB = reportB
             .ofType<InboundRtpStats>(RtcStatsType.inboundRtp)
