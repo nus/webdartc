@@ -25,6 +25,10 @@ enum RtcStatsType {
   /// receiving *our* outbound stream.
   remoteInboundRtp,
 
+  /// RTCP-SR-derived stats: what the remote peer reports about *its* own
+  /// outbound stream (i.e. our inbound stream).
+  remoteOutboundRtp,
+
   /// One [CandidatePair] from the ICE agent.
   candidatePair,
 
@@ -255,22 +259,74 @@ final class RemoteInboundRtpStats extends RtcStats {
 /// W3C `RTCInboundRtpStreamStats`.
 final class InboundRtpStats extends RtcStats {
   final int ssrc;
+  final String kind; // "audio" | "video"
   final int packetsReceived;
 
   /// Total RTP payload bytes received for this SSRC (no RTP header).
   final int bytesReceived;
 
-  // No `codecId` field yet: per-SSRC payload-type tracking isn't
-  // wired on the receive path, so a field exposed here would always
-  // be null. Add it back once the SSRC→PT map exists.
+  /// Cumulative packets lost on this stream (RFC 3550 §A.3 — expected
+  /// minus received). May be negative when duplicates were received.
+  final int packetsLost;
+
+  /// Interarrival jitter in seconds (RFC 3550 §A.8, divided by the RTP
+  /// clock rate — W3C convention).
+  final double jitter;
+
+  /// `id` of the [CodecStats] for the payload type this stream carries,
+  /// or `null` if the PT isn't mapped to a negotiated codec.
+  final String? codecId;
 
   const InboundRtpStats({
     required super.id,
     required super.timestamp,
     required this.ssrc,
+    required this.kind,
     required this.packetsReceived,
     required this.bytesReceived,
+    required this.packetsLost,
+    required this.jitter,
+    this.codecId,
   }) : super(type: RtcStatsType.inboundRtp);
+}
+
+/// What the remote peer reports about *its* outbound stream via RTCP
+/// Sender Report — i.e. the sending counterpart of one of our inbound
+/// streams. W3C `RTCRemoteOutboundRtpStreamStats`. Keyed by the remote
+/// SSRC (the same SSRC we receive on).
+final class RemoteOutboundRtpStats extends RtcStats {
+  final int ssrc;
+  final String kind; // "audio" | "video"
+
+  /// `id` of the corresponding local [InboundRtpStats] entry
+  /// (`inbound-rtp-<ssrc>`).
+  final String localId;
+
+  /// Packets the remote reports having sent for this SSRC (SR sender's
+  /// packet count).
+  final int packetsSent;
+
+  /// RTP payload bytes the remote reports having sent (SR octet count).
+  final int bytesSent;
+
+  /// The remote's wall-clock time when it emitted the SR (its NTP
+  /// timestamp), or `null` if no SR has been received yet.
+  final DateTime? remoteTimestamp;
+
+  /// Number of Sender Reports received for this SSRC.
+  final int reportsReceived;
+
+  const RemoteOutboundRtpStats({
+    required super.id,
+    required super.timestamp,
+    required this.ssrc,
+    required this.kind,
+    required this.localId,
+    required this.packetsSent,
+    required this.bytesSent,
+    required this.remoteTimestamp,
+    required this.reportsReceived,
+  }) : super(type: RtcStatsType.remoteOutboundRtp);
 }
 
 /// One negotiated codec for an m-line (RFC 8866 `a=rtpmap`).

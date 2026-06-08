@@ -221,6 +221,13 @@ void main() {
         expect(inboundB.packetsReceived, packetCount);
         expect(inboundB.bytesReceived, packetCount * payload.length);
         expect(inboundB.id, 'inbound-rtp-${senderA.ssrc}');
+        expect(inboundB.kind, 'audio');
+        // A clean in-order loopback flow: no loss, jitter rounds to ~0.
+        expect(inboundB.packetsLost, 0);
+        expect(inboundB.jitter, greaterThanOrEqualTo(0.0));
+        // codecId resolves to the negotiated Opus codec entry.
+        expect(inboundB.codecId, isNotNull);
+        expect(reportB[inboundB.codecId!], isA<CodecStats>());
 
         // The receiver hasn't sent anything, so its outbound entry
         // (for its own SSRC) stays at zero. Confirm the counters
@@ -266,6 +273,20 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 600));
 
         final reportA = await pcA.getStats();
+        final reportB = await pcB.getStats();
+
+        // pcA sends an RTCP SR for its outbound stream; pcB receives it and
+        // surfaces it as remote-outbound-rtp for the same SSRC, paired with
+        // pcB's inbound-rtp entry.
+        final remoteOutboundB = reportB
+            .ofType<RemoteOutboundRtpStats>(RtcStatsType.remoteOutboundRtp)
+            .singleWhere((s) => s.ssrc == senderA.ssrc);
+        expect(remoteOutboundB.kind, 'audio');
+        expect(remoteOutboundB.localId, 'inbound-rtp-${senderA.ssrc}');
+        expect(reportB[remoteOutboundB.localId], isA<InboundRtpStats>());
+        expect(remoteOutboundB.reportsReceived, greaterThan(0));
+        expect(remoteOutboundB.packetsSent, greaterThan(0));
+        expect(remoteOutboundB.remoteTimestamp, isNotNull);
 
         // ICE pair RTT is recorded from the STUN connectivity-check
         // round-trip. On loopback the *selected* pair may have been
