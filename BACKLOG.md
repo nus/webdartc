@@ -337,16 +337,22 @@ Each item:
 - **Acceptance:** At minimum `getParameters` / `setParameters` on the sender and
   a public `RtpTransceiver`; `RtpTransceiverDirection` enum introduced.
 
-### MediaStreamTrack: missing settings/constraints surface
+### MediaStreamTrack: constraints surface
 
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** W3C Media Capture §4.3. Missing `getSettings()`,
-  `getCapabilities()`, `getConstraints()`, `applyConstraints()`, `muted`,
-  `onMute` / `onUnmute` / `onEnded`. `stop()` is fire-and-forget (no `onEnded`).
-  [dart/lib/media/media_stream_track.dart](dart/lib/media/media_stream_track.dart).
-- **Why deferred:** Capture-side feature work.
-- **Acceptance:** `getSettings()` + `onEnded` at minimum; constraint methods as
-  capture grows.
+- **Found:** 2026-05-29, RFC/W3C divergence audit. Partially shipped 2026-06.
+- **Detail:** W3C Media Capture §4.3. `getSettings()`, `muted`,
+  `onMute`/`onUnmute`/`onEnded` are now implemented on
+  [dart/lib/media/media_stream_track.dart](dart/lib/media/media_stream_track.dart)
+  (capture tracks populate `MediaTrackSettings`; `stop()` fires `onEnded`).
+  Still missing: `getCapabilities()`, `getConstraints()`,
+  `applyConstraints()`.
+- **Why deferred:** Constraint application means reconfiguring the capture
+  source mid-stream (re-opening the camera/mic at a new resolution / rate) —
+  a much larger, capture-backend-specific change than the read-only settings
+  surface already shipped.
+- **Acceptance:** `applyConstraints()` reconfigures the live source (at least
+  resolution + frame rate for video), `getCapabilities()` reports the
+  device's supported ranges.
 
 ### getStats: missing `remote-outbound-rtp` and inbound-rtp fields
 
