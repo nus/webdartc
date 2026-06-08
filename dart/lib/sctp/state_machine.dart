@@ -112,6 +112,12 @@ final class SctpStateMachine implements ProtocolStateMachine {
   /// data channel has closed. Fired once per stream.
   void Function(int streamId)? onStreamReset;
 
+  /// Called when previously-sent application data is acknowledged by the
+  /// peer, with the number of user-message bytes now acked for [streamId]
+  /// (excludes DCEP control and the empty-message padding byte). Drives the
+  /// W3C `DataChannel.bufferedAmount`.
+  void Function(int streamId, int ackedBytes)? onBytesAcked;
+
   SctpStateMachine({bool isClient = true}) : _isClient = isClient;
 
   /// Update the SCTP role (must be called before connect/processInput).
@@ -556,8 +562,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
       final isBinary = ppid == SctpPpid.webrtcBinary || ppid == SctpPpid.webrtcBinaryEmpty;
       // An Empty-PPID message carries a single padding byte (RFC 8831
       // §6.6) — deliver it to the application as a genuinely empty payload.
-      final isEmpty = ppid == SctpPpid.webrtcStringEmpty ||
-          ppid == SctpPpid.webrtcBinaryEmpty;
+      final isEmpty = SctpPpid.isEmptyMessage(ppid);
       onData?.call(streamId, isEmpty ? Uint8List(0) : data, isBinary);
     }
   }
@@ -601,16 +606,41 @@ final class SctpStateMachine implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> _handleSack(SctpSackChunk sack) {
     _remoteRwnd = sack.advertisedRecvWindowCredit;
-    // Remove acknowledged TSNs from retransmit queue
+    // Remove acknowledged TSNs from retransmit queue, tallying the acked
+    // application bytes per stream for DataChannel.bufferedAmount.
     final cumAck = sack.cumulativeTsnAck;
     final sizeBefore = _retransmitQueue.length;
-    _retransmitQueue.removeWhere(
-        (tsn, _) => !_sctpTsnGt(tsn, cumAck));
+    // Tally acked application bytes per stream — lazily allocated so the
+    // common control-only SACK stays allocation-free.
+    Map<int, int>? ackedByStream;
+    _retransmitQueue.removeWhere((tsn, pending) {
+      if (_sctpTsnGt(tsn, cumAck)) return false; // tsn > cumAck → still pending
+      final bytes = _appBytes(pending);
+      if (bytes > 0) {
+        ackedByStream ??= {};
+        ackedByStream![pending.streamId] =
+            (ackedByStream![pending.streamId] ?? 0) + bytes;
+      }
+      return true;
+    });
     // Reset retransmit counter when new data is acknowledged (RFC 4960 §6.3.2)
     if (_retransmitQueue.length < sizeBefore) {
       _retransmitCount = 0;
     }
+    ackedByStream?.forEach(
+        (streamId, bytes) => onBytesAcked?.call(streamId, bytes));
     return const Ok(ProcessResult.empty);
+  }
+
+  /// User-message bytes a pending chunk represents for back-pressure
+  /// accounting: 0 for DCEP control and for the empty-message padding byte
+  /// (RFC 8831 §6.6), otherwise the chunk's payload length.
+  static int _appBytes(_PendingData pending) {
+    if (pending.ppid == SctpPpid.webrtcDcep ||
+        SctpPpid.isEmptyMessage(pending.ppid)) {
+      return 0;
+    }
+    return pending.data.length;
   }
 
   Result<ProcessResult, ProtocolError> _handleHeartbeat(SctpHeartbeatChunk hb) {

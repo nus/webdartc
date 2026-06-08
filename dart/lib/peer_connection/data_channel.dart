@@ -33,6 +33,9 @@ final class DataChannel {
   final _closingController = StreamController<void>.broadcast();
   final _closeController = StreamController<void>.broadcast();
   final _errorController = StreamController<Object>.broadcast();
+  final _bufferedAmountLowController = StreamController<void>.broadcast();
+
+  int _bufferedAmount = 0;
 
   // Callback set by PeerConnection to send data via SCTP.
   void Function(Uint8List data, {bool binary})? _sendCallback;
@@ -70,6 +73,21 @@ final class DataChannel {
   /// Fired on errors.
   Stream<Object> get onError => _errorController.stream;
 
+  /// Bytes of application data passed to [send]/[sendBinary] that the peer
+  /// has not yet acknowledged (W3C `bufferedAmount`). Use it to back-pressure
+  /// large transfers: pause sending while it is high, resume on
+  /// [onBufferedAmountLow].
+  int get bufferedAmount => _bufferedAmount;
+
+  /// Threshold (bytes) at which [onBufferedAmountLow] fires as
+  /// [bufferedAmount] drops to it or below (W3C `bufferedAmountLowThreshold`).
+  int bufferedAmountLowThreshold = 0;
+
+  /// Fires when [bufferedAmount] drops from above
+  /// [bufferedAmountLowThreshold] to at or below it (W3C
+  /// `onbufferedamountlow`) — the cue to resume sending.
+  Stream<void> get onBufferedAmountLow => _bufferedAmountLowController.stream;
+
   /// Send a string message. Encoded as UTF-8 per RFC 8831 §6.6 — sending
   /// the UTF-16 code units would corrupt any non-ASCII text on the wire.
   void send(String data) {
@@ -78,6 +96,7 @@ final class DataChannel {
     _sendCallback?.call(bytes, binary: false);
     _messagesSent++;
     _bytesSent += bytes.length;
+    _bufferedAmount += bytes.length;
   }
 
   /// Send binary data.
@@ -86,6 +105,7 @@ final class DataChannel {
     _sendCallback?.call(data, binary: true);
     _messagesSent++;
     _bytesSent += data.length;
+    _bufferedAmount += data.length;
   }
 
   /// Begin closing the channel (W3C close procedure). Transitions to
@@ -136,12 +156,25 @@ final class DataChannel {
     _messageController.add(DataChannelMessageEvent(data: data, isBinary: isBinary));
   }
 
+  /// SCTP acknowledged [bytes] of application data for this channel — drain
+  /// [bufferedAmount] and fire `onbufferedamountlow` on the downward crossing.
+  void _onBytesAcked(int bytes) {
+    if (bytes <= 0) return;
+    final wasAbove = _bufferedAmount > bufferedAmountLowThreshold;
+    _bufferedAmount -= bytes;
+    if (_bufferedAmount < 0) _bufferedAmount = 0;
+    if (wasAbove && _bufferedAmount <= bufferedAmountLowThreshold) {
+      _bufferedAmountLowController.add(null);
+    }
+  }
+
   void _disposeControllers() {
     _messageController.close();
     _openController.close();
     _closingController.close();
     _closeController.close();
     _errorController.close();
+    _bufferedAmountLowController.close();
   }
 }
 
