@@ -200,10 +200,11 @@ Future<int> _run(int sigPort, {int timeoutSec = 30, bool closeChannel = false}) 
 
   // When --close-dc is set, after both echoes the offerer closes the data
   // channel and waits for its own onClose to fire (RFC 8831 §6.7). onClose
-  // only fires once the SCTP stream reset round-trips with Chrome, so a
-  // clean exit 0 proves both peers tore the channel down.
+  // fires once *our* outgoing reset completes; the channel isn't fully torn
+  // down both ways until we also answer Chrome's reciprocal reset request,
+  // which is why the PeerConnection is kept alive briefly below.
   dc.onClose.listen((_) {
-    stdout.writeln('[offerer] DataChannel onClose fired (stream reset complete)');
+    stdout.writeln('[offerer] DataChannel onClose fired (our stream reset complete)');
     if (!done.isCompleted) done.complete(0);
   });
 
@@ -314,6 +315,17 @@ Future<int> _run(int sigPort, {int timeoutSec = 30, bool closeChannel = false}) 
       return 1;
     },
   );
+
+  // We initiated the close: our onClose fires when *our* outgoing reset
+  // completes, but Chrome only fires its onclose once we answer its
+  // reciprocal Outgoing SSN Reset Request (RFC 8831 §6.7). Tearing the
+  // PeerConnection down immediately can race that response away — Chrome's
+  // request arrives after the transport is gone — leaving Chrome's onclose
+  // (and the test's dcClosed wait) pending. Stay alive briefly so the SCTP
+  // stack can respond and the bidirectional reset completes.
+  if (closeChannel && result == 0) {
+    await Future<void>.delayed(const Duration(seconds: 2));
+  }
 
   await pc.close();
   await ws.close();
