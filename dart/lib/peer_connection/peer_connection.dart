@@ -76,6 +76,7 @@ final class PeerConnection {
   // State
   SignalingState _signalingState = SignalingState.stable;
   IceConnectionState _iceConnectionState = IceConnectionState.iceNew;
+  IceGatheringState _iceGatheringState = IceGatheringState.newState;
   PeerConnectionState _connectionState = PeerConnectionState.connecting;
 
   // Protocol modules
@@ -138,6 +139,8 @@ final class PeerConnection {
   final _trackController = StreamController<TrackEvent>.broadcast();
   final _rtpPacketController = StreamController<RtpPacket>.broadcast();
   final _iceStateController = StreamController<IceConnectionState>.broadcast();
+  final _iceGatheringStateController =
+      StreamController<IceGatheringState>.broadcast();
   final _connectionStateController =
       StreamController<PeerConnectionState>.broadcast();
   final _signalingStateController =
@@ -167,9 +170,17 @@ final class PeerConnection {
 
   SignalingState get signalingState => _signalingState;
   IceConnectionState get iceConnectionState => _iceConnectionState;
+
+  /// W3C `iceGatheringState`: `newState` before gathering starts, `gathering`
+  /// while local candidates are collected, `complete` once finished.
+  IceGatheringState get iceGatheringState => _iceGatheringState;
   PeerConnectionState get connectionState => _connectionState;
   SessionDescription? get localDescription => _localDescription;
   SessionDescription? get remoteDescription => _remoteDescription;
+
+  /// W3C `getConfiguration()` — the configuration this connection was created
+  /// with.
+  PeerConnectionConfiguration getConfiguration() => configuration;
 
   // ── Event streams ─────────────────────────────────────────────────────────
 
@@ -182,6 +193,8 @@ final class PeerConnection {
 
   Stream<IceConnectionState> get onIceConnectionStateChange =>
       _iceStateController.stream;
+  Stream<IceGatheringState> get onIceGatheringStateChange =>
+      _iceGatheringStateController.stream;
   Stream<PeerConnectionState> get onConnectionStateChange =>
       _connectionStateController.stream;
   Stream<SignalingState> get onSignalingStateChange =>
@@ -912,6 +925,7 @@ final class PeerConnection {
     unawaited(_trackController.close());
     unawaited(_rtpPacketController.close());
     unawaited(_iceStateController.close());
+    unawaited(_iceGatheringStateController.close());
     unawaited(_connectionStateController.close());
     unawaited(_signalingStateController.close());
   }
@@ -993,6 +1007,14 @@ final class PeerConnection {
   // ── Callbacks ─────────────────────────────────────────────────────────────
 
   void _onIceStateChange(IceState state) {
+    // Derive the W3C gathering state from the ICE agent's combined state.
+    _setIceGatheringState(switch (state) {
+      IceState.iceNew => IceGatheringState.newState,
+      IceState.iceGathering => IceGatheringState.gathering,
+      // Once gathering finishes (and for every later state) it stays complete.
+      _ => IceGatheringState.complete,
+    });
+
     switch (state) {
       case IceState.iceChecking:
         _setIceConnectionState(IceConnectionState.checking);
@@ -1591,6 +1613,12 @@ final class PeerConnection {
     if (_iceConnectionState == state) return;
     _iceConnectionState = state;
     _iceStateController.add(state);
+  }
+
+  void _setIceGatheringState(IceGatheringState state) {
+    if (_iceGatheringState == state) return;
+    _iceGatheringState = state;
+    _iceGatheringStateController.add(state);
   }
 
   void _setConnectionState(PeerConnectionState state) {

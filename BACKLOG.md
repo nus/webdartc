@@ -317,21 +317,28 @@ Each item:
 > against the W3C WebRTC / Media Capture / WebCodecs specs (the project's
 > no-`RTC`-prefix convention is intentional and not a gap).
 
-### PeerConnection: missing spec methods and accessors
+### PeerConnection: remaining spec methods and accessors
 
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** W3C §4.3. Missing: `getReceivers()`, `getTransceivers()`,
-  `removeTrack()`, `restartIce()`, `getConfiguration()`, `setConfiguration()`;
-  the `currentLocalDescription` / `pendingLocalDescription` split (and remote
-  counterparts); `iceGatheringState` + `onIceGatheringStateChange`;
-  `onNegotiationNeeded`, `onIceCandidateError`. `addTransceiver` returns `void`
-  rather than the created transceiver, and `PeerConnectionState` starts in
-  `connecting`, skipping the spec `new`.
+- **Found:** 2026-05-29, RFC/W3C divergence audit. Partially shipped 2026-06.
+- **Detail:** W3C §4.3. Shipped: `getReceivers()` / `getTransceivers()` and
+  `addTransceiver` returning the transceiver (#42); `getConfiguration()`,
+  `iceGatheringState` + `onIceGatheringStateChange`. Still missing:
+  - `restartIce()` — regenerate ICE ufrag/pwd, re-gather, offer with new
+    credentials.
+  - `removeTrack()` — flip the transceiver to recvonly/inactive + renegotiate.
+  - `setConfiguration()` — the config is currently immutable (`const`); needs
+    a mutable holder + the W3C "can't change identity/bundle" restrictions.
+  - `currentLocalDescription` / `pendingLocalDescription` split (and remote) —
+    signaling-state-driven; today only a single `localDescription` is kept.
+  - `onNegotiationNeeded`, `onIceCandidateError`.
+  - `PeerConnectionState` starts in `connecting`, skipping the spec `new`
+    (low value; `new` is a Dart keyword so the enum value needs a dodge like
+    `IceConnectionState.iceNew`).
   [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart),
   [dart/lib/peer_connection/events.dart](dart/lib/peer_connection/events.dart).
-- **Why deferred:** Surface-area work; prioritise by what callers actually need.
-- **Acceptance:** Each missing member added with spec semantics + tests; state
-  enums match the W3C value sets.
+- **Why deferred:** Surface-area work; prioritise by what callers actually need
+  (`restartIce` is the highest-value remaining item).
+- **Acceptance:** Each missing member added with spec semantics + tests.
 
 ### DataChannel: `binaryType` + internal send flow control
 
