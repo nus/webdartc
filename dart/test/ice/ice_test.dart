@@ -320,6 +320,57 @@ void main() {
       expect(candidates[0].type, equals(IceCandidateType.host));
       expect(ice.state, equals(IceState.iceGatheringComplete));
     });
+
+    test('gathering timeout reports an icecandidateerror (701)', () {
+      final stunServer = StunServer(host: '198.51.100.1', port: 3478);
+      final ice = IceStateMachine(controlling: true, stunServers: [stunServer]);
+      final errors = <IceCandidateError>[];
+      ice.onCandidateError = errors.add;
+
+      ice.startGathering(
+        IceParameters(usernameFragment: 'u', password: 'p'),
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
+      );
+      ice.handleTimeout(IceGatheringTimeoutToken());
+
+      expect(errors, hasLength(1));
+      expect(errors.single.url, equals('stun:198.51.100.1:3478'));
+      expect(errors.single.errorCode, equals(701));
+      expect(errors.single.address, equals('192.168.1.10'));
+      expect(errors.single.port, equals(5000));
+    });
+
+    test('a STUN error response reports an icecandidateerror', () {
+      final stunServer = StunServer(host: '198.51.100.1', port: 3478);
+      final ice = IceStateMachine(controlling: true, stunServers: [stunServer]);
+      final errors = <IceCandidateError>[];
+      ice.onCandidateError = errors.add;
+
+      final gather = ice.startGathering(
+        IceParameters(usernameFragment: 'u', password: 'p'),
+        hosts: [(ip: IpAddress.parse('192.168.1.10'), port: 5000)],
+      );
+      final txId =
+          StunParser.parse(gather.value.outputPackets[0].data).value.transactionId;
+
+      final errResp = StunMessage(
+        type: StunMessageType.bindingErrorResponse,
+        transactionId: txId,
+        attributes: const [ErrorCodeAttr(code: 400, reason: 'Bad Request')],
+      );
+      ice.processInput(
+        StunMessageBuilder.build(errResp),
+        remoteIp: IpAddress.parse('198.51.100.1'),
+        remotePort: 3478,
+      );
+
+      expect(errors, hasLength(1));
+      expect(errors.single.url, equals('stun:198.51.100.1:3478'));
+      expect(errors.single.errorCode, equals(400));
+      expect(errors.single.errorText, equals('Bad Request'));
+      // It was the only outstanding request, so gathering completes.
+      expect(ice.state, equals(IceState.iceGatheringComplete));
+    });
   });
 
   group('IceCandidate', () {

@@ -71,12 +71,15 @@ enum SessionDescriptionType { offer, pranswer, answer, rollback }
 /// Maps to W3C RTCPeerConnection.
 /// Deprecated W3C APIs are not implemented.
 final class PeerConnection {
-  final PeerConnectionConfiguration configuration;
+  /// The active configuration. Replaced wholesale by [setConfiguration]; the
+  /// constructor's value is the initial one returned by [getConfiguration].
+  PeerConnectionConfiguration configuration;
 
   // State
   SignalingState _signalingState = SignalingState.stable;
   IceConnectionState _iceConnectionState = IceConnectionState.iceNew;
-  PeerConnectionState _connectionState = PeerConnectionState.connecting;
+  IceGatheringState _iceGatheringState = IceGatheringState.newState;
+  PeerConnectionState _connectionState = PeerConnectionState.newState;
 
   // Protocol modules
   final _transport = TransportController();
@@ -90,8 +93,14 @@ final class PeerConnection {
 
   // Local credentials
   late final EcdsaCertificate _localCert;
-  late final String _iceUfrag;
-  late final String _icePwd;
+  // Mutable: regenerated on an ICE restart (RFC 8445 §9).
+  late String _iceUfrag;
+  late String _icePwd;
+  bool _iceRestartPending = false;
+  // Last remote ICE credentials seen — a change in an offer signals a
+  // peer-initiated ICE restart.
+  String? _remoteIceUfrag;
+  String? _remoteIcePwd;
 
   // SDP — cached parses, so re-negotiation parses each side once and
   // `getStats()` doesn't have to re-tokenise the SDP on every snapshot.
@@ -133,15 +142,25 @@ final class PeerConnection {
   // Stream controllers
   final _iceCandidateController =
       StreamController<PeerConnectionIceEvent>.broadcast();
+  final _iceCandidateErrorController =
+      StreamController<IceCandidateError>.broadcast();
   final _dataChannelController =
       StreamController<DataChannelEvent>.broadcast();
   final _trackController = StreamController<TrackEvent>.broadcast();
   final _rtpPacketController = StreamController<RtpPacket>.broadcast();
   final _iceStateController = StreamController<IceConnectionState>.broadcast();
+  final _iceGatheringStateController =
+      StreamController<IceGatheringState>.broadcast();
   final _connectionStateController =
       StreamController<PeerConnectionState>.broadcast();
   final _signalingStateController =
       StreamController<SignalingState>.broadcast();
+  final _negotiationNeededController = StreamController<void>.broadcast();
+
+  /// W3C negotiation-needed flag — set when the m-line/transport set changes
+  /// while stable, cleared once a fresh local offer is applied. Guards against
+  /// firing `onNegotiationNeeded` more than once per pending change.
+  bool _negotiationNeeded = false;
 
   /// Network / ICE settings. Pass via the `settingEngine` constructor
   /// parameter (typically through [Webdartc.createPeerConnection]); the
@@ -167,21 +186,96 @@ final class PeerConnection {
 
   SignalingState get signalingState => _signalingState;
   IceConnectionState get iceConnectionState => _iceConnectionState;
+
+  /// W3C `iceGatheringState`: `newState` before gathering starts, `gathering`
+  /// while local candidates are collected, `complete` once finished.
+  IceGatheringState get iceGatheringState => _iceGatheringState;
   PeerConnectionState get connectionState => _connectionState;
   SessionDescription? get localDescription => _localDescription;
   SessionDescription? get remoteDescription => _remoteDescription;
+
+  // W3C current/pending split, derived from the last-set description and the
+  // signaling state: a side's description is "pending" exactly while that side
+  // owns the in-flight offer/pranswer, and "current" otherwise.
+  bool get _localPending =>
+      _signalingState == SignalingState.haveLocalOffer ||
+      _signalingState == SignalingState.haveLocalPrAnswer;
+  bool get _remotePending =>
+      _signalingState == SignalingState.haveRemoteOffer ||
+      _signalingState == SignalingState.haveRemotePrAnswer;
+
+  /// W3C: the description currently in negotiation, or null when stable.
+  SessionDescription? get pendingLocalDescription =>
+      _localPending ? _localDescription : null;
+  SessionDescription? get pendingRemoteDescription =>
+      _remotePending ? _remoteDescription : null;
+
+  /// W3C: the last successfully negotiated description.
+  SessionDescription? get currentLocalDescription =>
+      _localPending ? null : _localDescription;
+  SessionDescription? get currentRemoteDescription =>
+      _remotePending ? null : _remoteDescription;
+
+  /// W3C `getConfiguration()` — the configuration this connection was created
+  /// with.
+  PeerConnectionConfiguration getConfiguration() => configuration;
+
+  /// W3C `setConfiguration()` — update the active configuration. Per spec the
+  /// `bundlePolicy` and `rtcpMuxPolicy` are immutable after construction;
+  /// changing either throws (W3C `InvalidModificationError`). `iceServers` and
+  /// `iceTransportPolicy` may change and take effect on the next ICE gather.
+  void setConfiguration(PeerConnectionConfiguration config) {
+    if (_signalingState == SignalingState.closed) {
+      throw StateError('PeerConnection is closed');
+    }
+    if (config.bundlePolicy != configuration.bundlePolicy) {
+      throw StateError('bundlePolicy cannot be changed after construction');
+    }
+    if (config.rtcpMuxPolicy != configuration.rtcpMuxPolicy) {
+      throw StateError('rtcpMuxPolicy cannot be changed after construction');
+    }
+    configuration = config;
+  }
+
+  /// W3C `restartIce()` — regenerate the local ICE credentials so the next
+  /// offer performs an ICE restart (RFC 8445 §9). The caller must renegotiate
+  /// afterwards (`createOffer` → `setLocalDescription` → exchange); the peer
+  /// auto-restarts when it sees the changed credentials in the offer.
+  void restartIce() {
+    _regenerateIceCredentials();
+    _iceRestartPending = true;
+  }
+
+  /// Generate a fresh ICE ufrag/pwd (RFC 8445 §5.4 lengths). Used at init and
+  /// on every ICE restart (local or peer-initiated).
+  void _regenerateIceCredentials() {
+    _iceUfrag = Csprng.randomHex(4);
+    _icePwd = Csprng.randomHex(22);
+  }
 
   // ── Event streams ─────────────────────────────────────────────────────────
 
   Stream<PeerConnectionIceEvent> get onIceCandidate =>
       _iceCandidateController.stream;
+
+  /// W3C `icecandidateerror` — a STUN gathering request failed (server error
+  /// response or timeout).
+  Stream<IceCandidateError> get onIceCandidateError =>
+      _iceCandidateErrorController.stream;
   Stream<DataChannelEvent> get onDataChannel => _dataChannelController.stream;
+
+  /// W3C `negotiationneeded` — fires when adding/removing a track, transceiver,
+  /// or the first data channel makes the current local description stale and a
+  /// new offer/answer exchange is required.
+  Stream<void> get onNegotiationNeeded => _negotiationNeededController.stream;
   Stream<TrackEvent> get onTrack => _trackController.stream;
   /// Stream of received RTP packets (parsed, after SRTP decryption).
   Stream<RtpPacket> get onRtpPacket => _rtpPacketController.stream;
 
   Stream<IceConnectionState> get onIceConnectionStateChange =>
       _iceStateController.stream;
+  Stream<IceGatheringState> get onIceGatheringStateChange =>
+      _iceGatheringStateController.stream;
   Stream<PeerConnectionState> get onConnectionStateChange =>
       _connectionStateController.stream;
   Stream<SignalingState> get onSignalingStateChange =>
@@ -295,6 +389,9 @@ final class PeerConnection {
     if (parsed.isErr) throw Exception(parsed.error.message);
     _localDescription = desc;
     _localParsed = parsed.value;
+    // Applying our own description starts (offer) or finishes (answer) the
+    // pending negotiation — clear the W3C negotiation-needed flag.
+    _negotiationNeeded = false;
     _setSignalingState(
       desc.type == SessionDescriptionType.offer
           ? SignalingState.haveLocalOffer
@@ -303,10 +400,17 @@ final class PeerConnection {
     // ICE role: offerer = controlling, answerer = controlled (RFC 8445 §5.1)
     _ice.controlling = desc.type == SessionDescriptionType.offer;
     await _ensureTransportStarted();
-    final result = _ice.startGathering(
-      IceParameters(usernameFragment: _iceUfrag, password: _icePwd),
-      hosts: _transport.bindings,
-    );
+    final localParams =
+        IceParameters(usernameFragment: _iceUfrag, password: _icePwd);
+    final restarting = _iceRestartPending;
+    _iceRestartPending = false;
+    // On a restart the initiator (offer) drops the peer's stale credentials;
+    // the answerer keeps the peer's new credentials it just applied.
+    final result = restarting
+        ? _ice.restart(localParams,
+            hosts: _transport.bindings,
+            clearRemote: desc.type == SessionDescriptionType.offer)
+        : _ice.startGathering(localParams, hosts: _transport.bindings);
     if (result.isErr) throw Exception(result.error.message);
     // Forward any initial check packets (answerer: remote params already set).
     _transport.handleIceControl(result);
@@ -362,6 +466,18 @@ final class PeerConnection {
     final sa = sdp.sessionAttributes;
     final remoteUfrag = media.iceUfrag ?? sa['ice-ufrag'] ?? '';
     final remotePwd = media.icePwd ?? sa['ice-pwd'] ?? '';
+
+    // A changed ICE ufrag/pwd in an *offer* is a peer-initiated ICE restart
+    // (RFC 8445 §9): regenerate our own credentials and flag so the answer
+    // carries them and setLocalDescription re-gathers.
+    if (desc.type == SessionDescriptionType.offer &&
+        _remoteIceUfrag != null &&
+        (remoteUfrag != _remoteIceUfrag || remotePwd != _remoteIcePwd)) {
+      _regenerateIceCredentials();
+      _iceRestartPending = true;
+    }
+    _remoteIceUfrag = remoteUfrag;
+    _remoteIcePwd = remotePwd;
     final remoteFingerprint = media.fingerprint ?? sa['fingerprint'];
     final setup = media.setup ?? sa['setup'] ?? 'active';
 
@@ -496,6 +612,9 @@ final class PeerConnection {
           }
         }));
 
+    // The first data channel introduces the `application` m-line, so the
+    // current local description (if any) is now stale.
+    if (_dataChannels.length == 1) _markNegotiationNeeded();
     return channel;
   }
 
@@ -524,6 +643,7 @@ final class PeerConnection {
       t.sender!._sendCallback = _sendSrtpRtp;
     }
     _transceivers.add(t);
+    _markNegotiationNeeded();
     return t;
   }
 
@@ -535,6 +655,28 @@ final class PeerConnection {
     final sender = _transceivers.last.sender!;
     sender._track = track;
     return sender;
+  }
+
+  /// W3C: Stop a sender from sending its track.
+  ///
+  /// Detaches the track and downgrades the owning transceiver's direction
+  /// (`sendrecv`→`recvonly`, `sendonly`→`inactive`), so the next negotiation
+  /// no longer offers to send. The transceiver and receiver are kept, matching
+  /// the spec (the m-line is reused on renegotiation). A sender not owned by
+  /// this connection, or already detached, is a no-op.
+  void removeTrack(RtpSender sender) {
+    if (_signalingState == SignalingState.closed) {
+      throw StateError('PeerConnection is closed');
+    }
+    final t = _transceivers.where((t) => t.sender == sender).firstOrNull;
+    if (t == null || sender._track == null) return;
+    sender._track = null;
+    t._direction = switch (t._direction) {
+      RtpTransceiverDirection.sendrecv => RtpTransceiverDirection.recvonly,
+      RtpTransceiverDirection.sendonly => RtpTransceiverDirection.inactive,
+      final d => d,
+    };
+    _markNegotiationNeeded();
   }
 
   /// Get all RTP senders (for sending media).
@@ -908,12 +1050,15 @@ final class PeerConnection {
     _dataChannels.clear();
     await _transport.stop();
     unawaited(_iceCandidateController.close());
+    unawaited(_iceCandidateErrorController.close());
     unawaited(_dataChannelController.close());
     unawaited(_trackController.close());
     unawaited(_rtpPacketController.close());
     unawaited(_iceStateController.close());
+    unawaited(_iceGatheringStateController.close());
     unawaited(_connectionStateController.close());
     unawaited(_signalingStateController.close());
+    unawaited(_negotiationNeededController.close());
   }
 
   /// Allocate next data channel ID: offerer uses even, answerer uses odd.
@@ -932,8 +1077,7 @@ final class PeerConnection {
 
   void _init() {
     _localCert = EcdsaCertificate.selfSigned();
-    _iceUfrag = Csprng.randomHex(4);
-    _icePwd = Csprng.randomHex(22);
+    _regenerateIceCredentials();
 
     _localRtcpSsrc = Csprng.randomUint32();
     // Split iceServers into STUN and TURN forms. STUN URLs are gathered
@@ -965,6 +1109,11 @@ final class PeerConnection {
 
     _ice.onStateChange = _onIceStateChange;
     _ice.onLocalCandidate = _onLocalCandidate;
+    _ice.onCandidateError = (e) {
+      if (!_iceCandidateErrorController.isClosed) {
+        _iceCandidateErrorController.add(e);
+      }
+    };
     _dtls.onConnected = _onDtlsConnected;
     _dtls.onApplicationData = _onDtlsApplicationData;
     _sctp.onEstablished = _notifySctpEstablished;
@@ -983,6 +1132,7 @@ final class PeerConnection {
   }
 
   bool _transportStarted = false;
+  bool _dtlsHandshakeStarted = false;
 
   Future<void> _ensureTransportStarted() async {
     if (_transportStarted) return;
@@ -993,6 +1143,14 @@ final class PeerConnection {
   // ── Callbacks ─────────────────────────────────────────────────────────────
 
   void _onIceStateChange(IceState state) {
+    // Derive the W3C gathering state from the ICE agent's combined state.
+    _setIceGatheringState(switch (state) {
+      IceState.iceNew => IceGatheringState.newState,
+      IceState.iceGathering => IceGatheringState.gathering,
+      // Once gathering finishes (and for every later state) it stays complete.
+      _ => IceGatheringState.complete,
+    });
+
     switch (state) {
       case IceState.iceChecking:
         _setIceConnectionState(IceConnectionState.checking);
@@ -1005,9 +1163,12 @@ final class PeerConnection {
         // Start DTLS handshake — delegate to transport so it can schedule
         // the retransmit timer.  The first ClientHello may arrive at the
         // remote peer before its ICE pair is fully validated, so
-        // retransmission is essential.
+        // retransmission is essential. Only once: an ICE restart re-reaches
+        // `iceConnected`, but DTLS (and SCTP/SRTP) persist over the new pair
+        // and must not be re-handshaked.
         final pair = _ice.selectedPair;
-        if (pair != null) {
+        if (pair != null && !_dtlsHandshakeStarted) {
+          _dtlsHandshakeStarted = true;
           _transport.startDtlsHandshake(
             remoteIp: pair.remote.ip,
             remotePort: pair.remote.port,
@@ -1581,6 +1742,22 @@ final class PeerConnection {
 
   // ── State management ──────────────────────────────────────────────────────
 
+  /// Raise the W3C negotiation-needed flag and, if we're stable, fire
+  /// `onNegotiationNeeded` on a microtask (so a burst of `addTrack` calls
+  /// coalesces into one event). The flag is cleared when the next local offer
+  /// is applied in [setLocalDescription].
+  void _markNegotiationNeeded() {
+    if (_negotiationNeeded || _signalingState == SignalingState.closed) return;
+    _negotiationNeeded = true;
+    scheduleMicrotask(() {
+      if (_negotiationNeeded &&
+          _signalingState == SignalingState.stable &&
+          !_negotiationNeededController.isClosed) {
+        _negotiationNeededController.add(null);
+      }
+    });
+  }
+
   void _setSignalingState(SignalingState state) {
     if (_signalingState == state) return;
     _signalingState = state;
@@ -1591,6 +1768,12 @@ final class PeerConnection {
     if (_iceConnectionState == state) return;
     _iceConnectionState = state;
     _iceStateController.add(state);
+  }
+
+  void _setIceGatheringState(IceGatheringState state) {
+    if (_iceGatheringState == state) return;
+    _iceGatheringState = state;
+    _iceGatheringStateController.add(state);
   }
 
   void _setConnectionState(PeerConnectionState state) {

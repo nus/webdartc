@@ -98,13 +98,24 @@ enum SignalingState {
   closed,
 }
 
-/// PeerConnection connection state.
+/// PeerConnection connection state. `newState` is the spec's `"new"` value (a
+/// reserved word in Dart) — the state before any transport begins connecting.
 enum PeerConnectionState {
+  newState,
   closed,
   failed,
   disconnected,
   connecting,
   connected,
+}
+
+/// ICE gathering state (W3C `RTCIceGatheringState`). `newState` is the spec's
+/// `"new"` value (a reserved word in Dart), mirroring how [IceConnectionState]
+/// uses `iceNew`.
+enum IceGatheringState {
+  newState,
+  gathering,
+  complete,
 }
 
 /// DTLS transport state.
