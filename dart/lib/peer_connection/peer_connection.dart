@@ -476,21 +476,25 @@ final class PeerConnection {
     channel._closeCallback = () => _resetSctpStream(id);
     _dataChannels[id] = channel;
 
-    // Send DCEP OPEN when SCTP is established
-    _onSctpEstablished(() {
-      final result = _sctp.openDataChannel(
-        label: label,
-        ordered: opts.ordered,
-        streamId: id,
-      );
-      if (result.isOk) {
-        for (final pkt in result.value.outputPackets) {
-          _transport.sendSctp(pkt.data);
-        }
-        // Same T3-rtx scheduling reason as the data send callback above.
-        _transport.scheduleSctpTimeout(result.value.nextTimeout);
-      }
-    });
+    // Send DCEP OPEN once SCTP is established. Defer to a microtask so the
+    // COOKIE-ACK that just established us is flushed to the wire first —
+    // otherwise the OPEN (sent synchronously while we process COOKIE-ECHO)
+    // overtakes it and can reach a peer still in COOKIE-ECHOED, which
+    // correctly discards it and only recovers on the slow T3-rtx retransmit.
+    _onSctpEstablished(() => scheduleMicrotask(() {
+          final result = _sctp.openDataChannel(
+            label: label,
+            ordered: opts.ordered,
+            streamId: id,
+          );
+          if (result.isOk) {
+            for (final pkt in result.value.outputPackets) {
+              _transport.sendSctp(pkt.data);
+            }
+            // Same T3-rtx scheduling reason as the data send callback above.
+            _transport.scheduleSctpTimeout(result.value.nextTimeout);
+          }
+        }));
 
     return channel;
   }

@@ -437,6 +437,16 @@ final class SctpStateMachine implements ProtocolStateMachine {
   final Map<int, List<SctpDataChunk>> _reassemblyBuffer = {};
 
   Result<ProcessResult, ProtocolError> _handleData(SctpDataChunk data) {
+    // RFC 4960 §5.1: DATA received before the association is established must
+    // be discarded — and crucially NOT acknowledged, so the peer's T3-rtx
+    // retransmits it once we reach `established` (matches pion/sctp, whose
+    // handleData returns early when state != established). Without this the
+    // SACK would tell the peer the chunk was delivered while any reply it
+    // triggers (e.g. a DCEP ACK) can't be sent yet, stalling the exchange.
+    if (_state != SctpState.established) {
+      return const Ok(ProcessResult.empty);
+    }
+
     final tsn = data.tsn;
 
     // Ignore duplicates
