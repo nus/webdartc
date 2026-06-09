@@ -251,6 +251,27 @@ Each item:
 
 ---
 
+## SCTP / Data Channel
+
+### Gate non-DATA chunk handlers on association state
+
+- **Found:** 2026-06, /simplify of the DCEP-open fix.
+- **Detail:** RFC 4960 §5. `_handleData` now discards chunks received before
+  the association is `established`, but the sibling handlers `_handleSack`,
+  `_handleHeartbeat`, and `_handleReconfig`
+  ([dart/lib/sctp/state_machine.dart](dart/lib/sctp/state_machine.dart)) still
+  run in any state — e.g. a SACK in `cookieWait`/`cookieEchoed` would mutate
+  `_remoteRwnd` / drain the retransmit queue before establishment. pion gates
+  all of these on state. Latent (a conformant peer won't send them
+  pre-establishment, and the VTag check rejects most stray chunks), so it's
+  hardening against malformed/misordered peers, not a live bug.
+- **Why deferred:** Out of scope for the open-race fix; each handler needs its
+  own state consideration (SACK vs HEARTBEAT vs RE-CONFIG differ).
+- **Acceptance:** Reply/state-mutating chunk handlers no-op (or respond per
+  RFC) when received before `established`; a fuzz/misordered-peer test covers it.
+
+---
+
 ## RTP / RTCP / SDP
 
 > Same 2026-05-29 audit; **unverified leads.**
@@ -333,23 +354,6 @@ Each item:
 - **Acceptance:** `sendData` holds chunks when the peer's rwnd (and ideally a
   congestion window) is exhausted and drains on SACK; covered by a loss/slow-
   receiver test.
-
-### webdartc↔webdartc data channel never finishes opening
-
-- **Found:** 2026-06, while writing a loopback bufferedAmount test.
-- **Detail:** RFC 8832 DCEP. Two in-process webdartc PeerConnections complete
-  ICE + DTLS + the SCTP handshake, and the answerer fires `onDataChannelOpen`
-  for the DCEP `DATA_CHANNEL_OPEN`, but the **opener's** channel never reaches
-  `open` — the DCEP `ACK` round-trip doesn't complete, so `DataChannel.onOpen`
-  never fires and `readyState` stays `connecting`. Data channels only fully
-  open against Chrome/Firefox today (all DC e2e tests use a browser); there is
-  no webdartc↔webdartc DC coverage, which is why this went unnoticed.
-  [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart),
-  [dart/lib/sctp/state_machine.dart](dart/lib/sctp/state_machine.dart).
-- **Why deferred:** Out of scope for the bufferedAmount change; needs a DCEP
-  open/ACK trace between two webdartc peers.
-- **Acceptance:** A loopback test opens a data channel webdartc↔webdartc and
-  both peers fire `onOpen` / `ondatachannel`.
 
 ### RtpSender / RtpReceiver surface is minimal
 
