@@ -95,7 +95,8 @@ void main() {
       await sigServer?.close();
     });
 
-    test('open, send text 1KB, send binary 64KB, receive echoes', () async {
+    test('open, send text 1KB, send binary 64KB, receive echoes '
+        '+ bufferedAmount drains', () async {
       final d = driver!;
       final sig = sigServer!;
 
@@ -111,8 +112,10 @@ void main() {
         timeout: const Duration(seconds: 10),
       );
 
-      // webdartc side: connect as offerer via the same signaling server.
-      final offererFuture = _runWebdartcOfferer(sig.port);
+      // webdartc side: connect as offerer. checkBuffered asserts the W3C
+      // bufferedAmount surface (rises on send, drains to 0 as Chrome acks,
+      // fires onBufferedAmountLow).
+      final offererFuture = _runWebdartcOfferer(sig.port, checkBuffered: true);
 
       // Wait for Chrome to report ICE connected, printing Chrome stats periodically.
       try {
@@ -1137,7 +1140,9 @@ Future<void> _runWebdartcEcho(int signalingPort) async {
 /// Runs the webdartc offerer as a subprocess, streaming stderr to the console.
 /// Returns when the exchange is complete (exit 0) or throws on failure.
 Future<void> _runWebdartcOfferer(int signalingPort,
-    {int timeoutSec = 30, bool closeChannel = false}) async {
+    {int timeoutSec = 30,
+    bool closeChannel = false,
+    bool checkBuffered = false}) async {
   final proc = await Process.start(
     Platform.resolvedExecutable,
     [
@@ -1146,6 +1151,7 @@ Future<void> _runWebdartcOfferer(int signalingPort,
       '--port=$signalingPort',
       '--timeout=$timeoutSec',
       if (closeChannel) '--close-dc',
+      if (checkBuffered) '--check-buffered',
     ],
     environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
   );

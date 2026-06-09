@@ -102,4 +102,9 @@ abstract final class SctpPpid {
   static const int webrtcBinary   = 53;
   static const int webrtcStringEmpty  = 56;
   static const int webrtcBinaryEmpty  = 57;
+
+  /// Whether [ppid] marks an empty application message — carried as a single
+  /// padding byte on the wire (RFC 8831 §6.6).
+  static bool isEmptyMessage(int ppid) =>
+      ppid == webrtcStringEmpty || ppid == webrtcBinaryEmpty;
 }

@@ -167,6 +167,7 @@ void main(List<String> args) async {
   int port = 8080;
   int timeoutSec = 30;
   var closeChannel = false;
+  var checkBuffered = false;
   for (final arg in args) {
     if (arg.startsWith('--port=')) {
       port = int.parse(arg.substring('--port='.length));
@@ -174,14 +175,48 @@ void main(List<String> args) async {
       timeoutSec = int.parse(arg.substring('--timeout='.length));
     } else if (arg == '--close-dc') {
       closeChannel = true;
+    } else if (arg == '--check-buffered') {
+      checkBuffered = true;
     }
   }
 
-  final exitCode = await _run(port, timeoutSec: timeoutSec, closeChannel: closeChannel);
+  final exitCode = await _run(port,
+      timeoutSec: timeoutSec,
+      closeChannel: closeChannel,
+      checkBuffered: checkBuffered);
   exit(exitCode);
 }
 
-Future<int> _run(int sigPort, {int timeoutSec = 30, bool closeChannel = false}) async {
+/// Verify the W3C back-pressure surface (PR for DataChannel.bufferedAmount):
+/// bufferedAmount rose on send and, as Chrome acked, drained to 0 and fired
+/// onBufferedAmountLow. Completes [done] with 0 on success, 1 on failure.
+Future<void> _verifyBuffered(DataChannel dc, int afterSend,
+    bool Function() lowFired, Completer<int> done) async {
+  if (afterSend <= 0) {
+    stderr.writeln('[offerer] bufferedAmount FAIL: did not rise on send '
+        '(=$afterSend)');
+    if (!done.isCompleted) done.complete(1);
+    return;
+  }
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (DateTime.now().isBefore(deadline)) {
+    if (dc.bufferedAmount == 0 && lowFired()) {
+      stdout.writeln('[offerer] bufferedAmount OK: rose to $afterSend, drained '
+          'to 0, onBufferedAmountLow fired');
+      if (!done.isCompleted) done.complete(0);
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+  }
+  stderr.writeln('[offerer] bufferedAmount FAIL: did not drain '
+      '(now=${dc.bufferedAmount}, onBufferedAmountLow fired=${lowFired()})');
+  if (!done.isCompleted) done.complete(1);
+}
+
+Future<int> _run(int sigPort,
+    {int timeoutSec = 30,
+    bool closeChannel = false,
+    bool checkBuffered = false}) async {
   final ws = await _WsClient.connect(sigPort);
   ws.sendJson({'type': 'register', 'role': 'offerer'});
 
@@ -229,10 +264,16 @@ Future<int> _run(int sigPort, {int timeoutSec = 30, bool closeChannel = false}) 
   final sentBin = Uint8List(64 * 1024);
   for (var i = 0; i < sentBin.length; i++) { sentBin[i] = i & 0xFF; }
 
+  var bufferedAfterSend = 0;
+  var bufferedLowFired = false;
+  dc.onBufferedAmountLow.listen((_) => bufferedLowFired = true);
+
   dc.onOpen.listen((_) async {
     stdout.writeln('[offerer] DataChannel open — sending messages');
     dc.send(sentText);
     dc.sendBinary(sentBin);
+    bufferedAfterSend = dc.bufferedAmount;
+    stdout.writeln('[offerer] bufferedAmount after send = $bufferedAfterSend');
   });
 
   dc.onMessage.listen((evt) {
@@ -270,6 +311,11 @@ Future<int> _run(int sigPort, {int timeoutSec = 30, bool closeChannel = false}) 
       if (closeChannel) {
         stdout.writeln('[offerer] echoes OK — closing data channel');
         dc.close(); // exit 0 deferred to dc.onClose (stream reset complete)
+      } else if (checkBuffered) {
+        // Echoes prove Chrome received (and SACKed) everything, so
+        // bufferedAmount must have risen on send and drained to 0.
+        unawaited(
+            _verifyBuffered(dc, bufferedAfterSend, () => bufferedLowFired, done));
       } else {
         stdout.writeln('[offerer] PASS');
         done.complete(0);

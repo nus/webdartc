@@ -967,6 +967,8 @@ final class PeerConnection {
     _sctp.onDataChannelOpen = _onRemoteDataChannelOpen;
     _sctp.onData = _onSctpData;
     _sctp.onStreamReset = _onSctpStreamReset;
+    _sctp.onBytesAcked = (streamId, bytes) =>
+        _dataChannels[streamId]?._onBytesAcked(bytes);
 
     _transport.attachIce(_ice);
     _transport.attachDtls(_dtls);

@@ -312,17 +312,44 @@ Each item:
 - **Acceptance:** Each missing member added with spec semantics + tests; state
   enums match the W3C value sets.
 
-### DataChannel: no flow-control surface
+### DataChannel: `binaryType` + internal send flow control
 
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** W3C §6.2. Missing `bufferedAmount`,
-  `bufferedAmountLowThreshold`, `onBufferedAmountLow`, `binaryType`, and
-  `onClosing`. Without `bufferedAmount` callers can't back-pressure large
-  transfers.
-  [dart/lib/peer_connection/data_channel.dart](dart/lib/peer_connection/data_channel.dart).
-- **Why deferred:** Needs SCTP-ack accounting to drive `bufferedAmount`.
-- **Acceptance:** `bufferedAmount` tracks queued bytes (decrement on SCTP ack),
-  the threshold + low event fire, `binaryType` is honoured.
+- **Found:** 2026-05-29, RFC/W3C divergence audit. bufferedAmount shipped 2026-06.
+- **Detail:** W3C §6.2. `bufferedAmount` / `bufferedAmountLowThreshold` /
+  `onBufferedAmountLow` and `onClosing` are now implemented
+  ([dart/lib/peer_connection/data_channel.dart](dart/lib/peer_connection/data_channel.dart));
+  `bufferedAmount` tracks un-acked application bytes, decremented from SCTP
+  SACKs. Still open:
+  - **`binaryType`** — a browser Blob/ArrayBuffer distinction with no Dart
+    analog (incoming messages are always `Uint8List`); would be an inert
+    property, so left out deliberately.
+  - **Internal SCTP send flow control.** `bufferedAmount` gives *app-level*
+    back-pressure (a cooperating caller paces on it), but `sendData` still
+    blasts every chunk to the transport immediately, ignoring the remote
+    `a_rwnd` (read from SACK at
+    [state_machine.dart](dart/lib/sctp/state_machine.dart) but never
+    enforced) and any congestion window — so a non-cooperating sender can
+    still overrun a slow receiver.
+- **Acceptance:** `sendData` holds chunks when the peer's rwnd (and ideally a
+  congestion window) is exhausted and drains on SACK; covered by a loss/slow-
+  receiver test.
+
+### webdartc↔webdartc data channel never finishes opening
+
+- **Found:** 2026-06, while writing a loopback bufferedAmount test.
+- **Detail:** RFC 8832 DCEP. Two in-process webdartc PeerConnections complete
+  ICE + DTLS + the SCTP handshake, and the answerer fires `onDataChannelOpen`
+  for the DCEP `DATA_CHANNEL_OPEN`, but the **opener's** channel never reaches
+  `open` — the DCEP `ACK` round-trip doesn't complete, so `DataChannel.onOpen`
+  never fires and `readyState` stays `connecting`. Data channels only fully
+  open against Chrome/Firefox today (all DC e2e tests use a browser); there is
+  no webdartc↔webdartc DC coverage, which is why this went unnoticed.
+  [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart),
+  [dart/lib/sctp/state_machine.dart](dart/lib/sctp/state_machine.dart).
+- **Why deferred:** Out of scope for the bufferedAmount change; needs a DCEP
+  open/ACK trace between two webdartc peers.
+- **Acceptance:** A loopback test opens a data channel webdartc↔webdartc and
+  both peers fire `onOpen` / `ondatachannel`.
 
 ### RtpSender / RtpReceiver surface is minimal
 

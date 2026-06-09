@@ -3,67 +3,7 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart' hide Timeout;
 
-/// Wire bidirectional trickle-ICE forwarding between two loopback PCs.
-/// The bodies of the multi-PC tests collapsed to nearly the same six
-/// lines; this helper keeps the focus on the actual stats assertions.
-void _wireTrickle(PeerConnection pcA, PeerConnection pcB) {
-  pcA.onIceCandidate.listen((evt) => pcB.addIceCandidate(IceCandidateInit(
-        candidate: evt.candidate,
-        sdpMid: evt.sdpMid,
-        sdpMLineIndex: evt.sdpMLineIndex,
-      )));
-  pcB.onIceCandidate.listen((evt) => pcA.addIceCandidate(IceCandidateInit(
-        candidate: evt.candidate,
-        sdpMid: evt.sdpMid,
-        sdpMLineIndex: evt.sdpMLineIndex,
-      )));
-}
-
-/// Settings for the loopback handshake helper below. All stats tests
-/// want the same shape: bind to `127.0.0.1`, allow loopback host
-/// candidates, no STUN/TURN.
-const _kLoopbackSetting = SettingEngine(
-  bindAddresses: ['127.0.0.1'],
-  includeLoopbackCandidate: true,
-);
-
-/// Construct two PCs, wire trickle forwarding, run the offer/answer
-/// dance, and wait until both reach `connected`. Optional callbacks
-/// let the caller mutate each PC before the SDP exchange — separate
-/// for A and B so an asymmetric setup (e.g. DataChannel on offerer
-/// only) is expressible.
-Future<(PeerConnection, PeerConnection)> _handshakeLoopback({
-  void Function(PeerConnection pc)? configureA,
-  void Function(PeerConnection pc)? configureB,
-  Duration connectedTimeout = const Duration(seconds: 20),
-}) async {
-  final pcA = PeerConnection(
-    configuration: PeerConnectionConfiguration(),
-    settingEngine: _kLoopbackSetting,
-  );
-  final pcB = PeerConnection(
-    configuration: PeerConnectionConfiguration(),
-    settingEngine: _kLoopbackSetting,
-  );
-  // Subscribe BEFORE the SDP dance: onConnectionStateChange is a
-  // broadcast stream that drops events for late subscribers, and on
-  // loopback the handshake can race ahead of our subscription.
-  final aConnected = pcA.onConnectionStateChange
-      .firstWhere((s) => s == PeerConnectionState.connected);
-  final bConnected = pcB.onConnectionStateChange
-      .firstWhere((s) => s == PeerConnectionState.connected);
-  _wireTrickle(pcA, pcB);
-  if (configureA != null) configureA(pcA);
-  if (configureB != null) configureB(pcB);
-  final offer = await pcA.createOffer();
-  await pcA.setLocalDescription(offer);
-  await pcB.setRemoteDescription(offer);
-  final answer = await pcB.createAnswer();
-  await pcB.setLocalDescription(answer);
-  await pcA.setRemoteDescription(answer);
-  await Future.wait([aConnected, bConnected]).timeout(connectedTimeout);
-  return (pcA, pcB);
-}
+import '../peer_connection/loopback.dart';
 
 void main() {
   group('PeerConnection.getStats', () {
@@ -121,7 +61,7 @@ void main() {
         () async {
       // A data channel is needed so an SCTP m-line is present in the
       // SDP; ICE doesn't form pairs without one.
-      final (pcA, pcB) = await _handshakeLoopback(
+      final (pcA, pcB) = await handshakeLoopback(
         configureA: (pc) => pc.createDataChannel('stats-probe'),
       );
 
@@ -181,7 +121,7 @@ void main() {
         () async {
       void addAudio(PeerConnection pc) =>
           pc.addTransceiver('audio', direction: 'sendrecv');
-      final (pcA, pcB) = await _handshakeLoopback(
+      final (pcA, pcB) = await handshakeLoopback(
         configureA: addAudio,
         configureB: addAudio,
       );
@@ -265,7 +205,7 @@ void main() {
         () async {
       void addAudio(PeerConnection pc) =>
           pc.addTransceiver('audio', direction: 'sendrecv');
-      final (pcA, pcB) = await _handshakeLoopback(
+      final (pcA, pcB) = await handshakeLoopback(
         configureA: addAudio,
         configureB: addAudio,
       );
@@ -367,7 +307,7 @@ void main() {
         () async {
       void addAudio(PeerConnection pc) =>
           pc.addTransceiver('audio', direction: 'sendrecv');
-      final (pcA, pcB) = await _handshakeLoopback(
+      final (pcA, pcB) = await handshakeLoopback(
         configureA: addAudio,
         configureB: addAudio,
       );
