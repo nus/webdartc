@@ -332,6 +332,36 @@ final class IceStateMachine implements ProtocolStateMachine {
   ///
   /// Returns a [ProcessResult] with the first STUN check packet and a
   /// retransmit timer so the transport can drive ICE checking.
+  /// Restart ICE (RFC 8445 §9 / W3C `restartIce`): discard the local
+  /// candidates, pairs, and pending checks, then re-gather with the new
+  /// [localParams] over the same sockets. The selected pair and consent
+  /// tracking are reset so connectivity is re-validated under the new
+  /// credentials.
+  ///
+  /// [clearRemote] is true for the side that *initiates* the restart (its
+  /// peer's fresh credentials haven't arrived yet, so the old ones must be
+  /// dropped); false for the side answering a restart offer, which has just
+  /// applied the peer's new credentials and must keep them.
+  Result<ProcessResult, ProtocolError> restart(
+    IceParameters localParams, {
+    required List<HostBinding> hosts,
+    required bool clearRemote,
+  }) {
+    _localCandidates.clear();
+    _pairs.clear();
+    _pendingChecks.clear();
+    _stunServerRequests.clear();
+    _selectedPair = null;
+    _missedConsentChecks = 0;
+    if (clearRemote) {
+      _remoteCandidates.clear();
+      _remoteParams = null;
+      _remoteKey = null;
+    }
+    _state = IceState.iceNew;
+    return startGathering(localParams, hosts: hosts);
+  }
+
   Result<ProcessResult, ProtocolError> setRemoteParameters(
       IceParameters params) {
     _remoteParams = params;

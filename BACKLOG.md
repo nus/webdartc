@@ -322,9 +322,9 @@ Each item:
 - **Found:** 2026-05-29, RFC/W3C divergence audit. Partially shipped 2026-06.
 - **Detail:** W3C §4.3. Shipped: `getReceivers()` / `getTransceivers()` and
   `addTransceiver` returning the transceiver (#42); `getConfiguration()`,
-  `iceGatheringState` + `onIceGatheringStateChange`. Still missing:
-  - `restartIce()` — regenerate ICE ufrag/pwd, re-gather, offer with new
-    credentials.
+  `iceGatheringState` + `onIceGatheringStateChange`; `restartIce()` (ICE-agent
+  restart + answerer auto-restart on a changed-ufrag offer; DTLS/SCTP persist).
+  Still missing:
   - `removeTrack()` — flip the transceiver to recvonly/inactive + renegotiate.
   - `setConfiguration()` — the config is currently immutable (`const`); needs
     a mutable holder + the W3C "can't change identity/bundle" restrictions.

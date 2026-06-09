@@ -91,8 +91,14 @@ final class PeerConnection {
 
   // Local credentials
   late final EcdsaCertificate _localCert;
-  late final String _iceUfrag;
-  late final String _icePwd;
+  // Mutable: regenerated on an ICE restart (RFC 8445 §9).
+  late String _iceUfrag;
+  late String _icePwd;
+  bool _iceRestartPending = false;
+  // Last remote ICE credentials seen — a change in an offer signals a
+  // peer-initiated ICE restart.
+  String? _remoteIceUfrag;
+  String? _remoteIcePwd;
 
   // SDP — cached parses, so re-negotiation parses each side once and
   // `getStats()` doesn't have to re-tokenise the SDP on every snapshot.
@@ -181,6 +187,16 @@ final class PeerConnection {
   /// W3C `getConfiguration()` — the configuration this connection was created
   /// with.
   PeerConnectionConfiguration getConfiguration() => configuration;
+
+  /// W3C `restartIce()` — regenerate the local ICE credentials so the next
+  /// offer performs an ICE restart (RFC 8445 §9). The caller must renegotiate
+  /// afterwards (`createOffer` → `setLocalDescription` → exchange); the peer
+  /// auto-restarts when it sees the changed credentials in the offer.
+  void restartIce() {
+    _iceUfrag = Csprng.randomHex(4);
+    _icePwd = Csprng.randomHex(22);
+    _iceRestartPending = true;
+  }
 
   // ── Event streams ─────────────────────────────────────────────────────────
 
@@ -316,10 +332,17 @@ final class PeerConnection {
     // ICE role: offerer = controlling, answerer = controlled (RFC 8445 §5.1)
     _ice.controlling = desc.type == SessionDescriptionType.offer;
     await _ensureTransportStarted();
-    final result = _ice.startGathering(
-      IceParameters(usernameFragment: _iceUfrag, password: _icePwd),
-      hosts: _transport.bindings,
-    );
+    final localParams =
+        IceParameters(usernameFragment: _iceUfrag, password: _icePwd);
+    final restarting = _iceRestartPending;
+    _iceRestartPending = false;
+    // On a restart the initiator (offer) drops the peer's stale credentials;
+    // the answerer keeps the peer's new credentials it just applied.
+    final result = restarting
+        ? _ice.restart(localParams,
+            hosts: _transport.bindings,
+            clearRemote: desc.type == SessionDescriptionType.offer)
+        : _ice.startGathering(localParams, hosts: _transport.bindings);
     if (result.isErr) throw Exception(result.error.message);
     // Forward any initial check packets (answerer: remote params already set).
     _transport.handleIceControl(result);
@@ -375,6 +398,19 @@ final class PeerConnection {
     final sa = sdp.sessionAttributes;
     final remoteUfrag = media.iceUfrag ?? sa['ice-ufrag'] ?? '';
     final remotePwd = media.icePwd ?? sa['ice-pwd'] ?? '';
+
+    // A changed ICE ufrag/pwd in an *offer* is a peer-initiated ICE restart
+    // (RFC 8445 §9): regenerate our own credentials and flag so the answer
+    // carries them and setLocalDescription re-gathers.
+    if (desc.type == SessionDescriptionType.offer &&
+        _remoteIceUfrag != null &&
+        (remoteUfrag != _remoteIceUfrag || remotePwd != _remoteIcePwd)) {
+      _iceUfrag = Csprng.randomHex(4);
+      _icePwd = Csprng.randomHex(22);
+      _iceRestartPending = true;
+    }
+    _remoteIceUfrag = remoteUfrag;
+    _remoteIcePwd = remotePwd;
     final remoteFingerprint = media.fingerprint ?? sa['fingerprint'];
     final setup = media.setup ?? sa['setup'] ?? 'active';
 
@@ -997,6 +1033,7 @@ final class PeerConnection {
   }
 
   bool _transportStarted = false;
+  bool _dtlsHandshakeStarted = false;
 
   Future<void> _ensureTransportStarted() async {
     if (_transportStarted) return;
@@ -1027,9 +1064,12 @@ final class PeerConnection {
         // Start DTLS handshake — delegate to transport so it can schedule
         // the retransmit timer.  The first ClientHello may arrive at the
         // remote peer before its ICE pair is fully validated, so
-        // retransmission is essential.
+        // retransmission is essential. Only once: an ICE restart re-reaches
+        // `iceConnected`, but DTLS (and SCTP/SRTP) persist over the new pair
+        // and must not be re-handshaked.
         final pair = _ice.selectedPair;
-        if (pair != null) {
+        if (pair != null && !_dtlsHandshakeStarted) {
+          _dtlsHandshakeStarted = true;
           _transport.startDtlsHandshake(
             remoteIp: pair.remote.ip,
             remotePort: pair.remote.port,
