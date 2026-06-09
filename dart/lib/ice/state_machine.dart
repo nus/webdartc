@@ -18,6 +18,10 @@ final class StunServer {
   final int port;
   const StunServer({required this.host, required this.port});
 
+  /// The `stun:host:port` URI — inverse of [parse], used in
+  /// `icecandidateerror` reporting.
+  String get url => 'stun:$host:$port';
+
   /// Parse a STUN URI (RFC 7064): "stun:host[:port]"
   /// Returns null if the URI is not a valid stun: URI.
   static StunServer? parse(String uri) {
@@ -34,6 +38,28 @@ final class StunServer {
     if (port == null) return null;
     return StunServer(host: hostPort.substring(0, colonIdx), port: port);
   }
+}
+
+/// A failed STUN candidate-gathering request (W3C
+/// `RTCPeerConnectionIceErrorEvent`). [errorCode] is the STUN error response
+/// code, or 701 for a request that timed out with no response.
+final class IceCandidateError {
+  /// The STUN server URL the request was sent to, e.g. `stun:host:3478`.
+  final String url;
+
+  /// The local base address the request was sent from.
+  final String address;
+  final int port;
+  final int errorCode;
+  final String errorText;
+
+  const IceCandidateError({
+    required this.url,
+    required this.address,
+    required this.port,
+    required this.errorCode,
+    required this.errorText,
+  });
 }
 
 /// ICE state machine (RFC 8445 + RFC 8840 Trickle ICE).
@@ -89,6 +115,10 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   /// Emitted when a local candidate is gathered.
   void Function(IceCandidate)? onLocalCandidate;
+
+  /// Emitted when a STUN gathering request fails — a server error response or
+  /// a timeout. Maps to the W3C `icecandidateerror` event.
+  void Function(IceCandidateError)? onCandidateError;
 
   /// Emitted when the ICE state changes.
   void Function(IceState)? onStateChange;
@@ -426,7 +456,22 @@ final class IceStateMachine implements ProtocolStateMachine {
     } else if (msg.type == StunMessageType.bindingErrorResponse) {
       // Also check STUN server responses.
       final txId = _txIdString(msg.transactionId);
-      _stunServerRequests.remove(txId);
+      final req = _stunServerRequests.remove(txId);
+      if (req != null) {
+        // A gathering request was rejected by the server (W3C
+        // `icecandidateerror`); report it and complete gathering if it was
+        // the last outstanding request.
+        final ec = msg.attribute<ErrorCodeAttr>();
+        onCandidateError?.call(IceCandidateError(
+          url: req.server.url,
+          address: req.localIp.toCanonical(),
+          port: req.localPort,
+          errorCode: ec?.code ?? 0,
+          errorText: ec?.reason ?? 'STUN error response',
+        ));
+        if (_stunServerRequests.isEmpty) return _finishGathering();
+        return const Ok(ProcessResult.empty);
+      }
       return _handleBindingError(msg);
     }
 
@@ -1058,7 +1103,17 @@ final class IceStateMachine implements ProtocolStateMachine {
   }
 
   Result<ProcessResult, ProtocolError> _handleGatheringTimeout() {
-    // Discard pending STUN server requests.
+    // Each still-pending request never got a response — surface a timeout
+    // candidate error before discarding it (W3C `icecandidateerror`).
+    for (final req in _stunServerRequests.values) {
+      onCandidateError?.call(IceCandidateError(
+        url: req.server.url,
+        address: req.localIp.toCanonical(),
+        port: req.localPort,
+        errorCode: 701,
+        errorText: 'STUN server request timed out',
+      ));
+    }
     _stunServerRequests.clear();
     return _finishGathering();
   }

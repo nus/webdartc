@@ -317,28 +317,27 @@ Each item:
 > against the W3C WebRTC / Media Capture / WebCodecs specs (the project's
 > no-`RTC`-prefix convention is intentional and not a gap).
 
-### PeerConnection: remaining spec methods and accessors
+### PeerConnection: remaining spec methods and accessors — DONE (2026-06)
 
-- **Found:** 2026-05-29, RFC/W3C divergence audit. Partially shipped 2026-06.
-- **Detail:** W3C §4.3. Shipped: `getReceivers()` / `getTransceivers()` and
-  `addTransceiver` returning the transceiver (#42); `getConfiguration()`,
-  `iceGatheringState` + `onIceGatheringStateChange`; `restartIce()` (ICE-agent
-  restart + answerer auto-restart on a changed-ufrag offer; DTLS/SCTP persist).
-  Still missing:
-  - `removeTrack()` — flip the transceiver to recvonly/inactive + renegotiate.
-  - `setConfiguration()` — the config is currently immutable (`const`); needs
-    a mutable holder + the W3C "can't change identity/bundle" restrictions.
+- **Found:** 2026-05-29, RFC/W3C divergence audit. Fully shipped 2026-06.
+- **Detail:** W3C §4.3. Shipped across several PRs: `getReceivers()` /
+  `getTransceivers()` and `addTransceiver` returning the transceiver (#42);
+  `getConfiguration()`, `iceGatheringState` + `onIceGatheringStateChange`;
+  `restartIce()` (ICE-agent restart + answerer auto-restart on a changed-ufrag
+  offer; DTLS/SCTP persist). Final batch:
+  - `removeTrack()` — detaches the track and downgrades the transceiver
+    (`sendrecv`→`recvonly`, `sendonly`→`inactive`); fires negotiationneeded.
+  - `setConfiguration()` — `configuration` is now a mutable holder; rejects
+    `bundlePolicy`/`rtcpMuxPolicy` changes (W3C `InvalidModificationError`).
   - `currentLocalDescription` / `pendingLocalDescription` split (and remote) —
-    signaling-state-driven; today only a single `localDescription` is kept.
-  - `onNegotiationNeeded`, `onIceCandidateError`.
-  - `PeerConnectionState` starts in `connecting`, skipping the spec `new`
-    (low value; `new` is a Dart keyword so the enum value needs a dodge like
-    `IceConnectionState.iceNew`).
+    maintained alongside the internal `localDescription`/`remoteDescription`
+    in set{Local,Remote}Description.
+  - `onNegotiationNeeded` (microtask-coalesced flag, cleared on local apply),
+    `onIceCandidateError` (STUN gather timeout → 701, or server error code).
+  - `PeerConnectionState` now starts in `newState` (the spec `new`; `new` is a
+    Dart keyword so the value mirrors `IceConnectionState.iceNew`).
   [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart),
   [dart/lib/peer_connection/events.dart](dart/lib/peer_connection/events.dart).
-- **Why deferred:** Surface-area work; prioritise by what callers actually need
-  (`restartIce` is the highest-value remaining item).
-- **Acceptance:** Each missing member added with spec semantics + tests.
 
 ### DataChannel: `binaryType` + internal send flow control
 

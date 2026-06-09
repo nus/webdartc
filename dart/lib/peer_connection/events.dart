@@ -98,8 +98,10 @@ enum SignalingState {
   closed,
 }
 
-/// PeerConnection connection state.
+/// PeerConnection connection state. `newState` is the spec's `"new"` value (a
+/// reserved word in Dart) — the state before any transport begins connecting.
 enum PeerConnectionState {
+  newState,
   closed,
   failed,
   disconnected,

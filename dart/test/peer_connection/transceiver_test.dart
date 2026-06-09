@@ -133,5 +133,47 @@ void main() {
       expect(() => pc.getTransceivers().add(pc.getTransceivers().first),
           throwsUnsupportedError);
     });
+
+    test('removeTrack detaches the track and downgrades the direction', () {
+      final sender = pc.addTrack(_FakeTrack('t1', 'audio'));
+      final t = pc.getTransceivers().single;
+      expect(t.direction, RtpTransceiverDirection.sendrecv);
+
+      pc.removeTrack(sender);
+      expect(sender.track, isNull);
+      expect(t.direction, RtpTransceiverDirection.recvonly); // kept, recv-only
+
+      // Idempotent: a second remove is a no-op (no further downgrade).
+      pc.removeTrack(sender);
+      expect(t.direction, RtpTransceiverDirection.recvonly);
+    });
+
+    test('removeTrack on a sendonly transceiver goes inactive', () async {
+      final t = pc.addTransceiver('audio', direction: 'sendonly');
+      await t.sender!.replaceTrack(_FakeTrack('t1', 'audio'));
+      pc.removeTrack(t.sender!);
+      expect(t.direction, RtpTransceiverDirection.inactive);
+    });
+
+    test('removeTrack ignores a sender not owned by this connection', () {
+      final other = PeerConnection(
+          configuration: const PeerConnectionConfiguration());
+      final foreign = other.addTrack(_FakeTrack('t1', 'audio'));
+      expect(() => pc.removeTrack(foreign), returnsNormally);
+      expect(foreign.track, isNotNull); // untouched
+      other.close();
+    });
+
+    test('removeTrack downgrades the m-line direction in the next offer',
+        () async {
+      final sender = pc.addTrack(_FakeTrack('t1', 'audio'));
+      final offer1 = await pc.createOffer();
+      expect(offer1.sdp, contains('a=sendrecv'));
+
+      pc.removeTrack(sender);
+      final offer2 = await pc.createOffer();
+      expect(offer2.sdp, contains('a=recvonly'));
+      expect(offer2.sdp, isNot(contains('a=sendrecv')));
+    });
   });
 }
