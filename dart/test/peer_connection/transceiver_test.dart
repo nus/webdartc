@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart';
 
@@ -174,6 +176,76 @@ void main() {
       final offer2 = await pc.createOffer();
       expect(offer2.sdp, contains('a=recvonly'));
       expect(offer2.sdp, isNot(contains('a=sendrecv')));
+    });
+  });
+
+  group('RtpSender.getParameters / setParameters', () {
+    late PeerConnection pc;
+    late RtpSender sender;
+    setUp(() {
+      pc = PeerConnection(configuration: const PeerConnectionConfiguration());
+      sender = pc.addTrack(_FakeTrack('t1', 'audio'));
+    });
+    tearDown(() => pc.close());
+
+    test('getParameters returns one active encoding with a transactionId', () {
+      final p = sender.getParameters();
+      expect(p.transactionId, isNotEmpty);
+      expect(p.encodings, hasLength(1));
+      expect(p.encodings.single.active, isTrue);
+      expect(p.encodings.single.maxBitrate, isNull);
+      // Each call mints a fresh token.
+      expect(sender.getParameters().transactionId, isNot(p.transactionId));
+    });
+
+    test('setParameters applies mutable fields, reflected next getParameters',
+        () async {
+      final p = sender.getParameters();
+      p.encodings.single
+        ..active = false
+        ..maxBitrate = 128000
+        ..maxFramerate = 30;
+      await sender.setParameters(p);
+
+      final after = sender.getParameters().encodings.single;
+      expect(after.active, isFalse);
+      expect(after.maxBitrate, 128000);
+      expect(after.maxFramerate, 30);
+    });
+
+    test('setParameters rejects a stale/mismatched transactionId', () async {
+      final p = sender.getParameters();
+      sender.getParameters(); // supersedes p's token
+      await expectLater(sender.setParameters(p), throwsStateError);
+    });
+
+    test('a transactionId is single-use', () async {
+      final p = sender.getParameters();
+      await sender.setParameters(p); // consumes the token
+      await expectLater(sender.setParameters(p), throwsStateError);
+    });
+
+    test('setParameters cannot change the number of encodings', () async {
+      final p = sender.getParameters();
+      final two = RtpSendParameters(
+        transactionId: p.transactionId,
+        encodings: [RtpEncodingParameters(), RtpEncodingParameters()],
+      );
+      await expectLater(sender.setParameters(two), throwsStateError);
+    });
+
+    test('an inactive encoding drops outgoing RTP', () async {
+      // Baseline: an active sender counts the packet (SRTP isn't set up, so the
+      // send callback no-ops, but the stat counter still advances).
+      sender.sendRtp(Uint8List.fromList([1, 2, 3]));
+      expect(sender.packetsSent, 1);
+
+      final p = sender.getParameters();
+      p.encodings.single.active = false;
+      await sender.setParameters(p);
+
+      sender.sendRtp(Uint8List.fromList([4, 5, 6]));
+      expect(sender.packetsSent, 1); // unchanged — dropped before the wire
     });
   });
 }

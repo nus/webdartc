@@ -363,19 +363,25 @@ Each item:
 
 ### RtpSender / RtpReceiver surface is minimal
 
-- **Found:** 2026-05-29, RFC/W3C divergence audit. RtpTransceiver shipped 2026-06.
+- **Found:** 2026-05-29, RFC/W3C divergence audit. RtpTransceiver shipped 2026-06;
+  sender `getParameters`/`setParameters` shipped 2026-06.
 - **Detail:** W3C §5. The public `RtpTransceiver` (with `mid`, `direction`,
   `currentDirection`, `setDirection`, `stop`, `sender`, `receiver`) and the
   `RtpTransceiverDirection` enum now exist, and `PeerConnection` exposes
   `getTransceivers()` / `getReceivers()` (`addTransceiver` returns the
-  transceiver). Still missing: sender `getParameters` / `setParameters` /
-  `getStats`; receiver `getContributingSources` /
+  transceiver). `RtpSender.getParameters()` / `setParameters()` are now
+  implemented with a single `RtpEncodingParameters` (no simulcast): `active`
+  gates `sendRtp` (an inactive encoding emits no media); `maxBitrate` /
+  `maxFramerate` are stored advisories for the encoder backend; the
+  `transactionId` is single-use and validated per spec.
+  Still missing: sender `getStats`; receiver `getContributingSources` /
   `getSynchronizationSources` / `getStats`.
   [dart/lib/peer_connection/events.dart](dart/lib/peer_connection/events.dart).
-- **Why deferred:** Surface-area work behind the negotiation core; `setParameters`
-  in particular pulls in encoding-parameter / simulcast plumbing.
-- **Acceptance:** `getParameters` / `setParameters` on the sender (at least
-  active + bitrate), and CSRC tracking behind the receiver source methods.
+- **Why deferred:** Surface-area work behind the negotiation core. The receiver
+  source methods need CSRC/SSRC arrival tracking on the receive path.
+- **Acceptance:** ~~`getParameters` / `setParameters` on the sender (at least
+  active + bitrate)~~ (done), and CSRC tracking behind the receiver source
+  methods.
 
 ### MediaStreamTrack: constraints surface
 
