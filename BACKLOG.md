@@ -394,15 +394,23 @@ Each item:
   resolution + frame rate for video), `getCapabilities()` reports the
   device's supported ranges.
 
-### getStats: missing `remote-outbound-rtp` and inbound-rtp fields
+### getStats: missing `remote-outbound-rtp` and inbound-rtp fields — ALREADY DONE
 
-- **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
-- **Detail:** W3C §8. `remote-outbound-rtp` (emitted when the remote sends SR
-  packets) is absent though `RtcpSenderReport` is already parsed.
-  `InboundRtpStats` lacks spec-required `jitter`, `packetsLost`, `kind`,
-  `codecId` (marked TODO).
+- **Found:** 2026-05-29, RFC/W3C divergence audit (claim **Unverified**).
+  Verified 2026-06: the audit claim was stale — both items were already
+  implemented and tested (likely landed with the 2026-06 getStats/media work),
+  the BACKLOG entry just wasn't updated.
+- **Detail:** W3C §8. Contrary to the audit:
+  - `remote-outbound-rtp` *is* emitted: received SRs are captured in
+    `_onRtcpReceived` (srPacketCount/srOctetCount/srNtp*/reportsReceived) and
+    surfaced as `remote-outbound-rtp-<ssrc>`, paired with the inbound entry.
+  - `InboundRtpStats` *has* `kind`, `packetsReceived`, `bytesReceived`,
+    `packetsLost` (cumulativeLost), `jitter` (jitterSeconds), `codecId` — all
+    populated with real values in `getStats()`.
   [dart/lib/api/stats.dart](dart/lib/api/stats.dart),
   [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart).
-- **Why deferred:** getStats already covers the common types; these fill gaps.
-- **Acceptance:** `remote-outbound-rtp` emitted from received SRs; the inbound
-  fields populated and asserted in `stats_test.dart`.
+- **Acceptance (met):** `remote-outbound-rtp` and the inbound fields are
+  asserted on a loopback flow in
+  [dart/test/api/stats_test.dart](dart/test/api/stats_test.dart) (remote-outbound
+  kind/localId/reportsReceived/packetsSent/remoteTimestamp; inbound
+  kind/packetsLost/jitter/codecId).
