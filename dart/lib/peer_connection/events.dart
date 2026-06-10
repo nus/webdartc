@@ -171,6 +171,53 @@ enum RtpTransceiverDirection {
   }
 }
 
+/// W3C `RTCRtpEncodingParameters` — per-encoding send configuration. webdartc
+/// has a single encoding per sender (no simulcast), so a sender's parameters
+/// carry exactly one of these.
+final class RtpEncodingParameters {
+  /// Whether this encoding is actively sent. When false the sender drops
+  /// outgoing RTP (W3C: an inactive encoding produces no media). This is the
+  /// one field with a wire effect in webdartc's core.
+  bool active;
+
+  /// Maximum target bitrate in bits/sec, or null for unconstrained. Round-trips
+  /// through get/setParameters so a codec backend (e.g. webdartc_flutter) can
+  /// read it once wired up; webdartc's pure core stores it but does not act on
+  /// it (it never paces the application's `sendRtp` calls).
+  int? maxBitrate;
+
+  /// Maximum frame rate in fps (video), or null. Stored-only advisory like
+  /// [maxBitrate].
+  double? maxFramerate;
+
+  RtpEncodingParameters({
+    this.active = true,
+    this.maxBitrate,
+    this.maxFramerate,
+  });
+
+  RtpEncodingParameters _copy() => RtpEncodingParameters(
+        active: active,
+        maxBitrate: maxBitrate,
+        maxFramerate: maxFramerate,
+      );
+}
+
+/// W3C `RTCRtpSendParameters` — returned by [RtpSender.getParameters] and
+/// passed back to [RtpSender.setParameters].
+final class RtpSendParameters {
+  /// Opaque token from the last [RtpSender.getParameters]. [RtpSender
+  /// .setParameters] rejects a value that doesn't match (W3C
+  /// `InvalidStateError`), guarding against applying stale parameters.
+  final String transactionId;
+
+  /// Per-encoding parameters. The length is fixed at sender creation;
+  /// [RtpSender.setParameters] must not add or remove entries.
+  final List<RtpEncodingParameters> encodings;
+
+  RtpSendParameters({required this.transactionId, required this.encodings});
+}
+
 /// RTP sender — sends media RTP packets via SRTP.
 ///
 /// Obtained via [PeerConnection.addTrack] or from a transceiver.
@@ -201,9 +248,49 @@ final class RtpSender {
   /// `bytesSent`/`headerBytesSent` split (we only report payload here).
   int get bytesSent => _octetsSent;
 
+  /// Single send encoding (no simulcast). Mutated by [setParameters]; read by
+  /// [getParameters] and the [sendRtp] active-gate.
+  final RtpEncodingParameters _encoding = RtpEncodingParameters();
+
+  /// transactionId handed out by the last [getParameters], or null once it has
+  /// been consumed by a [setParameters] — makes each token single-use.
+  String? _paramsTransactionId;
+
   /// W3C: The MediaStreamTrack attached to this sender.
   MediaStreamTrack? _track;
   MediaStreamTrack? get track => _track;
+
+  /// W3C `getParameters()` — a snapshot of the current send parameters with a
+  /// fresh `transactionId` that the matching [setParameters] must echo back.
+  RtpSendParameters getParameters() {
+    final txId = Csprng.randomHex(8);
+    _paramsTransactionId = txId;
+    return RtpSendParameters(
+      transactionId: txId,
+      encodings: [_encoding._copy()],
+    );
+  }
+
+  /// W3C `setParameters()` — apply mutable encoding fields (`active`,
+  /// `maxBitrate`, `maxFramerate`). Throws if [params] didn't come from the
+  /// most recent [getParameters] (stale `transactionId`) or changes the number
+  /// of encodings — both `InvalidStateError`/`InvalidModificationError` in the
+  /// spec. The token is single-use: a second call needs a fresh getParameters.
+  Future<void> setParameters(RtpSendParameters params) async {
+    if (_paramsTransactionId == null ||
+        params.transactionId != _paramsTransactionId) {
+      throw StateError(
+          'setParameters: transactionId does not match the last getParameters');
+    }
+    if (params.encodings.length != 1) {
+      throw StateError('setParameters: cannot change the number of encodings');
+    }
+    final e = params.encodings.single;
+    _encoding.active = e.active;
+    _encoding.maxBitrate = e.maxBitrate;
+    _encoding.maxFramerate = e.maxFramerate;
+    _paramsTransactionId = null;
+  }
 
   /// W3C RTP Transport: The RtpPacketSender for low-level access.
   RtpPacketSender? _packetSender;
@@ -250,6 +337,9 @@ final class RtpSender {
   /// If [timestamp] is provided, it is used directly (for reflect/echo).
   /// Otherwise, timestamp is auto-incremented.
   void sendRtp(Uint8List payload, {bool marker = false, int? timestamp, int? timestampIncrement}) {
+    // W3C: an inactive encoding produces no media — drop the packet before it
+    // reaches the wire or touches the seq/timestamp/stat counters.
+    if (!_encoding.active) return;
     if (timestamp != null) {
       _timestamp = timestamp;
     } else {
