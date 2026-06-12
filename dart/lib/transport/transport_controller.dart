@@ -41,6 +41,12 @@ final class TransportController {
   /// received a record is the most reliable choice.
   IpAddress? _lastInboundLocalIp;
 
+  /// Set by [stop]. Distinguishes our own deliberate socket close from
+  /// the runtime killing a socket on an async send error, so the
+  /// rebind-recovery in [_listenWithRecovery] doesn't resurrect sockets
+  /// during shutdown.
+  bool _stopped = false;
+
   IceStateMachine? _ice;
   DtlsStateMachine? _dtls;
   SrtpContext? _srtp;
@@ -117,6 +123,7 @@ final class TransportController {
     SettingEngine settingEngine = const SettingEngine(),
     int port = 0,
   }) async {
+    _stopped = false;
     final bindIps = await _resolveBindAddresses(settingEngine);
 
     if (bindIps.isEmpty) {
@@ -125,11 +132,8 @@ final class TransportController {
       final socket =
           await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
       final bindIp = IpAddress.fromBytes(socket.address.rawAddress);
-      socket.listen(
-        (event) => _onEvent(socket, bindIp, event),
-        onError: _onSocketError,
-      );
       _sockets[bindIp] = socket;
+      _listenWithRecovery(socket, bindIp, InternetAddress.anyIPv4);
       _bindings = [(ip: await _findLocalIpv4(), port: socket.port)];
       _startTurnAllocations(settingEngine);
       return;
@@ -143,15 +147,68 @@ final class TransportController {
     for (var i = 0; i < bindIps.length; i++) {
       final ip = bindIps[i];
       final socket = sockets[i];
-      socket.listen(
-        (event) => _onEvent(socket, ip, event),
-        onError: _onSocketError,
-      );
       _sockets[ip] = socket;
+      _listenWithRecovery(socket, ip, InternetAddress(ip.toCanonical()));
       bindings.add((ip: ip, port: socket.port));
     }
     _bindings = bindings;
     _startTurnAllocations(settingEngine);
+  }
+
+  /// Listen on [socket], and if the runtime kills it, rebind a fresh
+  /// socket on the same address/port and resume.
+  ///
+  /// On Windows, a UDP send whose failure surfaces asynchronously (e.g.
+  /// errno 1214 ERROR_BAD_NET_NAME / 1231 NETWORK_UNREACHABLE from a
+  /// cross-interface ICE check on a multi-NIC host) is reported as an
+  /// error event on the socket — after which the Dart runtime CLOSES the
+  /// socket: every datagram arriving from then on is silently dropped.
+  /// One bad connectivity check would permanently deafen the host
+  /// candidate, so ICE as the controlled side never sees the peer's
+  /// Binding requests and the session never connects. Rebinding the same
+  /// (address, port) restores reception; in-flight upper-layer
+  /// retransmits (ICE checks ~500 ms, DTLS flights) cover the sub-ms
+  /// rebind gap.
+  void _listenWithRecovery(
+      RawDatagramSocket socket, IpAddress key, InternetAddress bindAddr) {
+    // Captured eagerly: the getter throws once the runtime closes the
+    // socket, and recovery is exactly the time we need it.
+    final boundPort = socket.port;
+    socket.listen(
+      (event) => _onEvent(socket, key, event),
+      onError: _onSocketError,
+      onDone: () => _recoverSocket(socket, key, bindAddr, boundPort),
+    );
+  }
+
+  Future<void> _recoverSocket(RawDatagramSocket dead, IpAddress key,
+      InternetAddress bindAddr, int boundPort) async {
+    // onDone also fires for the deliberate close() in [stop] — only
+    // recover sockets that died while still registered as live.
+    if (_stopped || !identical(_sockets[key], dead)) return;
+    // Queued datagrams belonged to the dead socket's kernel buffer; the
+    // protocols retransmit, so drop rather than replay stale packets.
+    _pendingSends.remove(dead);
+    try {
+      final fresh = await RawDatagramSocket.bind(bindAddr, boundPort);
+      if (_stopped) {
+        fresh.close();
+        return;
+      }
+      _sockets[key] = fresh;
+      _listenWithRecovery(fresh, key, bindAddr);
+      if (_debug) {
+        stderr.writeln('[transport] rebound $key:$boundPort after the '
+            'runtime closed the socket on a send error');
+      }
+    } catch (e) {
+      // Port stolen in the gap (or bind otherwise refused) — drop the
+      // binding; sends fall back to the remaining sockets.
+      _sockets.remove(key);
+      if (_debug) {
+        stderr.writeln('[transport] rebind of $key:$boundPort failed: $e');
+      }
+    }
   }
 
   /// Resolves the IPs the transport will bind to from a [SettingEngine].
@@ -221,6 +278,7 @@ final class TransportController {
   }
 
   Future<void> stop() async {
+    _stopped = true;
     // Send Refresh(lifetime=0) for each allocation so coturn frees the
     // relay slot immediately rather than waiting out the (default 10 min)
     // server-side timeout. The Refresh ack arrives after the socket

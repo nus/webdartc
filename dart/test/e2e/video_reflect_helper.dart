@@ -20,7 +20,10 @@ import 'e2e_settings.dart';
 final class _WsClient {
   final Socket _socket;
   final _buf = <int>[];
-  final _messages = StreamController<String>.broadcast();
+  // Single-subscription buffers messages that arrive before `.listen` (a
+  // signal can land between registering and wiring the handler); a broadcast
+  // controller would drop them.
+  final _messages = StreamController<String>();
   _WsClient._(this._socket);
 
   static Future<_WsClient> connect(int port) async {
