@@ -6,6 +6,7 @@
 ///   Server relays each message to the other registered client.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -23,6 +24,21 @@ final class SignalingServer {
   // First registered client = A, second = B.
   WebSocket? _clientA;
   WebSocket? _clientB;
+
+  // Completes when the first client registers. The webdartc helpers run
+  // native-asset build hooks on startup (several seconds, longer on a cold
+  // CI cache), so a fixed sleep before navigating the browser races against
+  // that: the browser can register and fire its offer + trickle candidates
+  // before the helper's WebSocket is even up, and those messages relay to
+  // zero peers and vanish. Awaiting this future before launching the browser
+  // makes the handshake independent of the helper's startup time.
+  final Completer<void> _firstPeerRegistered = Completer<void>();
+
+  /// Completes once any client has sent its `register` message. Harness
+  /// code that starts a webdartc helper as the first peer awaits this before
+  /// navigating the browser, so the browser's offer can't outrun the
+  /// helper's signaling connection.
+  Future<void> get firstPeerRegistered => _firstPeerRegistered.future;
 
   SignalingServer._(this._server, this.port, this._proxy) {
     _server.listen(_onRequest);
@@ -74,6 +90,7 @@ final class SignalingServer {
   void _relay(WebSocket sender, Map<String, dynamic> msg) {
     // Track registration order for proxy assignment.
     if (msg['type'] == 'register') {
+      if (!_firstPeerRegistered.isCompleted) _firstPeerRegistered.complete();
       if (_clientA == null) {
         _clientA = sender;
       } else if (_clientB == null && !identical(sender, _clientA)) {

@@ -21,7 +21,11 @@ import 'e2e_settings.dart';
 final class _WsClient {
   final Socket _socket;
   final _buf = <int>[];
-  final _messages = StreamController<String>.broadcast();
+  // Single-subscription (not broadcast): a broadcast controller drops events
+  // that arrive before `.listen`, and a signal can land between registering
+  // and wiring the message handler. Single-subscription buffers until the
+  // listener attaches, so no early offer/candidate is lost.
+  final _messages = StreamController<String>();
 
   _WsClient._(this._socket);
 

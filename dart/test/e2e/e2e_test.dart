@@ -236,11 +236,12 @@ void main() {
       final d = driver!;
       final sig = sigServer!;
 
-      // Start webdartc answerer FIRST so it's connected to signaling
-      // before Chrome sends the offer.
+      // Start webdartc answerer FIRST and wait until it has registered with
+      // signaling before navigating Chrome — a fixed sleep races against the
+      // helper's native-asset build-hook startup, letting Chrome's offer
+      // relay to no peer and vanish. See SignalingServer.firstPeerRegistered.
       final answererFuture = _runWebdartcAnswerer(sig.port);
-      // Brief delay to let the answerer subprocess connect to signaling.
-      await Future<void>.delayed(const Duration(seconds: 3));
+      await sig.firstPeerRegistered.timeout(const Duration(seconds: 90));
 
       // Chrome acts as offerer — creates data channel + sends offer.
       final url =
@@ -438,9 +439,13 @@ void main() {
       final d = driver!;
       final sig = sigServer!;
 
-      // Start echo helper first (answerer).
+      // Start echo helper first (answerer) and wait until it has actually
+      // registered with signaling before navigating Chrome — the helper's
+      // native-asset build hooks make startup time unpredictable, and a
+      // fixed sleep races against it (Chrome's offer would relay to no peer
+      // and vanish). See SignalingServer.firstPeerRegistered.
       final echoFuture = _runWebdartcEcho(sig.port);
-      await Future<void>.delayed(const Duration(seconds: 3));
+      await sig.firstPeerRegistered.timeout(const Duration(seconds: 90));
 
       // Chrome as offerer with audio.
       final url =
@@ -522,9 +527,11 @@ void main() {
       final d = driver!;
       final sig = sigServer!;
 
-      // Start reflect helper (answerer) — keeps running until killed.
+      // Start reflect helper (answerer) — keeps running until killed. Wait
+      // for it to register before navigating Chrome so the offer can't
+      // outrun the helper's startup. See SignalingServer.firstPeerRegistered.
       final reflectProc = await _startWebdartcReflect(sig.port);
-      await Future<void>.delayed(const Duration(seconds: 3));
+      await sig.firstPeerRegistered.timeout(const Duration(seconds: 90));
 
       try {
         // Chrome as offerer with video.
@@ -593,9 +600,11 @@ void main() {
       final d = driver!;
       final sig = sigServer!;
 
-      // Start RTP Transport API reflect helper (answerer) first.
+      // Start RTP Transport API reflect helper (answerer) first; wait for it
+      // to register before navigating Chrome. See
+      // SignalingServer.firstPeerRegistered.
       final reflectProc = await _startWebdartcReflectRtpTransport(sig.port);
-      await Future<void>.delayed(const Duration(seconds: 3));
+      await sig.firstPeerRegistered.timeout(const Duration(seconds: 90));
 
       try {
         // Chrome as offerer with video.
