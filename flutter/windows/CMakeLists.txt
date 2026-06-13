@@ -73,20 +73,19 @@ if (${include_${PROJECT_NAME}_tests})
   enable_testing()
 
   include(FetchContent)
+  # googletest 1.15.2 declares `cmake_minimum_required(VERSION 3.13)`. Older
+  # releases (1.11.0) declared `< 3.5`, which CMake 4.x — shipping on the
+  # windows-2025-vs2026 runner image — rejects outright (the compatibility
+  # shim was removed, turning the former deprecation warning into a hard
+  # "Compatibility with CMake < 3.5 has been removed" error). 1.15.2 is the
+  # last C++14-compatible line, so it stays within this plugin's C++17 build.
   FetchContent_Declare(
     googletest
-    URL https://github.com/google/googletest/archive/release-1.11.0.zip
+    URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.zip
   )
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   set(INSTALL_GTEST OFF CACHE BOOL "Disable installation of googletest" FORCE)
-  # googletest 1.11.0's own CMakeLists declares `cmake_minimum_required` at
-  # < 3.10, which CMake 3.27+ flags as a deprecation. Mute the deprecation
-  # warning around the populate step — we don't own the upstream file.
-  set(_gtest_prev_warn_deprecated ${CMAKE_WARN_DEPRECATED})
-  set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
-  set(CMAKE_WARN_DEPRECATED ${_gtest_prev_warn_deprecated} CACHE BOOL "" FORCE)
-  unset(_gtest_prev_warn_deprecated)
 
   add_executable(${TEST_RUNNER}
     test/convert_i420_to_bgra8_test.cpp
