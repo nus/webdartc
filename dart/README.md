@@ -1,27 +1,48 @@
 # webdartc
 
-A WebRTC library written entirely in Dart by AI agents — RFC-compliant protocols with complete I/O isolation.
+A WebRTC library written entirely in Dart — RFC-compliant protocols.
 
 ## Overview
 
-webdartc implements the W3C WebRTC API in Dart as a set of pure state machines. All network I/O is isolated to a single controller module (`TransportController`), making the protocol logic deterministic and testable.
+webdartc implements the W3C WebRTC API as a set of protocol state machines that
+turn inputs into outputs deterministically, which keeps the protocol logic
+testable and packet-level behaviour reproducible.
 
-Supports data channels and media (audio/video) send/receive.
+Data channels and media (audio + video, send + receive) are both supported.
 
 ## Features
 
-- **RFC-compliant protocols**: STUN (RFC 5389), ICE (RFC 8445), Trickle ICE (RFC 8840), DTLS 1.2 (RFC 6347), SRTP (RFC 3711), SCTP (RFC 4960), DCEP (RFC 8832), RTP/RTCP (RFC 3550), SDP (RFC 4566/8866), H.264 RTP (RFC 6184, STAP-A + FU-A), VP8 RTP (RFC 7741), Opus RTP (RFC 7587)
-- **Pure state machines**: All protocol modules produce deterministic outputs from inputs — no hidden I/O
-- **Platform-native crypto**: CommonCrypto + Security.framework on macOS, OpenSSL on Linux, CNG (`bcrypt.dll`) on Windows, via FFI
-- **Data channels**: SCTP over DTLS with DCEP negotiation
-- **Media**: Transceivers, RTP/RTCP, audio/video frame APIs (W3C Media Capture & Streams, WebCodecs)
-- **Codecs**: VP8 + VP9 via libvpx; H.264 via Apple VideoToolbox (hardware-accelerated on macOS) or Cisco-prebuilt OpenH264 (software, Linux + Windows); Opus via libopus. See [Codec backends](#codec-backends) below for the build-hook details and the per-OS source-vs-prebuilt split.
+- **RFC-compliant protocols** — STUN (RFC 5389/8489), ICE (RFC 8445), Trickle
+  ICE (RFC 8840), ICE consent freshness (RFC 7675), TURN (RFC 5766/8656, with
+  UDP / TCP / TLS transports), DTLS 1.2 (RFC 6347), SRTP (RFC 3711), SCTP
+  (RFC 4960), DCEP (RFC 8832), RTP/RTCP (RFC 3550), SDP (RFC 4566/8866), and the
+  RTP payload formats for H.264 (RFC 6184, STAP-A + FU-A), VP8 (RFC 7741), VP9,
+  and Opus (RFC 7587).
+- **Pure state machines** — protocol modules produce deterministic outputs from
+  inputs.
+- **W3C surface** — `PeerConnection`, `DataChannel`, transceivers, and a
+  `Webdartc` factory that owns a shared `SettingEngine` + `MediaEngine`. Public
+  types drop the `RTC` prefix (`PeerConnection`, not `RTCPeerConnection`).
+- **Platform-native crypto** via FFI — CommonCrypto + Security.framework on
+  macOS, OpenSSL on Linux, CNG (`bcrypt.dll`) on Windows.
+- **Codecs** — VP8 / VP9 via libvpx, H.264 via Apple VideoToolbox
+  (hardware-accelerated on macOS) or Cisco-prebuilt OpenH264 (Linux + Windows),
+  Opus via libopus. See [Codec backends](#codec-backends) for the per-OS
+  source-vs-prebuilt split.
 
 ## Requirements
 
-- Dart SDK >= 3.11.0, < 4.0.0
-- macOS (Xcode for VideoToolbox / CoreMedia / CoreVideo + CMake to build the bundled libopus / libvpx), Linux (`cmake clang yasm libssl-dev` — yasm is required by libvpx's x86_64 SIMD assembly; OpenH264 is auto-downloaded by the build hook on first run), or Windows (no additional tools for the default prebuilt path — `dart pub get` downloads the wrapper DLLs + the Cisco OpenH264 binary; the MSVC source-build opt-in needs Visual Studio + vcpkg).
-- On macOS and Linux the `dart/third_party/opus/` and `dart/third_party/libvpx/` submodules must be checked out (`git clone --recurse-submodules` or `git submodule update --init --recursive`). The Windows default path does not need the submodules — they are only required when opting in to the source build.
+- Dart SDK `>= 3.11.0 < 4.0.0`.
+- **macOS** — Xcode (VideoToolbox / CoreMedia / CoreVideo) and CMake. The
+  `dart/third_party/opus` + `dart/third_party/libvpx` submodules must be checked
+  out.
+- **Linux** — `cmake clang nasm libssl-dev` (build libopus, assemble libvpx's
+  x86_64 SIMD, OpenSSL for crypto). OpenH264 is auto-downloaded on first build.
+  Submodules required.
+- **Windows** — no extra tooling for the default path: `dart pub get` downloads
+  the VP8 / VP9 / Opus wrapper DLLs and the Cisco OpenH264 binary, and CNG
+  provides crypto. Submodules are only needed for the MSVC + vcpkg source-build
+  opt-in.
 
 ## Installation
 
@@ -42,162 +63,178 @@ import 'package:webdartc/webdartc.dart';
 
 final pc = PeerConnection(configuration: PeerConnectionConfiguration());
 
-// Create and set an offer
+// Offer / answer (exchange the SDP via your own signaling channel).
 final offer = await pc.createOffer();
 await pc.setLocalDescription(offer);
-
-// Exchange offer/answer via your signaling server, then:
 await pc.setRemoteDescription(remoteAnswer);
 
-// Data channel
+// Data channel.
 final dc = pc.createDataChannel('chat');
-dc.onMessage.listen((msg) => print('Received: $msg'));
+dc.onMessage.listen((msg) => print('received: $msg'));
 dc.send('hello');
+```
+
+For configured ICE servers, codec preferences, or port ranges, build through the
+`Webdartc` factory:
+
+```dart
+final webrtc = Webdartc(
+  settingEngine: SettingEngine(iceServers: [/* STUN / TURN */]),
+  mediaEngine: MediaEngine(),            // VP8 + VP9 + H.264 + Opus by default
+);
+final pc = webrtc.createPeerConnection();
 ```
 
 ## Architecture
 
 ```
-PeerConnection (W3C API)
-       │
-TransportController  ← only module using dart:io
-       │
- ┌─────┴──────────────────────────────────┐
- ICE   DTLS   SRTP   SCTP   RTP/RTCP   SDP
- │      │
-STUN   Crypto (CommonCrypto / OpenSSL via FFI)
+        Webdartc factory  (SettingEngine + MediaEngine)
+               │
+        PeerConnection  (W3C API: DataChannel, transceivers, stats)
+               │
+        TransportController        ← UDP send / receive
+               │
+ ┌──────┬──────┼──────┬──────┬──────┬──────┐
+ ICE   TURN   DTLS   SRTP   SCTP  RTP/RTCP  SDP
+ │             │
+STUN          Crypto  (CommonCrypto / OpenSSL / CNG via FFI)
 ```
 
-Each protocol module follows the same pattern:
+Every protocol module follows one shape:
 
-- **Input**: `processInput(Uint8List packet, remoteIp, remotePort) → ProcessResult`
-- **Timers**: `handleTimeout(TimerToken) → ProcessResult`
-- **Output**: `List<OutputPacket>` + optional next `Timeout`
+- **Input** — `processInput(Uint8List packet, remoteIp, remotePort) → ProcessResult`
+- **Timers** — `handleTimeout(TimerToken) → ProcessResult`
+- **Output** — `ProcessResult` carries `List<OutputPacket>` + an optional next `Timeout`
+
+Methods return `Result<T, ProtocolError>` (sealed `ParseError` / `StateError` /
+`CryptoError` / `InternalError`) rather than throwing.
 
 ## Project structure
 
 ```
-hook/
-└── build.dart                 # Dart build hook: VT C helper (Apple) +
-                                #   bundled libopus + libvpx (macOS/Linux)
-src/
-├── webdartc_export.h          # Single source for the WEBDARTC_API macro
-├── wvt_callback.{h,c}         # VT encoder/decoder callback + CFRetain+queue bridge
-├── webdartc_opus.{h,c}        # libopus wrapper (`webdartc_opus_*` exported)
-├── webdartc_vp8.{h,c}         # libvpx wrapper, VP8 enc + dec (`webdartc_vp8_*`)
-└── webdartc_vp9.{h,c}         # libvpx wrapper, VP9 enc + dec (`webdartc_vp9_*`)
-third_party/
-├── opus/                      # libopus submodule (statically linked, hidden symbols)
-└── libvpx/                    # libvpx submodule (statically linked, hidden symbols;
-                                #   shared archive across webdartc_vp8 + webdartc_vp9)
-
 lib/
-├── webdartc.dart              # Public API exports
+├── webdartc.dart              # public API exports
+├── api/                       # Webdartc factory, SettingEngine, MediaEngine, stats
 ├── peer_connection/           # W3C PeerConnection, DataChannel, events
-├── transport/                 # TransportController (sole dart:io user)
-├── ice/, dtls/, srtp/, sctp/, stun/, rtp/, sdp/
-├── crypto/                    # Platform-specific crypto backends (FFI)
+├── transport/                 # TransportController — UDP send / receive
+├── ice/, turn/, dtls/, srtp/, sctp/, stun/, rtp/, sdp/
+├── crypto/                    # platform crypto backends (FFI)
 ├── media/                     # MediaStream, tracks, frames, FakeVideoSource
 ├── codec/
 │   ├── codec_registry.dart
 │   ├── video_codec.dart       # W3C VideoEncoder / VideoDecoder
 │   ├── audio_codec.dart       # W3C AudioEncoder / AudioDecoder
-│   ├── vp8/                   # libvpx FFI encoder + decoder (source-built on
-│   │                          # macOS / Linux, prebuilt DLL on Windows)
-│   ├── vp9/                   # libvpx FFI encoder + decoder (same as vp8)
-│   ├── opus/                  # libopus FFI encoder + decoder (source-built on
-│   │                          # macOS / Linux, prebuilt DLL on Windows)
-│   └── h264/
-│       ├── _openh264.dart                     # @Native bindings to bundled OpenH264 dylib / DLL
-│       ├── openh264_bindings.g.dart           # ffigen structs/enums/vtables
-│       ├── h264_encoder_backend.dart          # OpenH264 SW encoder (Linux + Windows)
-│       ├── h264_decoder_backend.dart          # OpenH264 SW decoder (Linux + Windows)
-│       ├── videotoolbox/                      # @Native bindings to the C helper
-│       ├── videotoolbox_encoder_backend.dart  # VT encoder (macOS)
-│       └── videotoolbox_decoder_backend.dart  # VT decoder (macOS)
-└── core/                      # State machine base, Result<T,E>, types
+│   ├── vp8/, vp9/             # libvpx FFI (source-built macOS/Linux, prebuilt DLL Windows)
+│   ├── opus/                  # libopus FFI (same split as vp8/vp9)
+│   └── h264/                  # OpenH264 (Linux/Windows) + VideoToolbox (macOS) backends
+└── core/                      # state machine base, Result<T,E>, shared types
+
+hook/build.dart               # native-asset build hook (codecs + VideoToolbox shim)
+src/                          # C wrappers: wvt_callback, webdartc_opus, webdartc_vp8/vp9
+third_party/                  # libopus + libvpx submodules (static, hidden symbols)
 
 test/
 ├── crypto/, stun/, ice/, dtls/, srtp/, sctp/, rtp/, sdp/, codec/
-├── fuzz/                      # Fuzzing tests
-└── e2e/                       # Browser E2E (Chrome / Firefox)
+├── fuzz/                      # fuzz tests
+└── e2e/                       # browser e2e (Chrome / Firefox)
 
 example/
 ├── ice_gather.dart            # ICE candidate gathering
 ├── opus_codec.dart            # Opus encode/decode round-trip + SNR check
+├── get_user_media_macos.dart  # open camera/mic via AVFoundation (macOS)
+├── audio_renderer_macos.dart  # speaker playback via AudioQueue (macOS)
 ├── audio_send/                # Dart → browser audio (Opus)
 ├── audio_receive/             # browser → Dart audio
-├── video_sender/              # Dart → browser video (VP8 / H.264 fake video)
+├── video_sender/              # Dart → browser video (VP8 / H.264 fake source)
 ├── video_receiver/            # browser → Dart video (depacketize + decode)
 ├── video_echo/                # browser → Dart → browser (RTP packet forward)
-└── signaling/                 # HTTP + WS relay (for the Flutter pairing)
+├── getusermedia_call/         # real camera + mic → browser (macOS, audio + video)
+├── signaling/                 # HTTP + WS relay (OpenAyame, for the Flutter demo)
+└── serve.dart                 # shared static-file serving for the demos above
 ```
 
-## Running tests
+## Tests
 
 ```bash
-# Unit tests
-dart test
-
-# End-to-end tests (requires Chrome)
-dart test test/e2e/
-
-# Verify network I/O isolation (should produce no output)
-grep -rn "RawDatagramSocket\|RawSocket" \
-  lib/crypto/ lib/media/ lib/codec/ lib/core/ lib/peer_connection/
+dart test                       # unit tests (runs the build hook)
+dart test test/e2e/             # browser e2e (Chrome auto-downloaded)
+dart test test/ice/ice_test.dart   # a single file
 ```
+
+E2E tests are tagged `e2e` and need Chrome or Firefox with WebDriver; helpers
+live in `test/e2e/`. Fuzz tests are in `test/fuzz/`.
 
 ## Examples
 
+Each `example/<name>/server.dart` is a self-contained `dart run` entrypoint that
+serves its own browser page and acts as the Dart peer.
+
 ```bash
-# ICE candidate gathering with Google STUN server
+# ICE candidate gathering against a public STUN server
 dart run example/ice_gather.dart stun:stun.l.google.com:19302
 
-# video_sender — Dart → browser, fake video (VP8 default)
+# Dart → browser fake video (open http://localhost:8080 in Chrome)
 dart run example/video_sender/server.dart --port=8080 --codec=h264
-# Open http://localhost:8080 in Chrome
 
-# video_receiver — browser camera → Dart VideoToolbox decoder (macOS)
+# browser camera → Dart decoder (macOS VideoToolbox for H.264)
 dart run example/video_receiver/server.dart --port=8080 --codec=h264
-# Open http://localhost:8080 in Chrome (grant camera permission)
 
-# video_echo — browser camera → Dart RTP forward → browser
+# browser camera echoed back through a Dart RTP forwarder
 dart run example/video_echo/server.dart --port=8080
-# Open http://localhost:8080 in Chrome (grant camera permission)
 ```
 
 ## Codec backends
 
-All backends are software (SW) except VideoToolbox on macOS, which is hardware-accelerated.
+Every backend is software except VideoToolbox on macOS, which is
+hardware-accelerated.
 
 | Codec | macOS | Linux | Windows |
 |-------|-------|-------|---------|
-| H.264 | VideoToolbox (HW) — `hook/build.dart` auto-compiles `src/wvt_callback.c` | OpenH264, downloaded from `ciscobinary.openh264.org` (version + SHA-256 pinned) | OpenH264, same Cisco prebuilt path as Linux |
-| VP8   | libvpx submodule, source-built and statically linked | (same as macOS) | `webdartc_vp8.dll` (CI-built wrapper, libvpx statically linked); source-build opt-in |
-| VP9   | (same as VP8) | (same as VP8) | `webdartc_vp9.dll` (same archive as `vp8.dll`); source-build opt-in |
-| Opus  | libopus submodule, source-built and statically linked | (same as macOS) | `webdartc_opus.dll` (CI-built wrapper, libopus statically linked); source-build opt-in |
+| H.264 | VideoToolbox (HW); `hook/build.dart` compiles `src/wvt_callback.c` | OpenH264, pinned download from `ciscobinary.openh264.org` | OpenH264, same Cisco prebuilt path |
+| VP8   | libvpx submodule, source-built + statically linked | same as macOS | `webdartc_vp8.dll` wrapper (source build opt-in) |
+| VP9   | same as VP8 (shares the libvpx archive) | same as VP8 | `webdartc_vp9.dll` (same archive as vp8) |
+| Opus  | libopus submodule, source-built + statically linked | same as macOS | `webdartc_opus.dll` wrapper (source build opt-in) |
 
-`hook/build.dart` runs on every supported platform and selects the right path:
+[`hook/build.dart`](hook/build.dart) runs on every platform and selects the path:
 
-- **VideoToolbox shim (macOS)** — compiles `src/wvt_callback.c` into a bundled dynamic library. The shim retains `CMSampleBuffer`s before the VT callback returns and pushes them onto a thread-safe queue the Dart side drains (a problem Dart FFI's async `NativeCallable.listener` cannot solve alone).
-- **OpenH264 (Linux + Windows)** — downloads the Cisco prebuilt binary from `ciscobinary.openh264.org` (see `_openH264Version` / `_openH264Sha256` in `hook/build.dart`) into the shared build cache and registers it as a `DynamicLoadingBundled` code asset under `package:webdartc/codec/h264/_openh264.dart`. See https://www.openh264.org/ for the upstream project's distribution terms.
-- **libopus / libvpx source build (macOS / Linux)** — CMake / libvpx's own `configure` produce `libopus.a` / `libvpx.a`, then `webdartc_{opus,vp8,vp9}.c` are linked in to produce `libwebdartc_codecs.{dylib,so}` (exports `webdartc_opus_*`) and `libwebdartc_vp{8,9}.{dylib,so}` (exports `webdartc_vp{8,9}_*`). The libvpx archive is built once per arch and reused for VP8 + VP9.
-- **libopus / libvpx prebuilt download (Windows)** — wrapper DLLs are pre-built by the matching `.github/workflows/build-lib{opus,vpx}-prebuilt.yaml` workflow on each release of the `webdartc-libvpx-prebuilt-*` / `webdartc-libopus-prebuilt-*` GitHub release tags. The consumer machine does not need MSVC / vcpkg. Opt in to a local MSVC + vcpkg source build by setting `hooks.user_defines.webdartc.libvpx_source_build` / `libopus_source_build` to true in the workspace-root `pubspec.yaml` — the hook then runs `dart/tool/build_libvpx_wrappers.dart` / `build_libopus_wrappers.dart` instead of the download.
+- **VideoToolbox shim (macOS)** — compiles `src/wvt_callback.c` into a bundled
+  dylib. The shim retains each `CMSampleBuffer` before the VT callback returns
+  and queues it for the Dart side to drain — something `NativeCallable.listener`
+  can't do alone.
+- **OpenH264 (Linux + Windows)** — downloads the Cisco prebuilt binary
+  (`_openH264Version` / `_openH264Sha256` pin version + hash) and registers it as
+  a `DynamicLoadingBundled` asset. See <https://www.openh264.org/> for upstream
+  terms.
+- **libopus / libvpx source build (macOS / Linux)** — CMake / libvpx's
+  `configure` produce `libopus.a` / `libvpx.a`; the `webdartc_{opus,vp8,vp9}.c`
+  wrappers link them into bundled dylibs exporting only `webdartc_*`. The libvpx
+  archive is built once per arch and shared by VP8 + VP9.
+- **libopus / libvpx prebuilt (Windows)** — wrapper DLLs are produced by the
+  `build-lib{opus,vpx}-prebuilt.yaml` workflows and downloaded at build time, so
+  consumers need no MSVC / vcpkg. Opt into a local source build by setting
+  `hooks.user_defines.webdartc.lib{vpx,opus}_source_build=true` in the
+  workspace-root `pubspec.yaml`.
 
-Every codec symbol is hidden via `-fvisibility=hidden` on macOS / Linux, and on Windows by exporting only `webdartc_*` symbols with `__declspec(dllexport)`. The bundled copies can't collide with another libopus / libvpx loaded into the same process; for libopus we additionally pre-define `OPUS_EXPORT=` to neutralize its own `visibility("default")` attribute.
+Every codec symbol is hidden (`-fvisibility=hidden` on macOS / Linux;
+`__declspec(dllexport)` for `webdartc_*` only on Windows) so the bundled copies
+can't collide with another libopus / libvpx in the same process. For libopus we
+additionally pre-define `OPUS_EXPORT=` to neutralize its own
+`visibility("default")`.
 
 ## Crypto backends
 
-| Primitive | macOS | Linux |
-|-----------|-------|-------|
-| AES-128-CM (SRTP) | CommonCrypto | OpenSSL |
-| AES-GCM | CommonCrypto | OpenSSL |
-| ECDH P-256 | Security.framework | OpenSSL |
-| ECDSA P-256 | Security.framework | OpenSSL |
-| HMAC-SHA1/SHA-256 | package:crypto | package:crypto |
-| HKDF | CommonCrypto | Manual |
-| CSPRNG | CCRandomGenerateBytes | Random.secure() |
+| Primitive | macOS | Linux | Windows |
+|-----------|-------|-------|---------|
+| AES-128-CM / AES-GCM (SRTP) | CommonCrypto | OpenSSL | CNG (BCrypt) |
+| ECDH P-256 | Security.framework | OpenSSL | CNG (BCrypt) |
+| ECDSA P-256 | Security.framework | OpenSSL | CNG (BCrypt) |
+| HMAC-SHA1 / SHA-256 | package:crypto | package:crypto | package:crypto |
+| CSPRNG | `Random.secure()` | `Random.secure()` | `Random.secure()` |
 
 ## Third-party licenses
 
-`webdartc` bundles or downloads third-party codec libraries — their licenses apply to any binary you redistribute. Full text for each (libvpx, libopus, OpenH264) lives in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). On Linux, `dart/hook/build.dart` also drops a `NOTICE.txt` alongside the downloaded OpenH264 dylib (`.dart_tool/hooks_runner/shared/webdartc/openh264-*/NOTICE.txt`) so the governing text travels with the binary.
+webdartc bundles or downloads libvpx, libopus, and OpenH264 — their licenses
+apply to anything you redistribute. Full text is in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). On Linux the build hook also
+drops a `NOTICE.txt` next to the downloaded OpenH264 binary so the governing text
+travels with it.
