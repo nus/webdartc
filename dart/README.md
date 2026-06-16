@@ -24,8 +24,9 @@ Data channels and media (audio + video, send + receive) are both supported.
   `Webdartc` factory that owns a shared `SettingEngine` + `MediaEngine`. Public
   types drop the `RTC` prefix (`PeerConnection`, not `RTCPeerConnection`).
 - **Platform-native crypto** via FFI — CommonCrypto + Security.framework on
-  macOS, OpenSSL on Linux, CNG (`bcrypt.dll`) on Windows, and the Java
-  Cryptography Architecture (JCA, via `package:jni`) on Android.
+  macOS, CNG (`bcrypt.dll`) on Windows, and BoringSSL (built via vcpkg,
+  statically linked into the bundled `webdartc_crypto` wrapper) on Linux +
+  Android.
 - **Codecs** — VP8 / VP9 via libvpx, H.264 via Apple VideoToolbox
   (hardware-accelerated on macOS) or Cisco-prebuilt OpenH264 (Linux + Windows),
   Opus via libopus. On Android, libvpx + libopus are cross-compiled with the NDK
@@ -38,18 +39,18 @@ Data channels and media (audio + video, send + receive) are both supported.
 - **macOS** — Xcode (VideoToolbox / CoreMedia / CoreVideo) and CMake. The
   `dart/third_party/opus` + `dart/third_party/libvpx` submodules must be checked
   out.
-- **Linux** — `cmake clang nasm libssl-dev` (build libopus, assemble libvpx's
-  x86_64 SIMD, OpenSSL for crypto). OpenH264 is auto-downloaded on first build.
-  Submodules required.
+- **Linux** — `cmake clang nasm pkg-config` (build libopus, assemble libvpx's
+  x86_64 SIMD; pkg-config for vcpkg's BoringSSL port). OpenH264 is
+  auto-downloaded; BoringSSL is source-built via vcpkg (the build hook clones +
+  bootstraps vcpkg itself, or honours `VCPKG_ROOT`). Submodules required.
 - **Windows** — no extra tooling for the default path: `dart pub get` downloads
   the VP8 / VP9 / Opus wrapper DLLs and the Cisco OpenH264 binary, and CNG
   provides crypto. Submodules are only needed for the MSVC + vcpkg source-build
   opt-in.
 - **Android** — built through Flutter (`flutter test integration_test`, not
-  `dart test`); needs the Android SDK + NDK + CMake. The build hook
-  cross-compiles libvpx + libopus from the submodules with the NDK, and crypto
-  runs through the platform JCA via `package:jni`. Pulling in `jni` makes this
-  package require the Flutter SDK.
+  `dart test`); needs the Android SDK + NDK + CMake + pkg-config. The build
+  hook cross-compiles libvpx + libopus (codecs) with the NDK and source-builds
+  BoringSSL (crypto) via vcpkg for each ABI (`ANDROID_NDK_HOME`).
 
 ## Installation
 
@@ -104,7 +105,7 @@ final pc = webrtc.createPeerConnection();
  ┌──────┬──────┼──────┬──────┬──────┬──────┐
  ICE   TURN   DTLS   SRTP   SCTP  RTP/RTCP  SDP
  │             │
-STUN          Crypto  (CommonCrypto / OpenSSL / CNG / Android JCA via FFI)
+STUN          Crypto  (CommonCrypto / BoringSSL / CNG via FFI)
 ```
 
 Every protocol module follows one shape:
@@ -232,17 +233,18 @@ additionally pre-define `OPUS_EXPORT=` to neutralize its own
 
 | Primitive | macOS | Linux | Windows | Android |
 |-----------|-------|-------|---------|---------|
-| AES-128-CM / AES-GCM (SRTP) | CommonCrypto | OpenSSL | CNG (BCrypt) | JCA `Cipher` |
-| ECDH P-256 | Security.framework | OpenSSL | CNG (BCrypt) | JCA `KeyAgreement` |
-| ECDSA P-256 | Security.framework | OpenSSL | CNG (BCrypt) | JCA `Signature` |
+| AES-128-CM / AES-GCM (SRTP) | CommonCrypto | BoringSSL | CNG (BCrypt) | BoringSSL |
+| ECDH P-256 | Security.framework | BoringSSL | CNG (BCrypt) | BoringSSL |
+| ECDSA P-256 | Security.framework | BoringSSL | CNG (BCrypt) | BoringSSL |
 | HMAC-SHA1 / SHA-256 | package:crypto | package:crypto | package:crypto | package:crypto |
 | CSPRNG | `Random.secure()` | `Random.secure()` | `Random.secure()` | `Random.secure()` |
 
-On Android the AES / ECDH / ECDSA primitives go through the platform JCA
-(`java.security` / `javax.crypto`, backed by Conscrypt/BoringSSL) via
-`package:jni`. ChaCha20-Poly1305 and the self-signed DTLS certificate reuse the
-pure-Dart implementations (as on macOS). Adding `jni` makes this package depend
-on the Flutter SDK.
+Linux + Android share one backend: BoringSSL is source-built via vcpkg and
+statically linked into the bundled `webdartc_crypto` wrapper, which exports only
+the `wd_*` passthroughs that `lib/crypto/openssl.dart` binds via `@Native`
+(BoringSSL's own symbols stay hidden — the same shape as the codec wrappers).
+ChaCha20-Poly1305 and the self-signed DTLS certificate use the pure-Dart
+implementations (BoringSSL exposes ChaCha only via EVP_AEAD, not EVP_CIPHER).
 
 ## Third-party licenses
 

@@ -431,42 +431,36 @@ Each item:
 
 ## Android
 
-### jca.dart: scope-bound JNI handle cleanup (release-on-throw)
+### BoringSSL prebuilt distribution (avoid building via vcpkg at build time)
 
-- **Found:** 2026-06-16, /simplify altitude review.
-- **Detail:** Every op in [dart/lib/crypto/jca.dart](dart/lib/crypto/jca.dart)
-  except `aesGcmDecrypt` releases its JNI handles with bare sequential
-  `.release()` calls and no `try/finally`. If an intermediate JNI call throws
-  (`getInstance`→`NoSuchAlgorithmException`, `init`→`InvalidKeyException`, …),
-  handles allocated before the throw leak a JNI global ref. In practice the
-  normal SRTP/DTLS flow feeds well-formed input so these don't throw mid-op
-  (the one method that throws in normal operation — `aesGcmDecrypt` on a tag
-  mismatch — already uses `try/finally`), so this is defensive hardening, not a
-  live leak.
-- **Why deferred:** Touches every method in the file (crypto hot path, 139
-  on-device tests green today); a careful rewrite is its own change, not a
-  cleanup-pass edit.
-- **Acceptance:** Rewrite each op with `using((arena) { … obj.releasedBy(arena) … })`
-  (both re-exported by `package:jni`), so handle lifetime is scope-bound and
-  released on throw; handles that must outlive the call (KeyPair / ecParams /
-  p256Params) stay unregistered. Removes the manual release bookkeeping too.
+- **Found:** 2026-06-17, BoringSSL crypto migration.
+- **Detail:** Linux + Android crypto source-builds BoringSSL via vcpkg inside
+  the build hook ([dart/hook/build.dart](dart/hook/build.dart) `_buildBoringSslCrypto`),
+  which clones + bootstraps vcpkg and compiles BoringSSL the first time (minutes;
+  cached under `outputDirectoryShared`). This is the explicitly-chosen model, but
+  it puts vcpkg + a full BoringSSL build on the default Linux/Android build path.
+- **Why deferred:** Functional and cached; the cost is build-time only.
+- **Acceptance:** Optionally mirror the Windows codec model — a
+  `build-boringssl-prebuilt.yaml` workflow that vcpkg-builds `libcrypto.a` per
+  triplet and publishes SHA-256-pinned zips; the hook downloads them by default
+  (`_bundleLibvpxPrebuilt` pattern), keeping vcpkg as an opt-in source build.
 
-### Android platform support (crypto + codecs + Flutter render) — DONE (2026-06-15)
+### Android platform support (crypto + codecs + Flutter render) — DONE (2026-06-15; crypto reworked 2026-06-17)
 
 - **Found:** 2026-06-13 Android-support investigation; landed 2026-06-15.
 - **Detail:** First Android milestone — "browser → Android receive + Flutter
   render". Verified on an Android emulator (API 35, arm64) via a throwaway
   Flutter app (crypto 10/10, codec round-trips 3/3, DTLS data channel A→B,
   render plugin + visual frame display):
-  - **Crypto** — [dart/lib/crypto/android_backend.dart](dart/lib/crypto/android_backend.dart)
-    + [dart/lib/crypto/jca.dart](dart/lib/crypto/jca.dart): the six crypto
-      backends served by the platform JCA (`java.security` / `javax.crypto`,
-      Conscrypt/BoringSSL) through `package:jni` — the Android analogue of
-      macOS=Security.framework / Windows=CNG, no bundled OpenSSL.
-      ChaCha20-Poly1305 + the cert DER reuse the existing pure-Dart code.
-      Factory dispatch added in
-      [crypto_backend.dart](dart/lib/crypto/crypto_backend.dart); `jni` added to
-      `dart/pubspec.yaml`.
+  - **Crypto** — initially via the platform JCA (`package:jni`), but that made
+    `webdartc` require the Flutter SDK and broke the pure-Dart `dart` CI (PR #54).
+    **Reworked 2026-06-17** to BoringSSL: [boringssl_backend.dart](dart/lib/crypto/boringssl_backend.dart)
+    (shared by Linux + Android) over [openssl.dart](dart/lib/crypto/openssl.dart)'s
+    `@Native` bindings to the `webdartc_crypto` wrapper, which statically links
+    vcpkg-built `libcrypto.a` ([dart/src/webdartc_crypto.c](dart/src/webdartc_crypto.c),
+    [hook/build.dart](dart/hook/build.dart) `_buildBoringSslCrypto`). `jca.dart`,
+    `android_backend.dart`, and the `jni` dependency were deleted; webdartc is
+    pure-Dart again. ChaCha20-Poly1305 + the cert DER stay pure-Dart.
   - **Codecs** — `OS.android` branch in
     [dart/hook/build.dart](dart/hook/build.dart): libopus via the NDK
     `android.toolchain.cmake`, libvpx via its `*-android-gcc` targets driven by
@@ -479,8 +473,7 @@ Each item:
     runner added; the example negotiates VP8/Opus on Android.
 - **Notes / non-Android-specific:** the webdartc↔webdartc loopback B→A echo on a
   single channel times out on the host too (pre-existing SCTP/data-channel
-  behaviour, unrelated to Android). Adding `jni` pulls its native lib into
-  desktop builds as well (cross-platform, builds clean).
+  behaviour, unrelated to Android).
 
 ### Android render: zero-copy via MediaCodec output Surface (drop CPU convert)
 

@@ -4,6 +4,15 @@ This package bundles or downloads the following third-party libraries. Their lic
 
 ---
 
+## BoringSSL (crypto, Linux + Android)
+
+- **Upstream:** https://boringssl.googlesource.com/boringssl
+- **Obtained via:** the `boringssl` vcpkg port (source-built by `hook/build.dart`), statically linked into the bundled `webdartc_crypto` library.
+- **License:** Apache License 2.0 for the bulk of the code, with portions under the ISC, MIT, and (legacy) OpenSSL/SSLeay licenses. There is no advertising clause.
+- **Full text:** the complete, current license is upstream at [`LICENSE`](https://boringssl.googlesource.com/boringssl/+/main/LICENSE); vcpkg also writes it to `share/boringssl/copyright` in the build tree. A binary that includes BoringSSL must reproduce that text (Apache-2.0 §4). webdartc only ships BoringSSL inside Linux / Android builds.
+
+---
+
 ## libvpx (VP8 + VP9)
 
 - **Upstream:** https://chromium.googlesource.com/webm/libvpx

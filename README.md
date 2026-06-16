@@ -101,16 +101,17 @@ rationale live in [`dart/README.md#codec-backends`](dart/README.md#codec-backend
 - **macOS** — Xcode (CoreMedia / VideoToolbox frameworks) and CMake
   (`brew install cmake`). NASM (`brew install nasm`) is only needed for the
   x86_64 slice of a universal build. `flutter pub get` + `dart test` handle the rest.
-- **Linux** — `sudo apt-get install cmake clang nasm libssl-dev` (build libopus,
-  assemble libvpx's x86_64 SIMD, OpenSSL for crypto). Codecs are vendored or
-  downloaded — no system codec packages needed.
+- **Linux** — `sudo apt-get install cmake clang nasm pkg-config` (build libopus,
+  assemble libvpx's x86_64 SIMD; pkg-config for vcpkg's BoringSSL port). Codecs
+  are vendored/downloaded; BoringSSL (crypto) is source-built via vcpkg, which
+  the build hook clones + bootstraps itself (or honours `VCPKG_ROOT`).
 - **Windows** — nothing for the default path: `flutter pub get` downloads the
   VP8 / VP9 / Opus wrapper DLLs and the Cisco OpenH264 binary, and the OS's CNG
   (`bcrypt.dll`) provides crypto. The source-build opt-in needs MSVC + vcpkg.
 - **Android** — the Flutter Android toolchain (SDK + NDK + CMake, e.g. via
-  Android Studio). The build hook cross-compiles libvpx + libopus from the
-  submodules with the NDK (VP8 / VP9 / Opus; no H.264), and crypto runs through
-  the platform JCA via `package:jni` — no OpenSSL or extra system packages.
+  Android Studio) plus pkg-config. The build hook cross-compiles libvpx +
+  libopus with the NDK (VP8 / VP9 / Opus; no H.264) and source-builds BoringSSL
+  (crypto) via vcpkg per ABI.
 
 ## What `flutter` owns
 
