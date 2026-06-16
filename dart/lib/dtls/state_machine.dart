@@ -596,9 +596,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       return Err(const CryptoError('DTLS: no expected fingerprint set'));
     }
     // Verify fingerprint matches the remote certificate.
-    final fp = Sha256.hash(
-      certDer,
-    ).map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(':');
+    final fp = Sha256.fingerprint(certDer);
     if (fp != expectedRemoteFingerprint) {
       return Err(const CryptoError('DTLS: fingerprint mismatch'));
     }

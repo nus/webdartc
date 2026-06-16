@@ -431,8 +431,7 @@ final class LinuxEcdsaBackend implements EcdsaBackend, Finalizable {
     final tbs = X509Der.buildTbsCertificate(pubKeyBytes);
     final signature = _signWithPkey(pkey, tbs);
     final cert = X509Der.buildCertificate(tbs, signature);
-    final fpBytes = Sha256.hash(cert);
-    final fp = fpBytes.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(':');
+    final fp = Sha256.fingerprint(cert);
 
     return LinuxEcdsaBackend._(derBytes: cert, sha256Fingerprint: fp, pkey: pkey);
   }

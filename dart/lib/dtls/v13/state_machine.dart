@@ -1151,9 +1151,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     // uppercase hex.
     final expected = expectedRemoteFingerprint;
     if (expected != null) {
-      final fp = Sha256.hash(certDer)
-          .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
-          .join(':');
+      final fp = Sha256.fingerprint(certDer);
       if (fp != expected) {
         return core.Err(
           const core.CryptoError(
