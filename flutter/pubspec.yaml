@@ -23,6 +23,9 @@ dev_dependencies:
 flutter:
   plugin:
     platforms:
+      android:
+        package: dev.webdartc.webdartc_flutter
+        pluginClass: WebdartcFlutterPlugin
       macos:
         pluginClass: WebdartcFlutterPlugin
       windows:
