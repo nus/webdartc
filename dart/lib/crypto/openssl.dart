@@ -1,8 +1,21 @@
-// Package-private FFI bindings for OpenSSL libcrypto on Linux.
+// Package-private FFI bindings for BoringSSL libcrypto, used by the Linux +
+// Android crypto backend (boringssl_backend.dart).
+//
+// BoringSSL is statically linked into the bundled `webdartc_crypto` library by
+// dart/hook/build.dart, which exports only the `wd_*` passthrough wrappers
+// declared in dart/src/webdartc_crypto.{h,c}. These `@Native` bindings resolve
+// those wrappers against that bundled asset. The library is only built on
+// Linux + Android, and the functions are only ever called there (the crypto
+// factory selects this backend only on those platforms), so the declarations
+// are inert on macOS / Windows.
+//
 // Do NOT import this file from outside lib/crypto/.
+@DefaultAsset('package:webdartc/crypto/webdartc_crypto.dart')
+library;
+
 import 'dart:ffi';
 
-// ── OpenSSL constants ───────────────────────────────────────────────────────
+// ── BoringSSL constants ─────────────────────────────────────────────────────
 
 const int _evpCtrlGcmSetIvlen = 0x09;
 const int _evpCtrlGcmGetTag = 0x10;
@@ -10,194 +23,179 @@ const int _evpCtrlGcmSetTag = 0x11;
 const int _nidX9_62Prime256v1 = 415; // NID_X9_62_prime256v1
 const int _pointConversionUncompressed = 4;
 
-// ── Native function type aliases ────────────────────────────────────────────
+// ── @Native wrapper bindings (wd_* exported by webdartc_crypto) ──────────────
 
 // EVP_CIPHER_CTX
-typedef _EvpCipherCtxNewN = Pointer<Void> Function();
-typedef _EvpCipherCtxFreeN = Void Function(Pointer<Void>);
-typedef _EvpCipherCtxFreeD = void Function(Pointer<Void>);
-typedef _EvpCipherCtxCtrlN = Int32 Function(Pointer<Void>, Int32, Int32, Pointer<Void>);
-typedef _EvpCipherCtxCtrlD = int Function(Pointer<Void>, int, int, Pointer<Void>);
+@Native<Pointer<Void> Function()>(symbol: 'wd_EVP_CIPHER_CTX_new')
+external Pointer<Void> _evpCipherCtxNew();
+@Native<Void Function(Pointer<Void>)>(symbol: 'wd_EVP_CIPHER_CTX_free')
+external void _evpCipherCtxFree(Pointer<Void> ctx);
+@Native<Int32 Function(Pointer<Void>, Int32, Int32, Pointer<Void>)>(
+    symbol: 'wd_EVP_CIPHER_CTX_ctrl')
+external int _evpCipherCtxCtrl(Pointer<Void> ctx, int type, int arg, Pointer<Void> ptr);
 
-// EVP_Encrypt / EVP_Decrypt
-typedef _EvpEncryptInitExN = Int32 Function(
-    Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
-typedef _EvpEncryptInitExD = int Function(
-    Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
-typedef _EvpEncryptUpdateN = Int32 Function(
-    Pointer<Void>, Pointer<Uint8>, Pointer<Int32>, Pointer<Uint8>, Int32);
-typedef _EvpEncryptUpdateD = int Function(
-    Pointer<Void>, Pointer<Uint8>, Pointer<Int32>, Pointer<Uint8>, int);
-typedef _EvpEncryptFinalExN = Int32 Function(Pointer<Void>, Pointer<Uint8>, Pointer<Int32>);
-typedef _EvpEncryptFinalExD = int Function(Pointer<Void>, Pointer<Uint8>, Pointer<Int32>);
+// EVP_Encrypt
+@Native<Int32 Function(Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>)>(
+    symbol: 'wd_EVP_EncryptInit_ex')
+external int _evpEncryptInitEx(Pointer<Void> ctx, Pointer<Void> cipher, Pointer<Void> impl, Pointer<Uint8> key, Pointer<Uint8> iv);
+@Native<Int32 Function(Pointer<Void>, Pointer<Uint8>, Pointer<Int32>, Pointer<Uint8>, Int32)>(
+    symbol: 'wd_EVP_EncryptUpdate')
+external int _evpEncryptUpdate(Pointer<Void> ctx, Pointer<Uint8> out, Pointer<Int32> outl, Pointer<Uint8> inp, int inl);
+@Native<Int32 Function(Pointer<Void>, Pointer<Uint8>, Pointer<Int32>)>(
+    symbol: 'wd_EVP_EncryptFinal_ex')
+external int _evpEncryptFinalEx(Pointer<Void> ctx, Pointer<Uint8> out, Pointer<Int32> outl);
 
-typedef _EvpDecryptInitExN = Int32 Function(
-    Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
-typedef _EvpDecryptInitExD = int Function(
-    Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>);
-typedef _EvpDecryptUpdateN = Int32 Function(
-    Pointer<Void>, Pointer<Uint8>, Pointer<Int32>, Pointer<Uint8>, Int32);
-typedef _EvpDecryptUpdateD = int Function(
-    Pointer<Void>, Pointer<Uint8>, Pointer<Int32>, Pointer<Uint8>, int);
-typedef _EvpDecryptFinalExN = Int32 Function(Pointer<Void>, Pointer<Uint8>, Pointer<Int32>);
-typedef _EvpDecryptFinalExD = int Function(Pointer<Void>, Pointer<Uint8>, Pointer<Int32>);
+// EVP_Decrypt
+@Native<Int32 Function(Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>)>(
+    symbol: 'wd_EVP_DecryptInit_ex')
+external int _evpDecryptInitEx(Pointer<Void> ctx, Pointer<Void> cipher, Pointer<Void> impl, Pointer<Uint8> key, Pointer<Uint8> iv);
+@Native<Int32 Function(Pointer<Void>, Pointer<Uint8>, Pointer<Int32>, Pointer<Uint8>, Int32)>(
+    symbol: 'wd_EVP_DecryptUpdate')
+external int _evpDecryptUpdate(Pointer<Void> ctx, Pointer<Uint8> out, Pointer<Int32> outl, Pointer<Uint8> inp, int inl);
+@Native<Int32 Function(Pointer<Void>, Pointer<Uint8>, Pointer<Int32>)>(
+    symbol: 'wd_EVP_DecryptFinal_ex')
+external int _evpDecryptFinalEx(Pointer<Void> ctx, Pointer<Uint8> out, Pointer<Int32> outl);
 
-// EVP_CIPHER getters (return const EVP_CIPHER*)
-typedef _EvpCipherN = Pointer<Void> Function();
+// EVP_CIPHER getters
+@Native<Pointer<Void> Function()>(symbol: 'wd_EVP_aes_128_ecb')
+external Pointer<Void> _evpAes128Ecb();
+@Native<Pointer<Void> Function()>(symbol: 'wd_EVP_aes_256_ecb')
+external Pointer<Void> _evpAes256Ecb();
+@Native<Pointer<Void> Function()>(symbol: 'wd_EVP_aes_128_gcm')
+external Pointer<Void> _evpAes128Gcm();
+@Native<Pointer<Void> Function()>(symbol: 'wd_EVP_aes_256_gcm')
+external Pointer<Void> _evpAes256Gcm();
 
 // EC_KEY
-typedef _EcKeyNewByCurveNameN = Pointer<Void> Function(Int32);
-typedef _EcKeyNewByCurveNameD = Pointer<Void> Function(int);
-typedef _EcKeyGenerateKeyN = Int32 Function(Pointer<Void>);
-typedef _EcKeyGenerateKeyD = int Function(Pointer<Void>);
-typedef _EcKeyFreeN = Void Function(Pointer<Void>);
-typedef _EcKeyFreeD = void Function(Pointer<Void>);
-typedef _EcKeyGet0PublicKeyN = Pointer<Void> Function(Pointer<Void>);
-typedef _EcKeyGet0PrivateKeyN = Pointer<Void> Function(Pointer<Void>);
-typedef _EcKeyGet0GroupN = Pointer<Void> Function(Pointer<Void>);
+@Native<Pointer<Void> Function(Int32)>(symbol: 'wd_EC_KEY_new_by_curve_name')
+external Pointer<Void> _ecKeyNewByCurveName(int nid);
+@Native<Int32 Function(Pointer<Void>)>(symbol: 'wd_EC_KEY_generate_key')
+external int _ecKeyGenerateKey(Pointer<Void> key);
+@Native<Void Function(Pointer<Void>)>(symbol: 'wd_EC_KEY_free')
+external void _ecKeyFree(Pointer<Void> key);
+@Native<Pointer<Void> Function(Pointer<Void>)>(symbol: 'wd_EC_KEY_get0_public_key')
+external Pointer<Void> _ecKeyGet0PublicKey(Pointer<Void> key);
+@Native<Pointer<Void> Function(Pointer<Void>)>(symbol: 'wd_EC_KEY_get0_private_key')
+external Pointer<Void> _ecKeyGet0PrivateKey(Pointer<Void> key);
+@Native<Pointer<Void> Function(Pointer<Void>)>(symbol: 'wd_EC_KEY_get0_group')
+external Pointer<Void> _ecKeyGet0Group(Pointer<Void> key);
+@Native<Int32 Function(Pointer<Void>, Pointer<Void>)>(symbol: 'wd_EC_KEY_set_public_key')
+external int _ecKeySetPublicKey(Pointer<Void> key, Pointer<Void> point);
 
 // EC_POINT
-typedef _EcPointPoint2OctN = Size Function(
-    Pointer<Void>, Pointer<Void>, Int32, Pointer<Uint8>, Size, Pointer<Void>);
-typedef _EcPointPoint2OctD = int Function(
-    Pointer<Void>, Pointer<Void>, int, Pointer<Uint8>, int, Pointer<Void>);
-typedef _EcPointOct2PointN = Pointer<Void> Function(
-    Pointer<Void>, Pointer<Void>, Pointer<Uint8>, Size, Pointer<Void>);
-typedef _EcPointOct2PointD = Pointer<Void> Function(
-    Pointer<Void>, Pointer<Void>, Pointer<Uint8>, int, Pointer<Void>);
-typedef _EcPointNewN = Pointer<Void> Function(Pointer<Void>);
-typedef _EcPointFreeN = Void Function(Pointer<Void>);
-typedef _EcPointFreeD = void Function(Pointer<Void>);
+@Native<Size Function(Pointer<Void>, Pointer<Void>, Int32, Pointer<Uint8>, Size, Pointer<Void>)>(
+    symbol: 'wd_EC_POINT_point2oct')
+external int _ecPointPoint2Oct(Pointer<Void> group, Pointer<Void> point, int form, Pointer<Uint8> buf, int len, Pointer<Void> ctx);
+@Native<Pointer<Void> Function(Pointer<Void>, Pointer<Void>, Pointer<Uint8>, Size, Pointer<Void>)>(
+    symbol: 'wd_EC_POINT_oct2point')
+external Pointer<Void> _ecPointOct2Point(Pointer<Void> group, Pointer<Void> point, Pointer<Uint8> buf, int len, Pointer<Void> ctx);
+@Native<Pointer<Void> Function(Pointer<Void>)>(symbol: 'wd_EC_POINT_new')
+external Pointer<Void> _ecPointNew(Pointer<Void> group);
+@Native<Void Function(Pointer<Void>)>(symbol: 'wd_EC_POINT_free')
+external void _ecPointFree(Pointer<Void> point);
 
 // ECDH
-typedef _EcdhComputeKeyN = Int32 Function(
-    Pointer<Uint8>, Int32, Pointer<Void>, Pointer<Void>, Pointer<Void>);
-typedef _EcdhComputeKeyD = int Function(
-    Pointer<Uint8>, int, Pointer<Void>, Pointer<Void>, Pointer<Void>);
+@Native<Int32 Function(Pointer<Uint8>, Int32, Pointer<Void>, Pointer<Void>, Pointer<Void>)>(
+    symbol: 'wd_ECDH_compute_key')
+external int _ecdhComputeKey(Pointer<Uint8> out, int outlen, Pointer<Void> pub, Pointer<Void> ecdh, Pointer<Void> kdf);
 
 // ECDSA
-typedef _EcdsaSignN = Int32 Function(
-    Int32, Pointer<Uint8>, Int32, Pointer<Uint8>, Pointer<Uint32>, Pointer<Void>);
-typedef _EcdsaSignD = int Function(
-    int, Pointer<Uint8>, int, Pointer<Uint8>, Pointer<Uint32>, Pointer<Void>);
-typedef _EcdsaSizeN = Int32 Function(Pointer<Void>);
-typedef _EcdsaSizeD = int Function(Pointer<Void>);
-typedef _EcdsaVerifyN = Int32 Function(
-    Int32, Pointer<Uint8>, Int32, Pointer<Uint8>, Int32, Pointer<Void>);
-typedef _EcdsaVerifyD = int Function(
-    int, Pointer<Uint8>, int, Pointer<Uint8>, int, Pointer<Void>);
-typedef _EcKeySetPublicKeyN = Int32 Function(Pointer<Void>, Pointer<Void>);
-typedef _EcKeySetPublicKeyD = int Function(Pointer<Void>, Pointer<Void>);
+@Native<Int32 Function(Int32, Pointer<Uint8>, Int32, Pointer<Uint8>, Pointer<Uint32>, Pointer<Void>)>(
+    symbol: 'wd_ECDSA_sign')
+external int _ecdsaSign(int type, Pointer<Uint8> dgst, int dgstlen, Pointer<Uint8> sig, Pointer<Uint32> siglen, Pointer<Void> eckey);
+@Native<Int32 Function(Pointer<Void>)>(symbol: 'wd_ECDSA_size')
+external int _ecdsaSize(Pointer<Void> eckey);
+@Native<Int32 Function(Int32, Pointer<Uint8>, Int32, Pointer<Uint8>, Int32, Pointer<Void>)>(
+    symbol: 'wd_ECDSA_verify')
+external int _ecdsaVerify(int type, Pointer<Uint8> dgst, int dgstlen, Pointer<Uint8> sig, int siglen, Pointer<Void> eckey);
 
-// EVP_MD_CTX / EVP_DigestSign (for message signing without pre-hashing)
-typedef _EvpMdCtxNewN = Pointer<Void> Function();
-typedef _EvpMdCtxFreeN = Void Function(Pointer<Void>);
-typedef _EvpMdCtxFreeD = void Function(Pointer<Void>);
-typedef _EvpDigestSignInitN = Int32 Function(
-    Pointer<Void>, Pointer<Pointer<Void>>, Pointer<Void>, Pointer<Void>, Pointer<Void>);
-typedef _EvpDigestSignInitD = int Function(
-    Pointer<Void>, Pointer<Pointer<Void>>, Pointer<Void>, Pointer<Void>, Pointer<Void>);
-typedef _EvpDigestSignN = Int32 Function(
-    Pointer<Void>, Pointer<Uint8>, Pointer<Size>, Pointer<Uint8>, Size);
-typedef _EvpDigestSignD = int Function(
-    Pointer<Void>, Pointer<Uint8>, Pointer<Size>, Pointer<Uint8>, int);
+// EVP_MD_CTX / EVP_DigestSign
+@Native<Pointer<Void> Function()>(symbol: 'wd_EVP_MD_CTX_new')
+external Pointer<Void> _evpMdCtxNew();
+@Native<Void Function(Pointer<Void>)>(symbol: 'wd_EVP_MD_CTX_free')
+external void _evpMdCtxFree(Pointer<Void> ctx);
+@Native<Int32 Function(Pointer<Void>, Pointer<Pointer<Void>>, Pointer<Void>, Pointer<Void>, Pointer<Void>)>(
+    symbol: 'wd_EVP_DigestSignInit')
+external int _evpDigestSignInit(Pointer<Void> ctx, Pointer<Pointer<Void>> pctx, Pointer<Void> type, Pointer<Void> impl, Pointer<Void> pkey);
+@Native<Int32 Function(Pointer<Void>, Pointer<Uint8>, Pointer<Size>, Pointer<Uint8>, Size)>(
+    symbol: 'wd_EVP_DigestSign')
+external int _evpDigestSign(Pointer<Void> ctx, Pointer<Uint8> sig, Pointer<Size> siglen, Pointer<Uint8> tbs, int tbslen);
 
 // EVP_PKEY
-typedef _EvpPkeyNewN = Pointer<Void> Function();
-typedef _EvpPkeyFreeN = Void Function(Pointer<Void>);
-typedef _EvpPkeyFreeD = void Function(Pointer<Void>);
-// EVP_sha256
-typedef _EvpSha256N = Pointer<Void> Function();
+@Native<Pointer<Void> Function()>(symbol: 'wd_EVP_PKEY_new')
+external Pointer<Void> _evpPkeyNew();
+@Native<Void Function(Pointer<Void>)>(symbol: 'wd_EVP_PKEY_free')
+external void _evpPkeyFree(Pointer<Void> pkey);
+@Native<Int32 Function(Pointer<Void>, Pointer<Void>)>(symbol: 'wd_EVP_PKEY_set1_EC_KEY')
+external int _evpPkeySet1EcKey(Pointer<Void> pkey, Pointer<Void> key);
+@Native<Pointer<Void> Function(Pointer<Void>)>(symbol: 'wd_EVP_PKEY_get1_EC_KEY')
+external Pointer<Void> _evpPkeyGet1EcKey(Pointer<Void> pkey);
+@Native<Pointer<Void> Function()>(symbol: 'wd_EVP_sha256')
+external Pointer<Void> _evpSha256();
 
-// ── Singleton bindings ──────────────────────────────────────────────────────
+// ── Facade ──────────────────────────────────────────────────────────────────
+//
+// Field names match the previous OpenSSL binding so boringssl_backend.dart is
+// unchanged. Each field is a tear-off of the corresponding `@Native` function.
 
 class OpenSsl {
   OpenSsl._();
-
   static final OpenSsl instance = OpenSsl._();
 
-  static DynamicLibrary _loadLibcrypto() {
-    for (final name in ['libcrypto.so', 'libcrypto.so.3', 'libcrypto.so.1.1']) {
-      try {
-        return DynamicLibrary.open(name);
-      } on ArgumentError {
-        continue;
-      }
-    }
-    throw UnsupportedError('Could not load OpenSSL libcrypto. '
-        'Tried: libcrypto.so, libcrypto.so.3, libcrypto.so.1.1');
-  }
+  final evpCipherCtxNew = _evpCipherCtxNew;
+  final evpCipherCtxFree = _evpCipherCtxFree;
+  final evpCipherCtxCtrl = _evpCipherCtxCtrl;
 
-  late final DynamicLibrary lib = _loadLibcrypto();
+  final evpEncryptInitEx = _evpEncryptInitEx;
+  final evpEncryptUpdate = _evpEncryptUpdate;
+  final evpEncryptFinalEx = _evpEncryptFinalEx;
 
-  // EVP_CIPHER_CTX
-  late final evpCipherCtxNew = lib.lookupFunction<_EvpCipherCtxNewN, Pointer<Void> Function()>('EVP_CIPHER_CTX_new');
-  late final evpCipherCtxFree = lib.lookupFunction<_EvpCipherCtxFreeN, _EvpCipherCtxFreeD>('EVP_CIPHER_CTX_free');
-  late final evpCipherCtxCtrl = lib.lookupFunction<_EvpCipherCtxCtrlN, _EvpCipherCtxCtrlD>('EVP_CIPHER_CTX_ctrl');
+  final evpDecryptInitEx = _evpDecryptInitEx;
+  final evpDecryptUpdate = _evpDecryptUpdate;
+  final evpDecryptFinalEx = _evpDecryptFinalEx;
 
-  // EVP_Encrypt
-  late final evpEncryptInitEx = lib.lookupFunction<_EvpEncryptInitExN, _EvpEncryptInitExD>('EVP_EncryptInit_ex');
-  late final evpEncryptUpdate = lib.lookupFunction<_EvpEncryptUpdateN, _EvpEncryptUpdateD>('EVP_EncryptUpdate');
-  late final evpEncryptFinalEx = lib.lookupFunction<_EvpEncryptFinalExN, _EvpEncryptFinalExD>('EVP_EncryptFinal_ex');
+  final evpAes128Ecb = _evpAes128Ecb;
+  final evpAes256Ecb = _evpAes256Ecb;
+  final evpAes128Gcm = _evpAes128Gcm;
+  final evpAes256Gcm = _evpAes256Gcm;
 
-  // EVP_Decrypt
-  late final evpDecryptInitEx = lib.lookupFunction<_EvpDecryptInitExN, _EvpDecryptInitExD>('EVP_DecryptInit_ex');
-  late final evpDecryptUpdate = lib.lookupFunction<_EvpDecryptUpdateN, _EvpDecryptUpdateD>('EVP_DecryptUpdate');
-  late final evpDecryptFinalEx = lib.lookupFunction<_EvpDecryptFinalExN, _EvpDecryptFinalExD>('EVP_DecryptFinal_ex');
+  final ecKeyNewByCurveName = _ecKeyNewByCurveName;
+  final ecKeyGenerateKey = _ecKeyGenerateKey;
+  final ecKeyFree = _ecKeyFree;
+  final ecKeyGet0PublicKey = _ecKeyGet0PublicKey;
+  final ecKeyGet0PrivateKey = _ecKeyGet0PrivateKey;
+  final ecKeyGet0Group = _ecKeyGet0Group;
+  final ecKeySetPublicKey = _ecKeySetPublicKey;
 
-  // EVP cipher algorithms
-  late final evpAes128Ecb = lib.lookupFunction<_EvpCipherN, Pointer<Void> Function()>('EVP_aes_128_ecb');
-  late final evpAes256Ecb = lib.lookupFunction<_EvpCipherN, Pointer<Void> Function()>('EVP_aes_256_ecb');
-  late final evpAes128Gcm = lib.lookupFunction<_EvpCipherN, Pointer<Void> Function()>('EVP_aes_128_gcm');
-  late final evpAes256Gcm = lib.lookupFunction<_EvpCipherN, Pointer<Void> Function()>('EVP_aes_256_gcm');
-  late final evpChaCha20Poly1305 = lib.lookupFunction<_EvpCipherN, Pointer<Void> Function()>('EVP_chacha20_poly1305');
+  final ecPointPoint2Oct = _ecPointPoint2Oct;
+  final ecPointOct2Point = _ecPointOct2Point;
+  final ecPointNew = _ecPointNew;
+  final ecPointFree = _ecPointFree;
 
-  // EC_KEY
-  late final ecKeyNewByCurveName = lib.lookupFunction<_EcKeyNewByCurveNameN, _EcKeyNewByCurveNameD>('EC_KEY_new_by_curve_name');
-  late final ecKeyGenerateKey = lib.lookupFunction<_EcKeyGenerateKeyN, _EcKeyGenerateKeyD>('EC_KEY_generate_key');
-  late final ecKeyFree = lib.lookupFunction<_EcKeyFreeN, _EcKeyFreeD>('EC_KEY_free');
-  late final ecKeyGet0PublicKey = lib.lookupFunction<_EcKeyGet0PublicKeyN, Pointer<Void> Function(Pointer<Void>)>('EC_KEY_get0_public_key');
-  late final ecKeyGet0PrivateKey = lib.lookupFunction<_EcKeyGet0PrivateKeyN, Pointer<Void> Function(Pointer<Void>)>('EC_KEY_get0_private_key');
-  late final ecKeyGet0Group = lib.lookupFunction<_EcKeyGet0GroupN, Pointer<Void> Function(Pointer<Void>)>('EC_KEY_get0_group');
+  final ecdhComputeKey = _ecdhComputeKey;
 
-  // EC_POINT
-  late final ecPointPoint2Oct = lib.lookupFunction<_EcPointPoint2OctN, _EcPointPoint2OctD>('EC_POINT_point2oct');
-  late final ecPointOct2Point = lib.lookupFunction<_EcPointOct2PointN, _EcPointOct2PointD>('EC_POINT_oct2point');
-  late final ecPointNew = lib.lookupFunction<_EcPointNewN, Pointer<Void> Function(Pointer<Void>)>('EC_POINT_new');
-  late final ecPointFree = lib.lookupFunction<_EcPointFreeN, _EcPointFreeD>('EC_POINT_free');
+  final ecdsaSign = _ecdsaSign;
+  final ecdsaSize = _ecdsaSize;
+  final ecdsaVerify = _ecdsaVerify;
 
-  // ECDH
-  late final ecdhComputeKey = lib.lookupFunction<_EcdhComputeKeyN, _EcdhComputeKeyD>('ECDH_compute_key');
+  final evpMdCtxNew = _evpMdCtxNew;
+  final evpMdCtxFree = _evpMdCtxFree;
+  final evpDigestSignInit = _evpDigestSignInit;
+  final evpDigestSign = _evpDigestSign;
 
-  // ECDSA
-  late final ecdsaSign = lib.lookupFunction<_EcdsaSignN, _EcdsaSignD>('ECDSA_sign');
-  late final ecdsaSize = lib.lookupFunction<_EcdsaSizeN, _EcdsaSizeD>('ECDSA_size');
-  late final ecdsaVerify = lib.lookupFunction<_EcdsaVerifyN, _EcdsaVerifyD>('ECDSA_verify');
-  late final ecKeySetPublicKey = lib.lookupFunction<_EcKeySetPublicKeyN, _EcKeySetPublicKeyD>('EC_KEY_set_public_key');
+  final evpPkeyNew = _evpPkeyNew;
+  final evpPkeyFree = _evpPkeyFree;
+  final evpPkeySet1EcKey = _evpPkeySet1EcKey;
+  final evpPkeyGet1EcKey = _evpPkeyGet1EcKey;
+  final evpSha256 = _evpSha256;
 
-  // EVP_MD_CTX (for DigestSign)
-  late final evpMdCtxNew = lib.lookupFunction<_EvpMdCtxNewN, Pointer<Void> Function()>('EVP_MD_CTX_new');
-  late final evpMdCtxFree = lib.lookupFunction<_EvpMdCtxFreeN, _EvpMdCtxFreeD>('EVP_MD_CTX_free');
-  late final evpDigestSignInit = lib.lookupFunction<_EvpDigestSignInitN, _EvpDigestSignInitD>('EVP_DigestSignInit');
-  late final evpDigestSign = lib.lookupFunction<_EvpDigestSignN, _EvpDigestSignD>('EVP_DigestSign');
-
-  // EVP_PKEY
-  late final evpPkeyNew = lib.lookupFunction<_EvpPkeyNewN, Pointer<Void> Function()>('EVP_PKEY_new');
-  late final evpPkeyFree = lib.lookupFunction<_EvpPkeyFreeN, _EvpPkeyFreeD>('EVP_PKEY_free');
-  // EVP_PKEY_assign_EC_KEY is a macro in headers, but exists as a function:
-  late final evpPkeySet1EcKey = lib.lookupFunction<
-      Int32 Function(Pointer<Void>, Pointer<Void>),
-      int Function(Pointer<Void>, Pointer<Void>)>('EVP_PKEY_set1_EC_KEY');
-
-  late final evpSha256 = lib.lookupFunction<_EvpSha256N, Pointer<Void> Function()>('EVP_sha256');
-
-  // EVP_PKEY_get1_EC_KEY — returns EC_KEY* with incremented refcount
-  late final evpPkeyGet1EcKey = lib.lookupFunction<
-      Pointer<Void> Function(Pointer<Void>),
-      Pointer<Void> Function(Pointer<Void>)>('EVP_PKEY_get1_EC_KEY');
-
-  // NativeFinalizer target for EVP_PKEY_free
-  late final evpPkeyFreePtr = lib.lookup<NativeFunction<Void Function(Pointer<Void>)>>('EVP_PKEY_free');
+  // NativeFinalizer targets (function pointers).
+  final evpPkeyFreePtr =
+      Native.addressOf<NativeFunction<Void Function(Pointer<Void>)>>(
+          _evpPkeyFree);
+  final ecKeyFreePtr =
+      Native.addressOf<NativeFunction<Void Function(Pointer<Void>)>>(
+          _ecKeyFree);
 
   // Constants
   int get nidP256 => _nidX9_62Prime256v1;

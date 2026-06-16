@@ -1,6 +1,8 @@
-// Linux crypto backend using OpenSSL libcrypto.
-// All DynamicLibrary.open calls are behind lazy static fields —
-// safe to import on any platform, only fails if actually instantiated on non-Linux.
+// Linux + Android crypto backend using BoringSSL libcrypto (statically linked
+// into the bundled `webdartc_crypto` wrapper; see openssl.dart). The `@Native`
+// bindings only resolve on Linux/Android where the wrapper is built, and the
+// crypto factory selects this backend only there, so importing this file on
+// macOS / Windows is safe (the functions are never called).
 import 'dart:ffi';
 import 'dart:typed_data';
 
@@ -11,10 +13,11 @@ import 'sha256.dart';
 import 'x509_der.dart';
 import 'aes_gcm.dart' show AesGcmResult;
 import 'chacha20_poly1305.dart' show AeadResult;
+import 'chacha20_poly1305_pure.dart' as cc20p1305;
 
 // ── AES-CM (AES-ECB single block) ──────────────────────────────────────────
 
-final class LinuxAesCmBackend implements AesCmBackend {
+final class BoringSslAesCmBackend implements AesCmBackend {
   @override
   Uint8List aesEcbEncryptBlock(Uint8List key, Uint8List block) {
     assert(block.length == 16);
@@ -54,7 +57,7 @@ final class LinuxAesCmBackend implements AesCmBackend {
 
 // ── AES-GCM ────────────────────────────────────────────────────────────────
 
-final class LinuxAesGcmBackend implements AesGcmBackend {
+final class BoringSslAesGcmBackend implements AesGcmBackend {
   static const int _tagLength = 16;
 
   @override
@@ -173,136 +176,44 @@ final class LinuxAesGcmBackend implements AesGcmBackend {
   }
 }
 
-// ── ChaCha20-Poly1305 ──────────────────────────────────────────────────────
+// ── ChaCha20-Poly1305 (pure Dart) ──────────────────────────────────────────
+//
+// BoringSSL exposes ChaCha20-Poly1305 only through the EVP_AEAD interface, not
+// as an EVP_CIPHER, so there is no `EVP_chacha20_poly1305` to bind. Use the
+// pure-Dart RFC 8439 implementation instead — identical to the macOS backend.
 
-final class LinuxChaCha20Poly1305Backend implements ChaCha20Poly1305Backend {
-  static const int _tagLength = 16;
-
+final class BoringSslChaCha20Poly1305Backend
+    implements ChaCha20Poly1305Backend {
   @override
-  AeadResult encrypt(Uint8List key, Uint8List nonce, Uint8List plaintext, Uint8List aad) {
-    final ssl = ossl;
-    final cipher = ssl.evpChaCha20Poly1305();
-    final ctx = ssl.evpCipherCtxNew();
-    if (ctx == nullptr) throw StateError('EVP_CIPHER_CTX_new failed');
-
-    final keyPtr = libcAlloc.allocate<Uint8>(key.length);
-    final ivPtr = libcAlloc.allocate<Uint8>(nonce.length);
-    final aadPtr = libcAlloc.allocate<Uint8>(aad.isEmpty ? 1 : aad.length);
-    final inPtr = libcAlloc.allocate<Uint8>(plaintext.isEmpty ? 1 : plaintext.length);
-    final outPtr = libcAlloc.allocate<Uint8>(plaintext.isEmpty ? 1 : plaintext.length);
-    final tagPtr = libcAlloc.allocate<Uint8>(_tagLength);
-    final outLenPtr = libcAlloc.allocate<Int32>(1);
-
-    try {
-      for (var i = 0; i < key.length; i++) { keyPtr[i] = key[i]; }
-      for (var i = 0; i < nonce.length; i++) { ivPtr[i] = nonce[i]; }
-      for (var i = 0; i < aad.length; i++) { aadPtr[i] = aad[i]; }
-      for (var i = 0; i < plaintext.length; i++) { inPtr[i] = plaintext[i]; }
-
-      // EVP_CTRL_AEAD_* shares the same numeric values as EVP_CTRL_GCM_*
-      // in OpenSSL (set_ivlen=0x9, get_tag=0x10, set_tag=0x11) — see
-      // OpenSSL include/openssl/evp.h.
-      ssl.evpEncryptInitEx(ctx, cipher, nullptr, nullptr, nullptr);
-      ssl.evpCipherCtxCtrl(ctx, ssl.evpCtrlGcmSetIvlen, nonce.length, nullptr);
-      ssl.evpEncryptInitEx(ctx, nullptr, nullptr, keyPtr, ivPtr);
-      if (aad.isNotEmpty) {
-        ssl.evpEncryptUpdate(ctx, nullptr, outLenPtr, aadPtr, aad.length);
-      }
-      outLenPtr.value = 0;
-      ssl.evpEncryptUpdate(ctx, outPtr, outLenPtr, inPtr, plaintext.length);
-      final tmpPtr = libcAlloc.allocate<Uint8>(16);
-      final tmpLenPtr = libcAlloc.allocate<Int32>(1);
-      ssl.evpEncryptFinalEx(ctx, tmpPtr, tmpLenPtr);
-      libcAlloc.free(tmpPtr);
-      libcAlloc.free(tmpLenPtr);
-      ssl.evpCipherCtxCtrl(ctx, ssl.evpCtrlGcmGetTag, _tagLength, tagPtr.cast());
-
-      return AeadResult(
-        ciphertext: fromNative(outPtr, plaintext.length),
-        tag: fromNative(tagPtr, _tagLength),
-      );
-    } finally {
-      ssl.evpCipherCtxFree(ctx);
-      libcAlloc.free(keyPtr);
-      libcAlloc.free(ivPtr);
-      libcAlloc.free(aadPtr);
-      libcAlloc.free(inPtr);
-      libcAlloc.free(outPtr);
-      libcAlloc.free(tagPtr);
-      libcAlloc.free(outLenPtr);
-    }
+  AeadResult encrypt(
+      Uint8List key, Uint8List nonce, Uint8List plaintext, Uint8List aad) {
+    final r = cc20p1305.aeadEncrypt(key, nonce, plaintext, aad);
+    return AeadResult(ciphertext: r.ciphertext, tag: r.tag);
   }
 
   @override
-  Uint8List? decrypt(Uint8List key, Uint8List nonce, Uint8List ciphertext, Uint8List expectedTag, Uint8List aad) {
-    final ssl = ossl;
-    final cipher = ssl.evpChaCha20Poly1305();
-    final ctx = ssl.evpCipherCtxNew();
-    if (ctx == nullptr) throw StateError('EVP_CIPHER_CTX_new failed');
-
-    final keyPtr = libcAlloc.allocate<Uint8>(key.length);
-    final ivPtr = libcAlloc.allocate<Uint8>(nonce.length);
-    final aadPtr = libcAlloc.allocate<Uint8>(aad.isEmpty ? 1 : aad.length);
-    final inPtr = libcAlloc.allocate<Uint8>(ciphertext.isEmpty ? 1 : ciphertext.length);
-    final outPtr = libcAlloc.allocate<Uint8>(ciphertext.isEmpty ? 1 : ciphertext.length);
-    final tagPtr = libcAlloc.allocate<Uint8>(_tagLength);
-    final outLenPtr = libcAlloc.allocate<Int32>(1);
-
-    try {
-      for (var i = 0; i < key.length; i++) { keyPtr[i] = key[i]; }
-      for (var i = 0; i < nonce.length; i++) { ivPtr[i] = nonce[i]; }
-      for (var i = 0; i < aad.length; i++) { aadPtr[i] = aad[i]; }
-      for (var i = 0; i < ciphertext.length; i++) { inPtr[i] = ciphertext[i]; }
-      for (var i = 0; i < _tagLength; i++) { tagPtr[i] = expectedTag[i]; }
-
-      ssl.evpDecryptInitEx(ctx, cipher, nullptr, nullptr, nullptr);
-      ssl.evpCipherCtxCtrl(ctx, ssl.evpCtrlGcmSetIvlen, nonce.length, nullptr);
-      ssl.evpDecryptInitEx(ctx, nullptr, nullptr, keyPtr, ivPtr);
-      if (aad.isNotEmpty) {
-        ssl.evpDecryptUpdate(ctx, nullptr, outLenPtr, aadPtr, aad.length);
-      }
-      outLenPtr.value = 0;
-      ssl.evpDecryptUpdate(ctx, outPtr, outLenPtr, inPtr, ciphertext.length);
-      ssl.evpCipherCtxCtrl(ctx, ssl.evpCtrlGcmSetTag, _tagLength, tagPtr.cast());
-      final tmpPtr = libcAlloc.allocate<Uint8>(16);
-      final tmpLenPtr = libcAlloc.allocate<Int32>(1);
-      final ret = ssl.evpDecryptFinalEx(ctx, tmpPtr, tmpLenPtr);
-      libcAlloc.free(tmpPtr);
-      libcAlloc.free(tmpLenPtr);
-
-      if (ret <= 0) return null;
-
-      return fromNative(outPtr, ciphertext.length);
-    } finally {
-      ssl.evpCipherCtxFree(ctx);
-      libcAlloc.free(keyPtr);
-      libcAlloc.free(ivPtr);
-      libcAlloc.free(aadPtr);
-      libcAlloc.free(inPtr);
-      libcAlloc.free(outPtr);
-      libcAlloc.free(tagPtr);
-      libcAlloc.free(outLenPtr);
-    }
-  }
+  Uint8List? decrypt(Uint8List key, Uint8List nonce, Uint8List ciphertext,
+          Uint8List expectedTag, Uint8List aad) =>
+      cc20p1305.aeadDecrypt(key, nonce, ciphertext, expectedTag, aad);
 }
 
 // ── ECDH ────────────────────────────────────────────────────────────────────
 
-final class LinuxEcdhBackend implements EcdhBackend, Finalizable {
+final class BoringSslEcdhBackend implements EcdhBackend, Finalizable {
   final Pointer<Void> _ecKey; // EC_KEY*
   @override
   final Uint8List publicKeyBytes;
 
   static final _finalizer = NativeFinalizer(
-    ossl.lib.lookup<NativeFunction<Void Function(Pointer<Void>)>>('EC_KEY_free'),
+    ossl.ecKeyFreePtr,
   );
 
-  LinuxEcdhBackend._({required Pointer<Void> ecKey, required this.publicKeyBytes})
+  BoringSslEcdhBackend._({required Pointer<Void> ecKey, required this.publicKeyBytes})
       : _ecKey = ecKey {
     _finalizer.attach(this, _ecKey, detach: this);
   }
 
-  factory LinuxEcdhBackend() {
+  factory BoringSslEcdhBackend() {
     final ssl = ossl;
     final ecKey = ssl.ecKeyNewByCurveName(ssl.nidP256);
     if (ecKey == nullptr) throw StateError('EC_KEY_new_by_curve_name failed');
@@ -323,7 +234,7 @@ final class LinuxEcdhBackend implements EcdhBackend, Finalizable {
       ssl.ecPointPoint2Oct(
           group, pubPoint, ssl.pointConversionUncompressed, buf, bufLen, nullptr);
       final pubBytes = fromNative(buf, bufLen);
-      return LinuxEcdhBackend._(ecKey: ecKey, publicKeyBytes: pubBytes);
+      return BoringSslEcdhBackend._(ecKey: ecKey, publicKeyBytes: pubBytes);
     } finally {
       libcAlloc.free(buf);
     }
@@ -372,14 +283,14 @@ final class LinuxEcdhBackend implements EcdhBackend, Finalizable {
 
 // ── ECDSA ───────────────────────────────────────────────────────────────────
 
-final class LinuxEcdsaBackend implements EcdsaBackend, Finalizable {
+final class BoringSslEcdsaBackend implements EcdsaBackend, Finalizable {
   @override final Uint8List derBytes;
   @override final String sha256Fingerprint;
   final Pointer<Void> _pkey; // EVP_PKEY* (owns the EC_KEY)
 
   static final _finalizer = NativeFinalizer(ossl.evpPkeyFreePtr);
 
-  LinuxEcdsaBackend._({
+  BoringSslEcdsaBackend._({
     required this.derBytes,
     required this.sha256Fingerprint,
     required Pointer<Void> pkey,
@@ -387,7 +298,7 @@ final class LinuxEcdsaBackend implements EcdsaBackend, Finalizable {
     _finalizer.attach(this, _pkey, detach: this);
   }
 
-  factory LinuxEcdsaBackend() {
+  factory BoringSslEcdsaBackend() {
     final ssl = ossl;
 
     // Generate EC P-256 key
@@ -433,7 +344,7 @@ final class LinuxEcdsaBackend implements EcdsaBackend, Finalizable {
     final cert = X509Der.buildCertificate(tbs, signature);
     final fp = Sha256.fingerprint(cert);
 
-    return LinuxEcdsaBackend._(derBytes: cert, sha256Fingerprint: fp, pkey: pkey);
+    return BoringSslEcdsaBackend._(derBytes: cert, sha256Fingerprint: fp, pkey: pkey);
   }
 
   @override
@@ -527,7 +438,7 @@ final class LinuxEcdsaBackend implements EcdsaBackend, Finalizable {
 
 // ── ECDSA verify (stateless) ────────────────────────────────────────────────
 
-final class LinuxEcdsaVerifyBackend implements EcdsaVerifyBackend {
+final class BoringSslEcdsaVerifyBackend implements EcdsaVerifyBackend {
   @override
   bool verifyP256Sha256({
     required Uint8List publicKey,

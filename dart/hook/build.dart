@@ -60,6 +60,11 @@ void main(List<String> args) async {
         _libvpxOnWindows(input, output),
         _libopusOnWindows(input, output),
       ],
+      // Linux + Android crypto: BoringSSL (built via vcpkg) statically linked
+      // into the webdartc_crypto wrapper. macOS=Security.framework /
+      // Windows=CNG provide crypto natively, so no wrapper there.
+      if (targetOS == OS.linux || targetOS == OS.android)
+        _buildBoringSslCrypto(input, output),
     ]);
   });
 }
@@ -605,6 +610,133 @@ Map<String, String> _androidLibvpxEnv(BuildInput input, Architecture arch) {
     'NM': bin('llvm-nm'),
     'RANLIB': bin('llvm-ranlib'),
   };
+}
+
+// ── BoringSSL crypto (Linux + Android) ──────────────────────────────────────
+//
+// vcpkg source-builds BoringSSL's static `libcrypto.a` per triplet; the
+// `webdartc_crypto` wrapper statically links it and exports only the `wd_*`
+// passthroughs (src/webdartc_crypto.{h,c}), which `lib/crypto/openssl.dart`
+// binds via `@Native`. Same hide-the-static-lib shape as the libvpx/libopus
+// wrappers. vcpkg is located via `VCPKG_ROOT` / PATH, else cloned + bootstrapped
+// into the shared cache (so end users need no manual vcpkg setup). Requires a C
+// toolchain + cmake + pkg-config on the build machine (vcpkg builds BoringSSL).
+
+Future<void> _buildBoringSslCrypto(
+    BuildInput input, BuildOutputBuilder output) async {
+  final (includeDir, libcryptoA) = await _buildBoringSslArchive(input);
+  final targetOS = input.config.code.targetOS;
+  final builder = CBuilder.library(
+    name: 'webdartc_crypto',
+    assetName: 'crypto/webdartc_crypto.dart',
+    sources: ['src/webdartc_crypto.c'],
+    includes: [includeDir],
+    flags: [
+      '-fvisibility=hidden',
+      ..._linkArchive(targetOS, libcryptoA),
+      // BoringSSL's libcrypto uses pthreads; Android's libc bundles them.
+      if (targetOS == OS.linux) '-lpthread',
+    ],
+  );
+  await builder.run(input: input, output: output);
+}
+
+/// In-process memoisation keyed on the vcpkg triplet.
+final Map<String, Future<(String, String)>> _boringSslFutures = {};
+
+/// vcpkg-builds BoringSSL for the target triplet, returning (includeDir,
+/// libcrypto.a path). Cached under [BuildInput.outputDirectoryShared].
+Future<(String, String)> _buildBoringSslArchive(BuildInput input) {
+  final triplet = _boringSslTriplet(
+      input.config.code.targetOS, input.config.code.targetArchitecture);
+  return _boringSslFutures[triplet] ??= _buildBoringSslArchiveOnce(input, triplet);
+}
+
+Future<(String, String)> _buildBoringSslArchiveOnce(
+    BuildInput input, String triplet) async {
+  final shared = input.outputDirectoryShared;
+  final installRoot = Directory.fromUri(shared.resolve('boringssl-vcpkg/'));
+  final tripletRoot = installRoot.uri.resolve('$triplet/');
+  final libA = File.fromUri(tripletRoot.resolve('lib/libcrypto.a'));
+  final includeDir = Directory.fromUri(tripletRoot.resolve('include/'));
+  if (libA.existsSync() && includeDir.existsSync()) {
+    return (includeDir.path, libA.path);
+  }
+
+  final vcpkg = await _vcpkgExe(input);
+  final manifestDir =
+      input.packageRoot.resolve('tool/boringssl_vcpkg/').toFilePath();
+  final environment = <String, String>{};
+  if (input.config.code.targetOS == OS.android) {
+    environment['ANDROID_NDK_HOME'] = _androidNdk(input).ndkRoot.toFilePath();
+  }
+  await _runChecked(
+    vcpkg,
+    [
+      'install',
+      '--triplet=$triplet',
+      '--x-install-root=${installRoot.path}',
+      '--no-print-usage',
+    ],
+    desc: 'vcpkg install boringssl ($triplet)',
+    workingDirectory: manifestDir,
+    environment: environment.isEmpty ? null : environment,
+  );
+  if (!libA.existsSync()) {
+    throw StateError('vcpkg boringssl ($triplet) produced no ${libA.path}');
+  }
+  return (includeDir.path, libA.path);
+}
+
+String _boringSslTriplet(OS targetOS, Architecture arch) {
+  if (targetOS == OS.linux) {
+    return switch (arch) {
+      Architecture.arm64 => 'arm64-linux',
+      Architecture.x64 => 'x64-linux',
+      _ => throw UnsupportedError('BoringSSL Linux: unsupported arch $arch'),
+    };
+  }
+  if (targetOS == OS.android) {
+    return switch (arch) {
+      Architecture.arm64 => 'arm64-android',
+      Architecture.arm => 'arm-neon-android',
+      Architecture.x64 => 'x64-android',
+      Architecture.ia32 => 'x86-android',
+      _ => throw UnsupportedError('BoringSSL Android: unsupported arch $arch'),
+    };
+  }
+  throw UnsupportedError('BoringSSL build: unsupported OS $targetOS');
+}
+
+/// Locates a `vcpkg` executable (`VCPKG_ROOT`, then PATH), else clones +
+/// bootstraps microsoft/vcpkg into the shared cache. A full (non-shallow) clone
+/// is required so the manifest's `builtin-baseline` commit is present.
+Future<String> _vcpkgExe(BuildInput input) async {
+  final exeName = Platform.isWindows ? 'vcpkg.exe' : 'vcpkg';
+  final root = Platform.environment['VCPKG_ROOT'];
+  if (root != null) {
+    final p = '$root${Platform.pathSeparator}$exeName';
+    if (File(p).existsSync()) return p;
+  }
+  final vcpkgDir = Directory.fromUri(input.outputDirectoryShared.resolve('vcpkg/'));
+  final exe = File.fromUri(vcpkgDir.uri.resolve(exeName));
+  if (exe.existsSync()) return exe.path;
+  if (!vcpkgDir.existsSync()) {
+    await _runChecked('git',
+        ['clone', 'https://github.com/microsoft/vcpkg.git', vcpkgDir.path],
+        desc: 'git clone vcpkg');
+  }
+  if (Platform.isWindows) {
+    await _runChecked(
+        vcpkgDir.uri.resolve('bootstrap-vcpkg.bat').toFilePath(),
+        ['-disableMetrics'],
+        desc: 'bootstrap vcpkg', workingDirectory: vcpkgDir.path);
+  } else {
+    await _runChecked('bash',
+        [vcpkgDir.uri.resolve('bootstrap-vcpkg.sh').toFilePath(), '-disableMetrics'],
+        desc: 'bootstrap vcpkg', workingDirectory: vcpkgDir.path);
+  }
+  return exe.path;
 }
 
 // ── OpenH264 ────────────────────────────────────────────────────────────
