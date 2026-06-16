@@ -712,10 +712,18 @@ String _boringSslTriplet(OS targetOS, Architecture arch) {
 /// bootstraps microsoft/vcpkg into the shared cache. A full (non-shallow) clone
 /// is required so the manifest's `builtin-baseline` commit is present.
 Future<String> _vcpkgExe(BuildInput input) async {
+  final sep = Platform.pathSeparator;
   final exeName = Platform.isWindows ? 'vcpkg.exe' : 'vcpkg';
   final root = Platform.environment['VCPKG_ROOT'];
   if (root != null) {
-    final p = '$root${Platform.pathSeparator}$exeName';
+    final p = '$root$sep$exeName';
+    if (File(p).existsSync()) return p;
+  }
+  // Honour an already-installed vcpkg on PATH so a fresh build doesn't trigger
+  // the multi-minute clone below.
+  for (final dir in (Platform.environment['PATH'] ?? '').split(Platform.isWindows ? ';' : ':')) {
+    if (dir.isEmpty) continue;
+    final p = '$dir$sep$exeName';
     if (File(p).existsSync()) return p;
   }
   final vcpkgDir = Directory.fromUri(input.outputDirectoryShared.resolve('vcpkg/'));

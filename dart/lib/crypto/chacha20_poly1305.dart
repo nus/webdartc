@@ -24,16 +24,13 @@ final class AeadResult {
 ///
 /// Platform backends:
 ///
-/// * **Linux** — OpenSSL `EVP_chacha20_poly1305()` via FFI (see
-///   [LinuxChaCha20Poly1305Backend] in `linux_backend.dart`).
-/// * **macOS** — pure-Dart implementation following RFC 8439 §2 — exposed
-///   via [MacosChaCha20Poly1305Backend] in `macos_backend.dart`. Apple's
-///   CommonCrypto does not provide ChaCha20-Poly1305, and CryptoKit is
-///   Swift-only, so pure Dart is the only option without bundling a
-///   third-party native library. This is acceptable for ephemeral DTLS
+/// * **Linux / Android / macOS** — pure-Dart implementation following
+///   RFC 8439 §2 (`chacha20_poly1305_pure.dart`). BoringSSL (Linux/Android)
+///   exposes ChaCha20-Poly1305 only via its `EVP_AEAD` interface, not as an
+///   `EVP_CIPHER`, and Apple's CommonCrypto doesn't provide it at all, so all
+///   three reuse the pure-Dart path. This is acceptable for ephemeral DTLS
 ///   handshake records but is **not** constant-time; long-running data
-///   records on macOS should ideally use a native implementation
-///   eventually.
+///   records should ideally use a native implementation eventually.
 abstract final class ChaCha20Poly1305 {
   ChaCha20Poly1305._();
 
