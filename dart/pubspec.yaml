@@ -13,6 +13,9 @@ dependencies:
   crypto: ^3.0.0
   ffi: ^2.1.0
   hooks: any
+  # Android-only: reaches the platform JCA crypto provider (java.security /
+  # javax.crypto). Guarded behind Platform.isAndroid; unused on other OSes.
+  jni: ^1.0.0
   native_toolchain_c: any
 
 dev_dependencies:

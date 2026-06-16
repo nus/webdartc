@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'aes_gcm.dart' show AesGcmResult;
 import 'chacha20_poly1305.dart' show AeadResult;
+import 'android_backend.dart';
 import 'macos_backend.dart';
 import 'linux_backend.dart';
 import 'windows_backend.dart';
@@ -65,6 +66,7 @@ EcdhBackend createEcdhBackend() {
   if (Platform.isMacOS) return MacosEcdhBackend();
   if (Platform.isLinux) return LinuxEcdhBackend();
   if (Platform.isWindows) return WindowsEcdhBackend();
+  if (Platform.isAndroid) return AndroidEcdhBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 
@@ -72,6 +74,7 @@ EcdsaBackend createEcdsaBackend() {
   if (Platform.isMacOS) return MacosEcdsaBackend();
   if (Platform.isLinux) return LinuxEcdsaBackend();
   if (Platform.isWindows) return WindowsEcdsaBackend();
+  if (Platform.isAndroid) return AndroidEcdsaBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 
@@ -81,6 +84,7 @@ EcdsaVerifyBackend _createEcdsaVerify() {
   if (Platform.isMacOS) return MacosEcdsaVerifyBackend();
   if (Platform.isLinux) return LinuxEcdsaVerifyBackend();
   if (Platform.isWindows) return WindowsEcdsaVerifyBackend();
+  if (Platform.isAndroid) return AndroidEcdsaVerifyBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 
@@ -88,6 +92,7 @@ AesCmBackend _createAesCm() {
   if (Platform.isMacOS) return MacosAesCmBackend();
   if (Platform.isLinux) return LinuxAesCmBackend();
   if (Platform.isWindows) return WindowsAesCmBackend();
+  if (Platform.isAndroid) return AndroidAesCmBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 
@@ -95,6 +100,7 @@ AesGcmBackend _createAesGcm() {
   if (Platform.isMacOS) return MacosAesGcmBackend();
   if (Platform.isLinux) return LinuxAesGcmBackend();
   if (Platform.isWindows) return WindowsAesGcmBackend();
+  if (Platform.isAndroid) return AndroidAesGcmBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 
@@ -102,5 +108,6 @@ ChaCha20Poly1305Backend _createChaCha20Poly1305() {
   if (Platform.isMacOS) return MacosChaCha20Poly1305Backend();
   if (Platform.isLinux) return LinuxChaCha20Poly1305Backend();
   if (Platform.isWindows) return WindowsChaCha20Poly1305Backend();
+  if (Platform.isAndroid) return AndroidChaCha20Poly1305Backend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
