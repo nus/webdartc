@@ -47,7 +47,9 @@ void main(List<String> args) async {
         _buildVtCallback(input, output),
         _buildWmdMedia(input, output),
       ],
-      if (targetOS == OS.macOS || targetOS == OS.linux) ...[
+      if (targetOS == OS.macOS ||
+          targetOS == OS.linux ||
+          targetOS == OS.android) ...[
         _buildOpusCodecs(input, output),
         _buildVp8Codec(input, output),
         _buildVp9Codec(input, output),
@@ -184,6 +186,9 @@ Future<void> _buildOpusCodecs(
       // visibility("default") in webdartc_opus.h) get exported.
       '-fvisibility=hidden',
       ..._linkArchive(targetOS, libopusA),
+      // Android keeps libm separate from libc and the NDK linker won't
+      // auto-add it; libopus pulls in log/exp/pow.
+      if (targetOS == OS.android) '-lm',
     ],
   );
   await builder.run(input: input, output: output);
@@ -202,7 +207,11 @@ Future<void> _buildOpusCodecs(
 /// macOS `ld64` rescans archives and respects per-symbol visibility,
 /// so neither flag is needed there.
 List<String> _linkArchive(OS targetOS, String archivePath) {
-  if (targetOS != OS.linux) return [archivePath];
+  // Android links with lld, which (like GNU ld) is single-pass and
+  // re-exports whole-archive members, so it needs the same treatment as
+  // Linux. macOS ld64 rescans archives and honours visibility, so neither
+  // flag is required there.
+  if (targetOS != OS.linux && targetOS != OS.android) return [archivePath];
   final basename = archivePath.split('/').last;
   return [
     '-Wl,--whole-archive',
@@ -228,12 +237,16 @@ String? _findArchive(Uri prefix) {
 /// `.dart_tool/hooks_runner/shared/webdartc/build/opus-*` after a
 /// `git submodule update` to pick up source changes.
 Future<(Uri, String)> _cmakeBuildOpus(BuildInput input) async {
-  final arch = switch (input.config.code.targetArchitecture) {
-    Architecture.arm64 => 'arm64',
-    Architecture.x64 => 'x86_64',
-    final a => throw UnsupportedError('libopus build: unsupported arch $a'),
-  };
   final targetOS = input.config.code.targetOS;
+  // On Android the per-ABI name (arm64-v8a / x86_64 / …) doubles as both the
+  // cache-directory key and the cmake ANDROID_ABI value.
+  final arch = targetOS == OS.android
+      ? _androidAbi(input.config.code.targetArchitecture)
+      : switch (input.config.code.targetArchitecture) {
+          Architecture.arm64 => 'arm64',
+          Architecture.x64 => 'x86_64',
+          final a => throw UnsupportedError('libopus build: unsupported arch $a'),
+        };
   final shared = input.outputDirectoryShared;
   final buildDir = Directory.fromUri(shared.resolve('opus-build-$arch/'));
   final installDir = Directory.fromUri(shared.resolve('opus-install-$arch/'));
@@ -255,6 +268,12 @@ Future<(Uri, String)> _cmakeBuildOpus(BuildInput input) async {
     if (targetOS == OS.macOS) ...[
       '-DCMAKE_OSX_ARCHITECTURES=$arch',
       '-DCMAKE_OSX_DEPLOYMENT_TARGET=10.15',
+    ],
+    if (targetOS == OS.android) ...[
+      '-DCMAKE_TOOLCHAIN_FILE='
+          '${_androidNdk(input).ndkRoot.resolve('build/cmake/android.toolchain.cmake').toFilePath()}',
+      '-DANDROID_ABI=$arch',
+      '-DANDROID_PLATFORM=android-${input.config.code.android.targetNdkApi}',
     ],
     // The static archive is later linked into a shared library, so every
     // object must be position-independent. CMake doesn't enable PIC for
@@ -361,6 +380,9 @@ Future<void> _buildLibvpxWrapper({
     flags: [
       '-fvisibility=hidden',
       ..._linkArchive(targetOS, libvpxA),
+      // Android keeps libm separate from libc; libvpx's rate control pulls in
+      // log10/pow and the NDK linker won't auto-add it.
+      if (targetOS == OS.android) '-lm',
     ],
   );
   await builder.run(input: input, output: output);
@@ -412,6 +434,11 @@ Future<(Uri, String)> _configureMakeLibvpxOnce(BuildInput input) async {
     '-fvisibility=hidden',
     if (targetOS == OS.macOS) '-mmacosx-version-min=10.15',
   ];
+  // Android: libvpx's `*-android-gcc` standalone build reads the toolchain
+  // from CC/CXX/AR/AS/LD/STRIP/NM/RANLIB. The NDK ships per-API clang
+  // wrappers (`<triple><api>-clang`) that bake in --target and --sysroot, so
+  // no extra cflags beyond visibility are needed.
+  final env = targetOS == OS.android ? _androidLibvpxEnv(input, arch) : null;
   await _runChecked('bash', [
     configure.path,
     '--target=$target',
@@ -426,12 +453,12 @@ Future<(Uri, String)> _configureMakeLibvpxOnce(BuildInput input) async {
     // Hidden visibility on every TU; webdartc_vp8.c / webdartc_vp9.c
     // re-export their own symbols via __attribute__((visibility("default"))).
     '--extra-cflags=${extraCflags.join(' ')}',
-  ], desc: 'libvpx configure', workingDirectory: buildDir.path);
+  ], desc: 'libvpx configure', workingDirectory: buildDir.path, environment: env);
   await _runChecked('make', [
     '-C', buildDir.path,
     '-j${Platform.numberOfProcessors}',
     'install',
-  ], desc: 'libvpx make install');
+  ], desc: 'libvpx make install', environment: env);
   if (!installed.existsSync()) {
     throw StateError(
         'libvpx make install produced no ${installed.path}');
@@ -460,15 +487,124 @@ String _libvpxTarget(OS targetOS, Architecture arch) {
       _ => throw UnsupportedError('libvpx Linux build: unsupported arch $arch'),
     };
   }
+  if (targetOS == OS.android) {
+    // libvpx's `*-android-gcc` targets are "standalone NDK toolchain" builds:
+    // the actual cross-compiler comes from the CC/AS/AR env vars set in
+    // [_configureMakeLibvpxOnce]; the tuple only selects ISA features.
+    return switch (arch) {
+      Architecture.arm64 => 'arm64-android-gcc',
+      Architecture.arm => 'armv7-android-gcc',
+      Architecture.x64 => 'x86_64-android-gcc',
+      Architecture.ia32 => 'x86-android-gcc',
+      _ => throw UnsupportedError('libvpx Android build: unsupported arch $arch'),
+    };
+  }
   throw UnsupportedError('libvpx build: unsupported OS $targetOS');
 }
 
 Future<void> _runChecked(String exe, List<String> args,
-    {required String desc, String? workingDirectory}) async {
-  final r = await Process.run(exe, args, workingDirectory: workingDirectory);
+    {required String desc,
+    String? workingDirectory,
+    Map<String, String>? environment}) async {
+  final r = await Process.run(exe, args,
+      workingDirectory: workingDirectory, environment: environment);
   if (r.exitCode != 0) {
     throw StateError('$desc failed:\n${r.stdout}\n${r.stderr}');
   }
+}
+
+// ── Android NDK helpers ────────────────────────────────────────────────────
+//
+// The codec libraries (libopus via CMake, libvpx via configure) are built by
+// invoking their own build systems, so unlike the `CBuilder` path they need
+// the NDK located explicitly. The NDK clang reported in the hook's
+// `cCompiler` config lives at
+// `<ndk>/toolchains/llvm/prebuilt/<host>/bin/clang`; both the NDK root and
+// the toolchain `bin/` directory are derived from it, with a fallback that
+// scans the standard SDK install locations.
+
+/// Android ABI name (also the libopus cmake `ANDROID_ABI` and per-ABI cache
+/// key).
+String _androidAbi(Architecture arch) => switch (arch) {
+      Architecture.arm64 => 'arm64-v8a',
+      Architecture.arm => 'armeabi-v7a',
+      Architecture.x64 => 'x86_64',
+      Architecture.ia32 => 'x86',
+      _ => throw UnsupportedError('Android: unsupported arch $arch'),
+    };
+
+/// NDK clang wrapper triple prefix; the per-API wrapper is
+/// `<triple><api>-clang`.
+String _androidClangTriple(Architecture arch) => switch (arch) {
+      Architecture.arm64 => 'aarch64-linux-android',
+      Architecture.arm => 'armv7a-linux-androideabi',
+      Architecture.x64 => 'x86_64-linux-android',
+      Architecture.ia32 => 'i686-linux-android',
+      _ => throw UnsupportedError('Android: unsupported arch $arch'),
+    };
+
+/// Resolved NDK root + toolchain `bin/` directory.
+({Uri ndkRoot, Uri binDir}) _androidNdk(BuildInput input) {
+  final cc = input.config.code.cCompiler?.compiler;
+  if (cc != null) {
+    // <ndk>/toolchains/llvm/prebuilt/<host>/bin/clang → root is 5 levels up,
+    // bin/ is the compiler's own directory.
+    return (ndkRoot: cc.resolve('../../../../../'), binDir: cc.resolve('./'));
+  }
+  final root = _findAndroidNdk();
+  if (root == null) {
+    throw StateError(
+        'Android NDK not found: no cCompiler in the hook config and none of '
+        'the standard SDK locations (ANDROID_HOME/ndk, '
+        '~/Library/Android/sdk/ndk, ~/Android/Sdk/ndk) contain an NDK. Set '
+        'ANDROID_NDK_HOME.');
+  }
+  final prebuilt = Directory.fromUri(root.resolve('toolchains/llvm/prebuilt/'));
+  final host = prebuilt.listSync().whereType<Directory>().first;
+  return (ndkRoot: root, binDir: Directory(host.path).uri.resolve('bin/'));
+}
+
+/// Scans the conventional NDK install locations, picking the newest version.
+Uri? _findAndroidNdk() {
+  final env = Platform.environment;
+  final direct = env['ANDROID_NDK_HOME'] ?? env['ANDROID_NDK_ROOT'];
+  if (direct != null && Directory(direct).existsSync()) {
+    return Directory(direct).uri;
+  }
+  final home = env['HOME'];
+  final sdk = env['ANDROID_HOME'] ?? env['ANDROID_SDK_ROOT'];
+  final roots = <String>[
+    if (sdk != null) '$sdk/ndk',
+    if (home != null) '$home/Library/Android/sdk/ndk',
+    if (home != null) '$home/Android/Sdk/ndk',
+  ];
+  for (final r in roots) {
+    final dir = Directory(r);
+    if (!dir.existsSync()) continue;
+    final versions = dir.listSync().whereType<Directory>().toList()
+      ..sort((a, b) => a.path.compareTo(b.path));
+    if (versions.isNotEmpty) return Directory(versions.last.path).uri;
+  }
+  return null;
+}
+
+/// CC/CXX/AR/AS/LD/STRIP/NM/RANLIB env for libvpx's standalone NDK build.
+Map<String, String> _androidLibvpxEnv(BuildInput input, Architecture arch) {
+  final ndk = _androidNdk(input);
+  final api = input.config.code.android.targetNdkApi;
+  final triple = _androidClangTriple(arch);
+  String bin(String exe) => ndk.binDir.resolve(exe).toFilePath();
+  final cc = bin('$triple$api-clang');
+  return {
+    'CC': cc,
+    'CXX': bin('$triple$api-clang++'),
+    'LD': cc,
+    'AS': cc, // clang's integrated assembler
+    'AR': bin('llvm-ar'),
+    'STRIP': bin('llvm-strip'),
+    'NM': bin('llvm-nm'),
+    'RANLIB': bin('llvm-ranlib'),
+  };
 }
 
 // ── OpenH264 ────────────────────────────────────────────────────────────
