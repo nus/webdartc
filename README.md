@@ -8,7 +8,7 @@ integration that renders its media on screen.
 | Package | What it is | Status |
 |---|---|---|
 | [`dart/`](dart) | The WebRTC library. W3C `PeerConnection` API on top of RFC-compliant protocol state machines (STUN / ICE / TURN / DTLS / SRTP / SCTP / RTP / SDP), with UDP handled by `TransportController`. Codecs (H.264 / VP8 / VP9 / Opus) and crypto run through platform-native libraries via FFI. | Implemented |
-| [`flutter/`](flutter) | Rendering and capture on top of `dart`. A `Texture`-backed video widget — Metal `CVPixelBuffer` on macOS, `PixelBufferTexture` on Windows — plus camera/mic/speaker integration. Depends on `dart` via a local `path:`. | macOS + Windows renderers working; Linux/mobile on the roadmap |
+| [`flutter/`](flutter) | Rendering and capture on top of `dart`. A `Texture`-backed video widget — Metal `CVPixelBuffer` on macOS, `PixelBufferTexture` on Windows, `SurfaceTexture` on Android — plus camera/mic/speaker integration. Depends on `dart` via a local `path:`. | macOS + Windows + Android renderers working; iOS / Linux on the roadmap |
 
 ## Quick start
 
@@ -47,7 +47,7 @@ Flutter SDK.
 ├── flutter/                   # Flutter integration (needs the Flutter SDK)
 │   ├── lib/render/            #   VideoRenderer / ShaderVideoRenderer / widget
 │   ├── macos/Classes/         #   Swift FlutterTexture plugin
-│   └── example/               #   macOS demo app (browser ↔ Flutter call)
+│   └── example/               #   macOS + Android demo app (browser ↔ Flutter call)
 ├── .github/workflows/ci.yaml  # Linux + macOS + Windows CI
 ├── CLAUDE.md                  # agent guidance for this repo
 └── README.md
@@ -81,20 +81,20 @@ without republishing.
 
 Every backend is software except VideoToolbox on macOS, which is hardware-accelerated.
 
-| Codec | macOS | Linux | Windows |
-|-------|-------|-------|---------|
-| H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt) | OpenH264 (Cisco prebuilt) |
-| VP8 / VP9 | libvpx (submodule, source-built) | libvpx (submodule, source-built) | prebuilt wrapper DLL (source build opt-in) |
-| Opus | libopus (submodule, source-built) | libopus (submodule, source-built) | prebuilt wrapper DLL (source build opt-in) |
+| Codec | macOS | Linux | Windows | Android |
+|-------|-------|-------|---------|---------|
+| H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt) | OpenH264 (Cisco prebuilt) | — (no Cisco build; example negotiates VP8) |
+| VP8 / VP9 | libvpx (submodule, source-built) | libvpx (submodule, source-built) | prebuilt wrapper DLL (source build opt-in) | libvpx (submodule, source-built via NDK) |
+| Opus | libopus (submodule, source-built) | libopus (submodule, source-built) | prebuilt wrapper DLL (source build opt-in) | libopus (submodule, source-built via NDK) |
 
 `registerH264Codec()` / `registerVp8Codec()` / `registerVp9Codec()` /
 `registerOpusCodec()` each pick the right backend for the host automatically.
 [`dart/hook/build.dart`](dart/hook/build.dart) drives every native asset:
 compiles the VideoToolbox C shim on macOS, source-builds libopus + libvpx from
-the submodules on macOS / Linux, downloads our prebuilt wrapper DLLs on Windows,
-and fetches Cisco's OpenH264 (version + SHA-256 pinned) on Linux + Windows. The
-full per-OS breakdown and symbol-hiding rationale live in
-[`dart/README.md#codec-backends`](dart/README.md#codec-backends).
+the submodules on macOS / Linux (and via the NDK on Android), downloads our
+prebuilt wrapper DLLs on Windows, and fetches Cisco's OpenH264 (version +
+SHA-256 pinned) on Linux + Windows. The full per-OS breakdown and symbol-hiding
+rationale live in [`dart/README.md#codec-backends`](dart/README.md#codec-backends).
 
 ### Native requirements
 
@@ -107,6 +107,10 @@ full per-OS breakdown and symbol-hiding rationale live in
 - **Windows** — nothing for the default path: `flutter pub get` downloads the
   VP8 / VP9 / Opus wrapper DLLs and the Cisco OpenH264 binary, and the OS's CNG
   (`bcrypt.dll`) provides crypto. The source-build opt-in needs MSVC + vcpkg.
+- **Android** — the Flutter Android toolchain (SDK + NDK + CMake, e.g. via
+  Android Studio). The build hook cross-compiles libvpx + libopus from the
+  submodules with the NDK (VP8 / VP9 / Opus; no H.264), and crypto runs through
+  the platform JCA via `package:jni` — no OpenSSL or extra system packages.
 
 ## What `flutter` owns
 
