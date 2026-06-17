@@ -16,14 +16,7 @@ import 'package:test/test.dart';
 
 import 'cdp_browser.dart';
 import 'chrome_for_testing.dart';
-
-Future<Process> _spawnDart(String script, List<String> args) async {
-  return Process.start(
-    Platform.resolvedExecutable,
-    ['run', script, ...args],
-    workingDirectory: Directory.current.path,
-  );
-}
+import 'dart_helper_process.dart';
 
 Future<int> _findFreePort() async {
   final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
@@ -42,7 +35,7 @@ void main() {
       () async {
     final port = await _findFreePort();
 
-    final receiver = await _spawnDart(
+    final receiver = await spawnDartHelper(
       'example/video_receiver/server.dart',
       ['--port=$port', '--codec=h264'],
     );
