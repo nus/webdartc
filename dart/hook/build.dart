@@ -208,7 +208,7 @@ Future<void> _buildOpusCodecs(
 /// `--exclude-libs`, every symbol pulled in via `--whole-archive` ends
 /// up in the dylib's dynamic export table regardless of source-level
 /// `-fvisibility=hidden` — notably libvpx's x86 SIMD TUs are
-/// assembled by yasm, which doesn't emit visibility metadata at all.
+/// assembled by nasm, which doesn't emit visibility metadata at all.
 /// macOS `ld64` rescans archives and respects per-symbol visibility,
 /// so neither flag is needed there.
 List<String> _linkArchive(OS targetOS, String archivePath) {
