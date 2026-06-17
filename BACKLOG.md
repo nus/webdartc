@@ -37,15 +37,21 @@ Each item:
   in `crypto/macos_backend.dart` and `crypto/security_framework.dart` stay as
   they are.
 
-### Android codec backend (MediaCodec via JNI)
+### Android H.264 codec (MediaCodec via JNI)
 
-- **Found:** 2026-05-04, codec-status review
-- **Detail:** Flutter Android cannot encode or decode video — no MediaCodec
-  bridge exists.
+- **Found:** 2026-05-04, codec-status review. **Narrowed 2026-06-15:** VP8 / VP9 /
+  Opus now build + run on Android (software, via the NDK cross-compiled
+  libvpx / libopus — see the Android section below), so this entry is now only
+  about H.264.
+- **Detail:** Android has no H.264 backend. Cisco publishes no OpenH264 binary
+  for Android, and VideoToolbox is Apple-only — so the only route is
+  `MediaCodec` over JNI. The Android example currently sidesteps this by
+  negotiating VP8 instead of H.264.
 - **Why deferred:** JNI integration is large; needs Flutter-side native
-  plumbing.
-- **Acceptance:** `MediaCodec`-backed encoder/decoder for H.264 (and ideally
-  VP8) on Android, integrated through the Flutter plugin's native side.
+  plumbing. VP8/VP9 cover the Chrome/Firefox interop story without it.
+- **Acceptance:** `MediaCodec`-backed H.264 encoder/decoder on Android,
+  integrated through the plugin's native side; the example can negotiate H.264
+  on Android. (HW MediaCodec accel for VP8/VP9 could ride the same bridge.)
 
 ### AV1 codec
 
@@ -420,3 +426,126 @@ Each item:
   [dart/test/api/stats_test.dart](dart/test/api/stats_test.dart) (remote-outbound
   kind/localId/reportsReceived/packetsSent/remoteTimestamp; inbound
   kind/packetsLost/jitter/codecId).
+
+---
+
+## Android
+
+### BoringSSL prebuilt distribution (avoid building via vcpkg at build time)
+
+- **Found:** 2026-06-17, BoringSSL crypto migration.
+- **Detail:** Linux + Android crypto source-builds BoringSSL via vcpkg inside
+  the build hook ([dart/hook/build.dart](dart/hook/build.dart) `_buildBoringSslCrypto`),
+  which clones + bootstraps vcpkg and compiles BoringSSL the first time (minutes;
+  cached under `outputDirectoryShared`). This is the explicitly-chosen model, but
+  it puts vcpkg + a full BoringSSL build on the default Linux/Android build path.
+- **Why deferred:** Functional and cached; the cost is build-time only.
+- **Acceptance:** Optionally mirror the Windows codec model — a
+  `build-boringssl-prebuilt.yaml` workflow that vcpkg-builds `libcrypto.a` per
+  triplet and publishes SHA-256-pinned zips; the hook downloads them by default
+  (`_bundleLibvpxPrebuilt` pattern), keeping vcpkg as an opt-in source build.
+
+### Android platform support (crypto + codecs + Flutter render) — DONE (2026-06-15; crypto reworked 2026-06-17)
+
+- **Found:** 2026-06-13 Android-support investigation; landed 2026-06-15.
+- **Detail:** First Android milestone — "browser → Android receive + Flutter
+  render". Verified on an Android emulator (API 35, arm64) via a throwaway
+  Flutter app (crypto 10/10, codec round-trips 3/3, DTLS data channel A→B,
+  render plugin + visual frame display):
+  - **Crypto** — initially via the platform JCA (`package:jni`), but that made
+    `webdartc` require the Flutter SDK and broke the pure-Dart `dart` CI (PR #54).
+    **Reworked 2026-06-17** to BoringSSL: [boringssl_backend.dart](dart/lib/crypto/boringssl_backend.dart)
+    (shared by Linux + Android) over [openssl.dart](dart/lib/crypto/openssl.dart)'s
+    `@Native` bindings to the `webdartc_crypto` wrapper, which statically links
+    vcpkg-built `libcrypto.a` ([dart/src/webdartc_crypto.c](dart/src/webdartc_crypto.c),
+    [hook/build.dart](dart/hook/build.dart) `_buildBoringSslCrypto`). `jca.dart`,
+    `android_backend.dart`, and the `jni` dependency were deleted; webdartc is
+    pure-Dart again. ChaCha20-Poly1305 + the cert DER stay pure-Dart.
+  - **Codecs** — `OS.android` branch in
+    [dart/hook/build.dart](dart/hook/build.dart): libopus via the NDK
+    `android.toolchain.cmake`, libvpx via its `*-android-gcc` targets driven by
+    NDK clang env vars. VP8/VP9/Opus only (H.264 deferred — see above). Gotcha:
+    the wrapper `.so` must link `-lm` (Android keeps libm separate).
+  - **Render** — [flutter/android/](flutter/android/) Kotlin `FlutterPlugin`
+    behind the shared `webdartc_flutter/render` MethodChannel: SurfaceTexture +
+    CPU I420→ARGB (BT.601 full-range). `android:` platform added to
+    [flutter/pubspec.yaml](flutter/pubspec.yaml); `flutter/example/android/`
+    runner added; the example negotiates VP8/Opus on Android.
+- **Notes / non-Android-specific:** the webdartc↔webdartc loopback B→A echo on a
+  single channel times out on the host too (pre-existing SCTP/data-channel
+  behaviour, unrelated to Android).
+
+### Android render: zero-copy via MediaCodec output Surface (drop CPU convert)
+
+- **Found:** 2026-06-15, Android render plugin first pass.
+- **Detail:** The Android renderer does a per-frame CPU I420→ARGB conversion
+  (Kotlin integer math) into a `Bitmap`, then `Surface.lockCanvas` /
+  `drawBitmap` / `unlockCanvasAndPost`
+  ([flutter/android/.../WebdartcFlutterPlugin.kt](flutter/android/src/main/kotlin/dev/webdartc/webdartc_flutter/WebdartcFlutterPlugin.kt)).
+  At high resolution / frame rate this is CPU-heavy (convert + setPixels +
+  canvas copy each frame). macOS hands Flutter an NV12 `CVPixelBuffer` and lets
+  the Metal compositor do YUV→RGB; Android has no equivalent zero-copy path yet.
+- **Primary direction — MediaCodec → Surface, zero-copy.** The biggest win is
+  to *not convert on the CPU at all*: feed the Flutter texture's `Surface`
+  (`SurfaceProducer`) directly as a hardware `MediaCodec` decoder's output
+  surface, so decoded frames never round-trip to Dart as I420. This depends on
+  the Android H.264/MediaCodec backend (see "Android H.264 codec" above) and
+  removes both the per-frame copy and the color convert.
+- **Secondary — GPU convert for software-decoded I420.** When frames still come
+  from the software libvpx/libopus path as raw I420, do the YUV→RGB on the GPU
+  instead of the CPU. **Use GLES, not Vulkan:** for a single video quad the two
+  perform identically, and GLES is far cheaper to implement. Vulkan's only edge
+  is skipping one GL↔Vulkan interop copy against Impeller's Vulkan backend —
+  marginal gain, large cost (`VK_KHR_sampler_ycbcr_conversion` immutable
+  samplers, AHardwareBuffer import, uneven emulator/driver support) — so not
+  worth it here.
+- **Why deferred:** Plan was "CPU color conversion first; optimise once it
+  renders." Correctness shipped; this is the optimisation, and the zero-copy
+  path is gated on the MediaCodec backend.
+- **Acceptance:** Decoded frames reach the Flutter texture without a CPU
+  I420→ARGB convert — via the MediaCodec output Surface for the HW path, and/or
+  a GLES YUV→RGB shader for the software path. Measure the per-frame CPU drop at
+  720p30 vs. the current Canvas path.
+
+### Android end-to-end (browser interop) + real device + CI
+
+- **Found:** 2026-06-15, Android-support milestone.
+- **Done so far:** On-device `integration_test` suite under
+  [flutter/example/integration_test/](flutter/example/integration_test/):
+  - `dart_suite_test.dart` runs the Dart package's **own** platform-relevant
+    tests on-device by relative-importing `dart/test/**` (crypto ×66, codec
+    VP8/VP9/Opus ×32, peer_connection ICE/DTLS/SCTP loopback ×41) and calling
+    each `main()` under the integration_test binding — single source of truth
+    with host `dart test`, no duplicated assertions. (`package:test` and
+    `flutter_test` share one `test_api` declarer; `test` is a dev_dep of the
+    example.)
+  - `render_test.dart` covers the render plugin (create/render/dispose) — the
+    only piece with no `dart/test` equivalent.
+  - Green on the Android emulator (API 35 arm64): 140/140. On macOS each file
+    passes individually (`flutter test integration_test/<file> -d macos`);
+    running the whole dir at once on macOS hits a desktop multi-file app-relaunch
+    flake (not a test failure).
+- **Still not covered:** a full **browser↔Android** call (signaling + browser
+  peer, exercising ICE/DTLS/SRTP/codec/render end-to-end against Chrome/Firefox
+  — the suite above uses an in-process webdartc↔webdartc loopback, not a
+  browser), verification on a **physical device**, and a **CI** Android job
+  (existing CI is Linux/macOS/Windows only).
+- **Why deferred:** The browser↔Android e2e needs a signaling + browser harness
+  reachable from the device/emulator network — heavier than the milestone; all
+  its constituent pieces are already individually verified on-device.
+- **Acceptance:** An Android e2e (port the `test/e2e/` browser-interop pattern
+  with the Android app as one peer) showing a received video stream rendered;
+  a green run on a physical device; an Android `flutter test integration_test`
+  job in CI.
+
+### Android capture: camera / mic / speaker
+
+- **Found:** 2026-06-15, Android-support milestone (explicit non-goal).
+- **Detail:** No Android capture/playback. macOS uses AVFoundation
+  ([dart/src/wmd_media.m](dart/src/wmd_media.m)); Android needs Camera2 +
+  AudioRecord (capture) and AudioTrack (playback). The first milestone is
+  receive + render only; sending uses `FakeVideoSource`.
+- **Why deferred:** Out of scope for the receive/render milestone; capture-
+  backend work is large and platform-specific.
+- **Acceptance:** `getUserMedia`-equivalent camera + mic capture and speaker
+  playback on Android, wired through the Flutter plugin's native side.

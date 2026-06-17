@@ -40,6 +40,12 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
+  # Lets integration_test relative-import the dart package's package:test-based
+  # tests (dart/test/**) and run them on-device — single source of truth with
+  # `dart test` on the host.
+  test: ^1.25.0
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

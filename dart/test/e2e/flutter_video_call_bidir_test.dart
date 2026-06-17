@@ -29,19 +29,12 @@ import 'package:test/test.dart';
 
 import 'cdp_browser.dart';
 import 'chrome_for_testing.dart';
+import 'dart_helper_process.dart';
 
 const _flutterAppPath =
     '../flutter/example/build/macos/Build/Products/Debug/'
     'webdartc_flutter_example.app/Contents/MacOS/'
     'webdartc_flutter_example';
-
-Future<Process> _spawnDart(String script, List<String> args) async {
-  return Process.start(
-    Platform.resolvedExecutable,
-    ['run', script, ...args],
-    workingDirectory: Directory.current.path,
-  );
-}
 
 Future<int> _findFreePort() async {
   final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
@@ -63,7 +56,7 @@ void main() {
     final cft = await ChromeForTesting.ensureAvailable();
     final port = await _findFreePort();
 
-    final server = await _spawnDart(
+    final server = await spawnDartHelper(
       'example/signaling/server.dart',
       ['--port=$port'],
     );

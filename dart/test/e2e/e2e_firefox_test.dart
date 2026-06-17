@@ -29,6 +29,7 @@ import 'dart:io';
 
 import 'package:test/test.dart';
 
+import 'dart_helper_process.dart';
 import 'firefox_for_testing.dart';
 import 'signaling_server/signaling_server.dart';
 import 'udp_proxy/udp_proxy.dart';
@@ -873,14 +874,9 @@ Future<void> _printBrowserLog(WebDriverSession driver) async {
 
 Future<void> _runWebdartcOfferer(int signalingPort,
     {int timeoutSec = 30}) async {
-  final proc = await Process.start(
-    Platform.resolvedExecutable,
-    [
-      'run',
-      'test/e2e/webdartc_offerer_helper.dart',
-      '--port=$signalingPort',
-      '--timeout=$timeoutSec',
-    ],
+  final proc = await spawnDartHelper(
+    'test/e2e/webdartc_offerer_helper.dart',
+    ['--port=$signalingPort', '--timeout=$timeoutSec'],
     environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
   );
 
@@ -910,13 +906,9 @@ Future<void> _runWebdartcOfferer(int signalingPort,
 /// Runs the webdartc answerer as a subprocess, streaming stderr.
 /// Returns when a data channel message is received (exit 0) or throws.
 Future<void> _runWebdartcAnswerer(int signalingPort) async {
-  final proc = await Process.start(
-    Platform.resolvedExecutable,
-    [
-      'run',
-      'test/e2e/webdartc_answerer_helper.dart',
-      '--port=$signalingPort',
-    ],
+  final proc = await spawnDartHelper(
+    'test/e2e/webdartc_answerer_helper.dart',
+    ['--port=$signalingPort'],
     environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
   );
 
@@ -947,9 +939,9 @@ Future<void> _runWebdartcAnswerer(int signalingPort) async {
 /// Starts the video reflect helper and returns the Process.
 /// The caller is responsible for killing the process when done.
 Future<Process> _startWebdartcReflect(int signalingPort) async {
-  final proc = await Process.start(
-    Platform.resolvedExecutable,
-    ['run', 'test/e2e/video_reflect_helper.dart', '--port=$signalingPort'],
+  final proc = await spawnDartHelper(
+    'test/e2e/video_reflect_helper.dart',
+    ['--port=$signalingPort'],
     environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
   );
   proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen(
@@ -969,13 +961,9 @@ Future<Process> _startWebdartcReflect(int signalingPort) async {
 /// The echo helper receives audio RTP from the browser and echoes it back.
 /// Returns when the echo session completes (exit 0) or throws on failure.
 Future<void> _runWebdartcEcho(int signalingPort) async {
-  final proc = await Process.start(
-    Platform.resolvedExecutable,
-    [
-      'run',
-      'test/e2e/media_echo_helper.dart',
-      '--port=$signalingPort',
-    ],
+  final proc = await spawnDartHelper(
+    'test/e2e/media_echo_helper.dart',
+    ['--port=$signalingPort'],
     environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
   );
 
@@ -1007,14 +995,9 @@ Future<void> _runWebdartcEcho(int signalingPort) async {
 /// Returns when onTrack fires (exit 0) or throws on failure.
 Future<void> _runWebdartcMediaReceiver(int signalingPort,
     {String kind = 'audio'}) async {
-  final proc = await Process.start(
-    Platform.resolvedExecutable,
-    [
-      'run',
-      'test/e2e/media_receiver_helper.dart',
-      '--port=$signalingPort',
-      '--kind=$kind',
-    ],
+  final proc = await spawnDartHelper(
+    'test/e2e/media_receiver_helper.dart',
+    ['--port=$signalingPort', '--kind=$kind'],
     environment: {...Platform.environment, 'WEBDARTC_DEBUG': '1'},
   );
 

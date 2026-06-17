@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "webdartc-boringssl",
+  "version-string": "0.0.1",
+  "description": "vcpkg manifest pinning BoringSSL. Consumed by dart/hook/build.dart to source-build libcrypto.a for the Linux + Android crypto backend (statically linked into the webdartc_crypto wrapper). Built per-triplet with `vcpkg install`.",
+  "dependencies": [
+    "boringssl"
+  ],
+  "builtin-baseline": "afe700a528316078d1ad6e7f7f41bbba15e1802b"
+}

@@ -17,4 +17,13 @@ abstract final class Sha256 {
   static String hashHex(Uint8List data) {
     return hash(data).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
+
+  /// Uppercase, colon-separated hex of the SHA-256 digest — the format DTLS
+  /// uses for certificate fingerprints (`a=fingerprint`, RFC 8122). Every
+  /// ECDSA backend reports its self-signed cert fingerprint this way.
+  static String fingerprint(Uint8List data) {
+    return hash(data)
+        .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
+        .join(':');
+  }
 }

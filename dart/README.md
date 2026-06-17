@@ -24,11 +24,14 @@ Data channels and media (audio + video, send + receive) are both supported.
   `Webdartc` factory that owns a shared `SettingEngine` + `MediaEngine`. Public
   types drop the `RTC` prefix (`PeerConnection`, not `RTCPeerConnection`).
 - **Platform-native crypto** via FFI — CommonCrypto + Security.framework on
-  macOS, OpenSSL on Linux, CNG (`bcrypt.dll`) on Windows.
+  macOS, CNG (`bcrypt.dll`) on Windows, and BoringSSL (built via vcpkg,
+  statically linked into the bundled `webdartc_crypto` wrapper) on Linux +
+  Android.
 - **Codecs** — VP8 / VP9 via libvpx, H.264 via Apple VideoToolbox
   (hardware-accelerated on macOS) or Cisco-prebuilt OpenH264 (Linux + Windows),
-  Opus via libopus. See [Codec backends](#codec-backends) for the per-OS
-  source-vs-prebuilt split.
+  Opus via libopus. On Android, libvpx + libopus are cross-compiled with the NDK
+  (VP8 / VP9 / Opus; no H.264). See [Codec backends](#codec-backends) for the
+  per-OS source-vs-prebuilt split.
 
 ## Requirements
 
@@ -36,13 +39,18 @@ Data channels and media (audio + video, send + receive) are both supported.
 - **macOS** — Xcode (VideoToolbox / CoreMedia / CoreVideo) and CMake. The
   `dart/third_party/opus` + `dart/third_party/libvpx` submodules must be checked
   out.
-- **Linux** — `cmake clang nasm libssl-dev` (build libopus, assemble libvpx's
-  x86_64 SIMD, OpenSSL for crypto). OpenH264 is auto-downloaded on first build.
-  Submodules required.
+- **Linux** — `cmake clang nasm pkg-config` (build libopus, assemble libvpx's
+  x86_64 SIMD; pkg-config for vcpkg's BoringSSL port). OpenH264 is
+  auto-downloaded; BoringSSL is source-built via vcpkg (the build hook clones +
+  bootstraps vcpkg itself, or honours `VCPKG_ROOT`). Submodules required.
 - **Windows** — no extra tooling for the default path: `dart pub get` downloads
   the VP8 / VP9 / Opus wrapper DLLs and the Cisco OpenH264 binary, and CNG
   provides crypto. Submodules are only needed for the MSVC + vcpkg source-build
   opt-in.
+- **Android** — built through Flutter (`flutter test integration_test`, not
+  `dart test`); needs the Android SDK + NDK + CMake + pkg-config. The build
+  hook cross-compiles libvpx + libopus (codecs) with the NDK and source-builds
+  BoringSSL (crypto) via vcpkg for each ABI (`ANDROID_NDK_HOME`).
 
 ## Installation
 
@@ -97,7 +105,7 @@ final pc = webrtc.createPeerConnection();
  ┌──────┬──────┼──────┬──────┬──────┬──────┐
  ICE   TURN   DTLS   SRTP   SCTP  RTP/RTCP  SDP
  │             │
-STUN          Crypto  (CommonCrypto / OpenSSL / CNG via FFI)
+STUN          Crypto  (CommonCrypto / BoringSSL / CNG via FFI)
 ```
 
 Every protocol module follows one shape:
@@ -188,12 +196,12 @@ dart run example/video_echo/server.dart --port=8080
 Every backend is software except VideoToolbox on macOS, which is
 hardware-accelerated.
 
-| Codec | macOS | Linux | Windows |
-|-------|-------|-------|---------|
-| H.264 | VideoToolbox (HW); `hook/build.dart` compiles `src/wvt_callback.c` | OpenH264, pinned download from `ciscobinary.openh264.org` | OpenH264, same Cisco prebuilt path |
-| VP8   | libvpx submodule, source-built + statically linked | same as macOS | `webdartc_vp8.dll` wrapper (source build opt-in) |
-| VP9   | same as VP8 (shares the libvpx archive) | same as VP8 | `webdartc_vp9.dll` (same archive as vp8) |
-| Opus  | libopus submodule, source-built + statically linked | same as macOS | `webdartc_opus.dll` wrapper (source build opt-in) |
+| Codec | macOS | Linux | Windows | Android |
+|-------|-------|-------|---------|---------|
+| H.264 | VideoToolbox (HW); `hook/build.dart` compiles `src/wvt_callback.c` | OpenH264, pinned download from `ciscobinary.openh264.org` | OpenH264, same Cisco prebuilt path | — (no Cisco Android build; MediaCodec is a backlog item) |
+| VP8   | libvpx submodule, source-built + statically linked | same as macOS | `webdartc_vp8.dll` wrapper (source build opt-in) | libvpx submodule, NDK cross-compiled per ABI |
+| VP9   | same as VP8 (shares the libvpx archive) | same as VP8 | `webdartc_vp9.dll` (same archive as vp8) | same as VP8 (shares the libvpx archive) |
+| Opus  | libopus submodule, source-built + statically linked | same as macOS | `webdartc_opus.dll` wrapper (source build opt-in) | libopus submodule, NDK cross-compiled per ABI |
 
 [`hook/build.dart`](hook/build.dart) runs on every platform and selects the path:
 
@@ -223,13 +231,20 @@ additionally pre-define `OPUS_EXPORT=` to neutralize its own
 
 ## Crypto backends
 
-| Primitive | macOS | Linux | Windows |
-|-----------|-------|-------|---------|
-| AES-128-CM / AES-GCM (SRTP) | CommonCrypto | OpenSSL | CNG (BCrypt) |
-| ECDH P-256 | Security.framework | OpenSSL | CNG (BCrypt) |
-| ECDSA P-256 | Security.framework | OpenSSL | CNG (BCrypt) |
-| HMAC-SHA1 / SHA-256 | package:crypto | package:crypto | package:crypto |
-| CSPRNG | `Random.secure()` | `Random.secure()` | `Random.secure()` |
+| Primitive | macOS | Linux | Windows | Android |
+|-----------|-------|-------|---------|---------|
+| AES-128-CM / AES-GCM (SRTP) | CommonCrypto | BoringSSL | CNG (BCrypt) | BoringSSL |
+| ECDH P-256 | Security.framework | BoringSSL | CNG (BCrypt) | BoringSSL |
+| ECDSA P-256 | Security.framework | BoringSSL | CNG (BCrypt) | BoringSSL |
+| HMAC-SHA1 / SHA-256 | package:crypto | package:crypto | package:crypto | package:crypto |
+| CSPRNG | `Random.secure()` | `Random.secure()` | `Random.secure()` | `Random.secure()` |
+
+Linux + Android share one backend: BoringSSL is source-built via vcpkg and
+statically linked into the bundled `webdartc_crypto` wrapper, which exports only
+the `wd_*` passthroughs that `lib/crypto/openssl.dart` binds via `@Native`
+(BoringSSL's own symbols stay hidden — the same shape as the codec wrappers).
+ChaCha20-Poly1305 and the self-signed DTLS certificate use the pure-Dart
+implementations (BoringSSL exposes ChaCha only via EVP_AEAD, not EVP_CIPHER).
 
 ## Third-party licenses
 

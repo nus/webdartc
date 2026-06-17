@@ -4,8 +4,8 @@ import 'dart:typed_data';
 
 import 'aes_gcm.dart' show AesGcmResult;
 import 'chacha20_poly1305.dart' show AeadResult;
+import 'boringssl_backend.dart';
 import 'macos_backend.dart';
-import 'linux_backend.dart';
 import 'windows_backend.dart';
 
 // ── Abstract interfaces ─────────────────────────────────────────────────────
@@ -61,16 +61,18 @@ final AesCmBackend aesCmBackend = _createAesCm();
 final AesGcmBackend aesGcmBackend = _createAesGcm();
 final ChaCha20Poly1305Backend chaCha20Poly1305Backend = _createChaCha20Poly1305();
 
+// Linux + Android share the BoringSSL backend (statically-linked libcrypto via
+// the bundled webdartc_crypto wrapper); macOS=Security.framework, Windows=CNG.
 EcdhBackend createEcdhBackend() {
   if (Platform.isMacOS) return MacosEcdhBackend();
-  if (Platform.isLinux) return LinuxEcdhBackend();
+  if (Platform.isLinux || Platform.isAndroid) return BoringSslEcdhBackend();
   if (Platform.isWindows) return WindowsEcdhBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 
 EcdsaBackend createEcdsaBackend() {
   if (Platform.isMacOS) return MacosEcdsaBackend();
-  if (Platform.isLinux) return LinuxEcdsaBackend();
+  if (Platform.isLinux || Platform.isAndroid) return BoringSslEcdsaBackend();
   if (Platform.isWindows) return WindowsEcdsaBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
@@ -79,28 +81,28 @@ final EcdsaVerifyBackend ecdsaVerifyBackend = _createEcdsaVerify();
 
 EcdsaVerifyBackend _createEcdsaVerify() {
   if (Platform.isMacOS) return MacosEcdsaVerifyBackend();
-  if (Platform.isLinux) return LinuxEcdsaVerifyBackend();
+  if (Platform.isLinux || Platform.isAndroid) return BoringSslEcdsaVerifyBackend();
   if (Platform.isWindows) return WindowsEcdsaVerifyBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 
 AesCmBackend _createAesCm() {
   if (Platform.isMacOS) return MacosAesCmBackend();
-  if (Platform.isLinux) return LinuxAesCmBackend();
+  if (Platform.isLinux || Platform.isAndroid) return BoringSslAesCmBackend();
   if (Platform.isWindows) return WindowsAesCmBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 
 AesGcmBackend _createAesGcm() {
   if (Platform.isMacOS) return MacosAesGcmBackend();
-  if (Platform.isLinux) return LinuxAesGcmBackend();
+  if (Platform.isLinux || Platform.isAndroid) return BoringSslAesGcmBackend();
   if (Platform.isWindows) return WindowsAesGcmBackend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }
 
 ChaCha20Poly1305Backend _createChaCha20Poly1305() {
   if (Platform.isMacOS) return MacosChaCha20Poly1305Backend();
-  if (Platform.isLinux) return LinuxChaCha20Poly1305Backend();
+  if (Platform.isLinux || Platform.isAndroid) return BoringSslChaCha20Poly1305Backend();
   if (Platform.isWindows) return WindowsChaCha20Poly1305Backend();
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
 }

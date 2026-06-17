@@ -15,7 +15,7 @@ inputs:
     description: 'Cache the Chrome-for-Testing download under dart/.local/chrome_for_testing/'
     default: 'false'
   install-linux-deps:
-    description: 'apt-install libssl-dev + yasm on Linux runners (everything that runs the build hook needs them)'
+    description: 'apt-install nasm + pkg-config on Linux runners (everything that runs the build hook needs them)'
     default: 'true'
 
 runs:
@@ -56,15 +56,19 @@ runs:
 
     - if: ${{ runner.os == 'Linux' && inputs.install-linux-deps == 'true' }}
       name: Install native build deps
-      # libssl-dev: crypto FFI. yasm: required by libvpx's x86_64 SIMD
-      # assembly. cmake comes preinstalled on ubuntu-latest. VP8 / VP9 /
-      # Opus / OpenH264 are vendored (OpenH264 as a Cisco prebuilt
-      # download in dart/hook/build.dart) — no system codec packages
-      # needed.
+      # nasm: assembles both libvpx's x86_64 SIMD and vcpkg's BoringSSL
+      # crypto. libvpx prefers yasm but falls back to nasm; the BoringSSL
+      # port requires nasm specifically and only auto-acquires it on Windows
+      # — on Linux it must come from the system, so nasm covers both.
+      # pkg-config: the BoringSSL port runs vcpkg_fixup_pkgconfig during
+      # install. cmake comes preinstalled on ubuntu-latest. The build hook
+      # source-builds BoringSSL (crypto) via vcpkg — which it clones +
+      # bootstraps itself — so no libssl-dev. VP8 / VP9 / Opus / OpenH264
+      # are vendored / downloaded.
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y libssl-dev yasm
+        sudo apt-get install -y nasm pkg-config
 
     - if: ${{ inputs.flavor == 'dart-analyze' || inputs.flavor == 'dart' }}
       name: Detach from workspace

@@ -16,8 +16,8 @@ All paths and commands below are relative to `webdartc/` unless noted.
 webdartc is a WebRTC library written entirely in Dart. It implements the W3C WebRTC API as pure state machines with all network I/O isolated to a single module (`TransportController`). Supports data channels and media (audio/video) send/receive.
 
 - Dart SDK >= 3.11.0
-- Platform-native crypto via FFI: CommonCrypto + Security.framework on macOS, OpenSSL on Linux
-- Only dependency: `package:crypto` (for HMAC-SHA1/SHA-256)
+- Platform-native crypto via FFI: CommonCrypto + Security.framework on macOS, CNG on Windows, BoringSSL (built via vcpkg, statically linked into the `webdartc_crypto` wrapper) on Linux + Android
+- Only dependency: `package:crypto` (for HMAC-SHA1/SHA-256). Pure Dart — no Flutter SDK required.
 
 ## Commands
 
@@ -58,7 +58,7 @@ TransportController  <- only module using dart:io
        |
  ICE   DTLS   SRTP   SCTP   RTP/RTCP   SDP
  |      |
-STUN   Crypto (CommonCrypto / OpenSSL via FFI)
+STUN   Crypto (CommonCrypto / BoringSSL / CNG via FFI)
 ```
 
 ## Key Conventions

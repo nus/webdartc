@@ -1,4 +1,5 @@
 .dart_tool
+.e2e_work
 .local
 .claude
 pubspec.lock

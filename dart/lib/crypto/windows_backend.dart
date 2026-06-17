@@ -435,9 +435,7 @@ final class WindowsEcdsaBackend implements EcdsaBackend, Finalizable {
     final sigDer = _rsToDer(api.signHash(priv, Sha256.hash(tbs)));
     final cert = X509Der.buildCertificate(tbs, sigDer);
 
-    final fp = Sha256.hash(cert)
-        .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
-        .join(':');
+    final fp = Sha256.fingerprint(cert);
     return WindowsEcdsaBackend._(
         derBytes: cert, sha256Fingerprint: fp, priv: priv);
   }
