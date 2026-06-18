@@ -1132,6 +1132,9 @@ Future<Uri> _windowsWrapperSourceBuild({
   // machine with VS), so this works regardless of edition — Community /
   // Professional / Enterprise (e.g. GitHub's windows runners) or the
   // standalone Build Tools — rather than assuming one hardcoded install dir.
+  // `-find` returns the vcvarsall.bat path directly: no `-requires` component
+  // id (which differs by host arch — x64 vs ARM64 toolset) and no manual path
+  // join. `-prerelease` covers preview VS installs on some runner images.
   // Requires the VC++ toolset, which `flutter build windows` already needs.
   //
   // `dart <script>` (no `run`) executes the script directly — `dart run`
@@ -1146,15 +1149,14 @@ Future<Uri> _windowsWrapperSourceBuild({
       .toFilePath();
   File(batPath).writeAsStringSync(
     '@echo off\r\n'
-    'set "VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe"\r\n'
     'set "VCVARSALL="\r\n'
+    'set "VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe"\r\n'
+    'if not exist "%VSWHERE%" set "VSWHERE=%ProgramFiles%\\Microsoft Visual Studio\\Installer\\vswhere.exe"\r\n'
     'if exist "%VSWHERE%" (\r\n'
-    '  for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * '
-    '-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 '
-    '-property installationPath`) do set "VCVARSALL=%%i\\VC\\Auxiliary\\Build\\vcvarsall.bat"\r\n'
+    '  for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -prerelease -products * '
+    '-find "VC\\Auxiliary\\Build\\vcvarsall.bat"`) do set "VCVARSALL=%%i"\r\n'
     ')\r\n'
-    'if not defined VCVARSALL set "VCVARSALL=C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvarsall.bat"\r\n'
-    'if not exist "%VCVARSALL%" (echo could not locate vcvarsall.bat - install the Visual Studio "Desktop development with C++" workload 1>&2 & exit /b 1)\r\n'
+    'if not defined VCVARSALL (echo could not locate vcvarsall.bat via vswhere - install the Visual Studio "Desktop development with C++" workload 1>&2 & exit /b 1)\r\n'
     'call "%VCVARSALL%" $vcvarsArch\r\n'
     'if errorlevel 1 exit /b 1\r\n'
     '"${Platform.resolvedExecutable}" "$scriptPath"'
