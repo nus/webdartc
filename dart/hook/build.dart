@@ -193,10 +193,18 @@ Future<void> _buildOpusCodecs(
 /// macOS `ld64` rescans archives and respects per-symbol visibility,
 /// so neither flag is needed there.
 List<String> _linkArchive(OS targetOS, String archivePath) {
+  // macOS: vcpkg builds libvpx/libopus with default symbol visibility (unlike
+  // our submodule builds, which pass `-fvisibility=hidden`), so ld64 would
+  // otherwise re-export the archive's `vpx_*` / `opus_*` symbols from the
+  // wrapper dylib. Whitelist only `_webdartc_*` exports so the wrapper stays
+  // isolated regardless of how the archive was built. (Codec wrappers are the
+  // only macOS users of _linkArchive; native crypto doesn't go through here.)
+  if (targetOS == OS.macOS) {
+    return [archivePath, '-Wl,-exported_symbol,_webdartc_*'];
+  }
   // Android links with lld, which (like GNU ld) is single-pass and
   // re-exports whole-archive members, so it needs the same treatment as
-  // Linux. macOS ld64 rescans archives and honours visibility, so neither
-  // flag is required there.
+  // Linux.
   if (targetOS != OS.linux && targetOS != OS.android) return [archivePath];
   final basename = archivePath.split('/').last;
   return [
@@ -1150,13 +1158,15 @@ Future<Uri> _windowsWrapperSourceBuild({
   File(batPath).writeAsStringSync(
     '@echo off\r\n'
     'set "VCVARSALL="\r\n'
-    'set "VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe"\r\n'
-    'if not exist "%VSWHERE%" set "VSWHERE=%ProgramFiles%\\Microsoft Visual Studio\\Installer\\vswhere.exe"\r\n'
+    // vswhere.exe ships with the VS Installer at this fixed location on every
+    // edition. Hardcoded (not via %ProgramFiles(x86)%) because hooks_runner
+    // scrubs the environment before invoking the hook, so that var may be unset.
+    'set "VSWHERE=C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe"\r\n'
     'if exist "%VSWHERE%" (\r\n'
     '  for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -prerelease -products * '
     '-find "VC\\Auxiliary\\Build\\vcvarsall.bat"`) do set "VCVARSALL=%%i"\r\n'
     ')\r\n'
-    'if not defined VCVARSALL (echo could not locate vcvarsall.bat via vswhere - install the Visual Studio "Desktop development with C++" workload 1>&2 & exit /b 1)\r\n'
+    'if not defined VCVARSALL (echo could not locate vcvarsall.bat via "%VSWHERE%" - install the Visual Studio "Desktop development with C++" workload 1>&2 & exit /b 1)\r\n'
     'call "%VCVARSALL%" $vcvarsArch\r\n'
     'if errorlevel 1 exit /b 1\r\n'
     '"${Platform.resolvedExecutable}" "$scriptPath"'
