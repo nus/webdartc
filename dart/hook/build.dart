@@ -627,51 +627,25 @@ Future<void> _buildBoringSslCrypto(
   await builder.run(input: input, output: output);
 }
 
-/// In-process memoisation keyed on the vcpkg triplet.
-final Map<String, Future<(String, String)>> _boringSslFutures = {};
-
 /// vcpkg-builds BoringSSL for the target triplet, returning (includeDir,
-/// libcrypto.a path). Cached under [BuildInput.outputDirectoryShared].
-Future<(String, String)> _buildBoringSslArchive(BuildInput input) {
+/// libcrypto.a path). Thin adapter over [_vcpkgInstall] — Android passes its
+/// NDK root through to the port build.
+Future<(String, String)> _buildBoringSslArchive(BuildInput input) async {
   final triplet = _boringSslTriplet(
       input.config.code.targetOS, input.config.code.targetArchitecture);
-  return _boringSslFutures[triplet] ??= _buildBoringSslArchiveOnce(input, triplet);
-}
-
-Future<(String, String)> _buildBoringSslArchiveOnce(
-    BuildInput input, String triplet) async {
-  final shared = input.outputDirectoryShared;
-  final installRoot = Directory.fromUri(shared.resolve('boringssl-vcpkg/'));
-  final tripletRoot = installRoot.uri.resolve('$triplet/');
-  final libA = File.fromUri(tripletRoot.resolve('lib/libcrypto.a'));
-  final includeDir = Directory.fromUri(tripletRoot.resolve('include/'));
-  if (libA.existsSync() && includeDir.existsSync()) {
-    return (includeDir.path, libA.path);
-  }
-
-  final vcpkg = await _vcpkgExe(input);
-  final manifestDir =
-      input.packageRoot.resolve('tool/boringssl_vcpkg/').toFilePath();
   final environment = <String, String>{};
   if (input.config.code.targetOS == OS.android) {
     environment['ANDROID_NDK_HOME'] = _androidNdk(input).ndkRoot.toFilePath();
   }
-  await _serializeVcpkg(() => _runChecked(
-        vcpkg,
-        [
-          'install',
-          '--triplet=$triplet',
-          '--x-install-root=${installRoot.path}',
-          '--no-print-usage',
-        ],
-        desc: 'vcpkg install boringssl ($triplet)',
-        workingDirectory: manifestDir,
-        environment: environment.isEmpty ? null : environment,
-      ));
-  if (!libA.existsSync()) {
-    throw StateError('vcpkg boringssl ($triplet) produced no ${libA.path}');
-  }
-  return (includeDir.path, libA.path);
+  final (tripletRoot, libcryptoA) = await _vcpkgInstall(
+    input: input,
+    triplet: triplet,
+    manifestRelPath: 'tool/boringssl_vcpkg',
+    cacheSubdir: 'boringssl-vcpkg',
+    archiveRelPath: 'lib/libcrypto.a',
+    environment: environment.isEmpty ? null : environment,
+  );
+  return (Directory.fromUri(tripletRoot.resolve('include/')).path, libcryptoA);
 }
 
 String _boringSslTriplet(OS targetOS, Architecture arch) {
@@ -703,63 +677,80 @@ String _boringSslTriplet(OS targetOS, Architecture arch) {
 // wrappers by [_buildLibvpxWrapper] / [_buildOpusCodecs]. Linux / Android
 // keep building the submodules with configure+make / cmake.
 
-/// In-process memoisation keyed on the vcpkg triplet. VP8 and VP9 wrapper
-/// builds run concurrently via `Future.wait` and would otherwise both invoke
-/// `vcpkg install libvpx` against the same install root.
-final Map<String, Future<(Uri, String)>> _vcpkgLibvpxFutures = {};
-
 /// vcpkg-builds libvpx for the macOS target, returning the install prefix
 /// URI (`include/`, `lib/`) plus the resolved `libvpx.a` path.
-Future<(Uri, String)> _vcpkgBuildLibvpx(BuildInput input) {
-  final triplet = _osxTriplet(input.config.code.targetArchitecture, 'libvpx');
-  return _vcpkgLibvpxFutures[triplet] ??= _vcpkgInstallCodec(
-    input: input,
-    triplet: triplet,
-    manifestRelPath: 'tool/libvpx_vcpkg',
-    cacheSubdir: 'libvpx-vcpkg',
-    archiveRelPath: 'lib/libvpx.a',
-  );
-}
+Future<(Uri, String)> _vcpkgBuildLibvpx(BuildInput input) => _vcpkgInstall(
+      input: input,
+      triplet: _osxTriplet(input.config.code.targetArchitecture),
+      manifestRelPath: 'tool/libvpx_vcpkg',
+      cacheSubdir: 'libvpx-vcpkg',
+      archiveRelPath: 'lib/libvpx.a',
+      overlayTriplets: true,
+    );
 
 /// vcpkg-builds libopus for the macOS target, returning the install prefix
-/// URI (`include/opus/`, `lib/`) plus the resolved `libopus.a` path. Called
-/// once per build (single opus wrapper), so no memoisation is needed.
-Future<(Uri, String)> _vcpkgBuildOpus(BuildInput input) {
-  final triplet = _osxTriplet(input.config.code.targetArchitecture, 'libopus');
-  return _vcpkgInstallCodec(
-    input: input,
-    triplet: triplet,
-    manifestRelPath: 'tool/libopus_vcpkg',
-    cacheSubdir: 'opus-vcpkg',
-    archiveRelPath: 'lib/libopus.a',
-  );
-}
+/// URI (`include/opus/`, `lib/`) plus the resolved `libopus.a` path.
+Future<(Uri, String)> _vcpkgBuildOpus(BuildInput input) => _vcpkgInstall(
+      input: input,
+      triplet: _osxTriplet(input.config.code.targetArchitecture),
+      manifestRelPath: 'tool/libopus_vcpkg',
+      cacheSubdir: 'opus-vcpkg',
+      archiveRelPath: 'lib/libopus.a',
+      overlayTriplets: true,
+    );
 
-String _osxTriplet(Architecture arch, String label) => switch (arch) {
+String _osxTriplet(Architecture arch) => switch (arch) {
       Architecture.arm64 => 'arm64-osx',
       Architecture.x64 => 'x64-osx',
-      _ => throw UnsupportedError(
-          '$label macOS vcpkg build: unsupported arch $arch'),
+      _ => throw UnsupportedError('macOS vcpkg build: unsupported arch $arch'),
     };
 
-/// `vcpkg install`s the codec port at [manifestRelPath] for [triplet] and
-/// returns the per-triplet install prefix URI plus the resolved static
-/// archive path. Cached under [BuildInput.outputDirectoryShared]/[cacheSubdir]/,
-/// re-validated by the archive's existence — the same scheme as
-/// [_buildBoringSslArchiveOnce].
+/// In-process memoisation keyed on `<cacheSubdir>/<triplet>`. Concurrent
+/// callers for the same port (e.g. the VP8 + VP9 wrappers both needing libvpx)
+/// share one `vcpkg install` instead of racing two against the same root.
+final Map<String, Future<(Uri, String)>> _vcpkgInstalls = {};
+
+/// The single `vcpkg install` primitive shared by every vcpkg consumer
+/// (BoringSSL crypto, libvpx, libopus). Installs the port whose manifest lives
+/// at [manifestRelPath] for [triplet] and returns the per-triplet install
+/// prefix URI (`include/`, `lib/`) plus the resolved static archive path.
+/// Cached under [BuildInput.outputDirectoryShared]/[cacheSubdir]/, re-validated
+/// by the archive's existence.
 ///
-/// `--overlay-triplets` points at `tool/vcpkg_triplets/`, whose `*-osx`
-/// triplets pin VCPKG_OSX_DEPLOYMENT_TARGET so the vendored objects' Mach-O
-/// minimum stays no newer than the wrapper dylib's.
-Future<(Uri, String)> _vcpkgInstallCodec({
+/// [overlayTriplets] adds `--overlay-triplets=tool/vcpkg_triplets/`, whose
+/// `*-osx` triplets pin VCPKG_OSX_DEPLOYMENT_TARGET so the vendored objects'
+/// Mach-O minimum stays no newer than the wrapper dylib's. [environment] is
+/// forwarded to the install (Android passes `ANDROID_NDK_HOME`).
+Future<(Uri, String)> _vcpkgInstall({
   required BuildInput input,
   required String triplet,
   required String manifestRelPath,
   required String cacheSubdir,
   required String archiveRelPath,
+  bool overlayTriplets = false,
+  Map<String, String>? environment,
+}) =>
+    _vcpkgInstalls['$cacheSubdir/$triplet'] ??= _vcpkgInstallOnce(
+      input: input,
+      triplet: triplet,
+      manifestRelPath: manifestRelPath,
+      cacheSubdir: cacheSubdir,
+      archiveRelPath: archiveRelPath,
+      overlayTriplets: overlayTriplets,
+      environment: environment,
+    );
+
+Future<(Uri, String)> _vcpkgInstallOnce({
+  required BuildInput input,
+  required String triplet,
+  required String manifestRelPath,
+  required String cacheSubdir,
+  required String archiveRelPath,
+  required bool overlayTriplets,
+  required Map<String, String>? environment,
 }) async {
-  final shared = input.outputDirectoryShared;
-  final installRoot = Directory.fromUri(shared.resolve('$cacheSubdir/'));
+  final installRoot =
+      Directory.fromUri(input.outputDirectoryShared.resolve('$cacheSubdir/'));
   final tripletRoot = installRoot.uri.resolve('$triplet/');
   final archive = File.fromUri(tripletRoot.resolve(archiveRelPath));
   final includeDir = Directory.fromUri(tripletRoot.resolve('include/'));
@@ -768,20 +759,21 @@ Future<(Uri, String)> _vcpkgInstallCodec({
   }
 
   final vcpkg = await _vcpkgExe(input);
-  final manifestDir = input.packageRoot.resolve('$manifestRelPath/').toFilePath();
-  final overlayTriplets =
-      input.packageRoot.resolve('tool/vcpkg_triplets/').toFilePath();
+  final manifestDir =
+      input.packageRoot.resolve('$manifestRelPath/').toFilePath();
   await _serializeVcpkg(() => _runChecked(
         vcpkg,
         [
           'install',
           '--triplet=$triplet',
-          '--overlay-triplets=$overlayTriplets',
+          if (overlayTriplets)
+            '--overlay-triplets=${input.packageRoot.resolve('tool/vcpkg_triplets/').toFilePath()}',
           '--x-install-root=${installRoot.path}',
           '--no-print-usage',
         ],
         desc: 'vcpkg install $cacheSubdir ($triplet)',
         workingDirectory: manifestDir,
+        environment: environment,
       ));
   if (!archive.existsSync()) {
     throw StateError(
