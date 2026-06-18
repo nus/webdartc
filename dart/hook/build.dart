@@ -28,6 +28,7 @@
 // Linux + Android crypto links BoringSSL (vcpkg) into webdartc_crypto;
 // macOS / Windows use the platform-native crypto backends instead.
 
+import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:archive/archive.dart';
@@ -1136,18 +1137,24 @@ Future<Uri> _windowsWrapperSourceBuild({
   // by the time we reach here. Source vcvarsall.bat into a wrapper batch
   // before invoking `dart <script>`.
   //
-  // vcvarsall.bat is located via vswhere.exe (fixed Installer path on every
-  // machine with VS), so this works regardless of edition — Community /
-  // Professional / Enterprise (e.g. GitHub's windows runners) or the
-  // standalone Build Tools — rather than assuming one hardcoded install dir.
-  // `-find` returns the vcvarsall.bat path directly: no `-requires` component
-  // id (which differs by host arch — x64 vs ARM64 toolset) and no manual path
-  // join. `-prerelease` covers preview VS installs on some runner images.
-  // Requires the VC++ toolset, which `flutter build windows` already needs.
+  // vcvarsall.bat is located by scanning the standard VS install roots from
+  // Dart (the filesystem is the ground truth) rather than via vswhere inside
+  // the batch: the scrubbed environment makes %ProgramFiles%-relative paths and
+  // a vswhere `for /f` sub-shell unreliable on CI. This finds it regardless of
+  // edition — Community / Professional / Enterprise (GitHub's windows runners)
+  // or the standalone Build Tools. Requires the VC++ toolset, which
+  // `flutter build windows` already needs.
   //
   // `dart <script>` (no `run`) executes the script directly — `dart run`
   // would recursively re-enter `package:hooks_runner` and deadlock on
   // the same `.lock` file this hook is already holding.
+  final vcvarsall = _findVcvarsall();
+  if (vcvarsall == null) {
+    throw StateError(
+        'could not locate vcvarsall.bat under the standard Visual Studio '
+        'install roots — install the "Desktop development with C++" workload '
+        '(already required by `flutter build windows`).');
+  }
   final vcvarsArch = _vcvarsArchArg(arch);
   // Place the launcher .bat outside outDir so it survives the wrapper
   // script's post-run cleanup of non-DLL files — otherwise cmd loses
@@ -1157,17 +1164,7 @@ Future<Uri> _windowsWrapperSourceBuild({
       .toFilePath();
   File(batPath).writeAsStringSync(
     '@echo off\r\n'
-    'set "VCVARSALL="\r\n'
-    // vswhere.exe ships with the VS Installer at this fixed location on every
-    // edition. Hardcoded (not via %ProgramFiles(x86)%) because hooks_runner
-    // scrubs the environment before invoking the hook, so that var may be unset.
-    'set "VSWHERE=C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe"\r\n'
-    'if exist "%VSWHERE%" (\r\n'
-    '  for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -prerelease -products * '
-    '-find "VC\\Auxiliary\\Build\\vcvarsall.bat"`) do set "VCVARSALL=%%i"\r\n'
-    ')\r\n'
-    'if not defined VCVARSALL (echo could not locate vcvarsall.bat via "%VSWHERE%" - install the Visual Studio "Desktop development with C++" workload 1>&2 & exit /b 1)\r\n'
-    'call "%VCVARSALL%" $vcvarsArch\r\n'
+    'call "$vcvarsall" $vcvarsArch\r\n'
     'if errorlevel 1 exit /b 1\r\n'
     '"${Platform.resolvedExecutable}" "$scriptPath"'
     ' --triplet=$triplet'
@@ -1185,13 +1182,42 @@ Future<Uri> _windowsWrapperSourceBuild({
   return outDir.uri;
 }
 
+/// Scans the standard Visual Studio install roots for `vcvarsall.bat`,
+/// returning the newest match (preferring the 64-bit `Program Files` tree)
+/// or null if none is installed. Used instead of vswhere because the
+/// hook runs under a scrubbed environment where %ProgramFiles%-relative
+/// lookups and a vswhere `for /f` sub-shell are unreliable on CI — the
+/// filesystem is the ground truth and needs no environment.
+String? _findVcvarsall() {
+  const roots = [
+    r'C:\Program Files\Microsoft Visual Studio',
+    r'C:\Program Files (x86)\Microsoft Visual Studio',
+  ];
+  final found = <String>[];
+  for (final root in roots) {
+    final dir = Directory(root);
+    if (!dir.existsSync()) continue;
+    for (final year in dir.listSync().whereType<Directory>()) {
+      for (final edition in year.listSync().whereType<Directory>()) {
+        final bat =
+            File('${edition.path}\\VC\\Auxiliary\\Build\\vcvarsall.bat');
+        if (bat.existsSync()) found.add(bat.path);
+      }
+    }
+  }
+  // Lexicographic sort puts the 64-bit `Program Files` tree and the newest
+  // year/edition last; `.last` is the best pick for a build hook.
+  found.sort();
+  return found.isEmpty ? null : found.last;
+}
+
 /// Translates an asset target arch into the `vcvarsall.bat` first
-/// argument, picking the cross-compile combination based on the host
-/// arch (`PROCESSOR_ARCHITECTURE`).
+/// argument, picking the cross-compile combination based on the build
+/// host's arch. Uses [Abi.current] rather than `PROCESSOR_ARCHITECTURE`,
+/// which the scrubbed hook environment may not carry (mis-targeting an
+/// ARM64 host as x64).
 String _vcvarsArchArg(Architecture target) {
-  final host =
-      (Platform.environment['PROCESSOR_ARCHITECTURE'] ?? 'AMD64').toUpperCase();
-  final hostTok = host == 'ARM64' ? 'arm64' : 'amd64';
+  final hostTok = Abi.current() == Abi.windowsArm64 ? 'arm64' : 'amd64';
   final targetTok = switch (target) {
     Architecture.x64 => 'amd64',
     Architecture.arm64 => 'arm64',
