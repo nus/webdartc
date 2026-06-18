@@ -84,30 +84,34 @@ Every backend is software except VideoToolbox on macOS, which is hardware-accele
 | Codec | macOS | Linux | Windows | Android |
 |-------|-------|-------|---------|---------|
 | H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt) | OpenH264 (Cisco prebuilt) | — (no Cisco build; example negotiates VP8) |
-| VP8 / VP9 | libvpx (submodule, source-built) | libvpx (submodule, source-built) | prebuilt wrapper DLL (source build opt-in) | libvpx (submodule, source-built via NDK) |
-| Opus | libopus (submodule, source-built) | libopus (submodule, source-built) | prebuilt wrapper DLL (source build opt-in) | libopus (submodule, source-built via NDK) |
+| VP8 / VP9 | libvpx (vcpkg, source-built) | libvpx (submodule, source-built) | libvpx (vcpkg, source-built) | libvpx (submodule, source-built via NDK) |
+| Opus | libopus (vcpkg, source-built) | libopus (submodule, source-built) | libopus (vcpkg, source-built) | libopus (submodule, source-built via NDK) |
 
 `registerH264Codec()` / `registerVp8Codec()` / `registerVp9Codec()` /
 `registerOpusCodec()` each pick the right backend for the host automatically.
 [`dart/hook/build.dart`](dart/hook/build.dart) drives every native asset:
-compiles the VideoToolbox C shim on macOS, source-builds libopus + libvpx from
-the submodules on macOS / Linux (and via the NDK on Android), downloads our
-prebuilt wrapper DLLs on Windows, and fetches Cisco's OpenH264 (version +
-SHA-256 pinned) on Linux + Windows. The full per-OS breakdown and symbol-hiding
-rationale live in [`dart/README.md#codec-backends`](dart/README.md#codec-backends).
+compiles the VideoToolbox C shim on macOS, source-builds libopus + libvpx via
+vcpkg on macOS / Windows and from the submodules on Linux (and via the NDK on
+Android), and fetches Cisco's OpenH264 (version + SHA-256 pinned) on Linux +
+Windows. The full per-OS breakdown and symbol-hiding rationale live in
+[`dart/README.md#codec-backends`](dart/README.md#codec-backends).
 
 ### Native requirements
 
-- **macOS** — Xcode (CoreMedia / VideoToolbox frameworks) and CMake
-  (`brew install cmake`). NASM (`brew install nasm`) is only needed for the
-  x86_64 slice of a universal build. `flutter pub get` + `dart test` handle the rest.
+- **macOS** — Xcode (CoreMedia / VideoToolbox frameworks). libvpx + libopus are
+  source-built via vcpkg, which the build hook clones + bootstraps itself (or
+  honours `VCPKG_ROOT`) and which brings its own CMake. NASM (`brew install nasm`)
+  is only needed for the x86_64 slice of a universal build (libvpx SIMD).
+  `flutter pub get` + `dart test` handle the rest.
 - **Linux** — `sudo apt-get install cmake clang nasm pkg-config` (build libopus,
   assemble libvpx's x86_64 SIMD; pkg-config for vcpkg's BoringSSL port). Codecs
   are vendored/downloaded; BoringSSL (crypto) is source-built via vcpkg, which
   the build hook clones + bootstraps itself (or honours `VCPKG_ROOT`).
-- **Windows** — nothing for the default path: `flutter pub get` downloads the
-  VP8 / VP9 / Opus wrapper DLLs and the Cisco OpenH264 binary, and the OS's CNG
-  (`bcrypt.dll`) provides crypto. The source-build opt-in needs MSVC + vcpkg.
+- **Windows** — MSVC (Visual Studio "Desktop development with C++", already
+  required by `flutter build windows`) to source-build the VP8 / VP9 / Opus
+  wrapper DLLs from libvpx / libopus via vcpkg, which the build hook clones +
+  bootstraps itself (or honours `VCPKG_ROOT`). The Cisco OpenH264 binary is
+  downloaded, and the OS's CNG (`bcrypt.dll`) provides crypto.
 - **Android** — the Flutter Android toolchain (SDK + NDK + CMake, e.g. via
   Android Studio) plus pkg-config. The build hook cross-compiles libvpx +
   libopus with the NDK (VP8 / VP9 / Opus; no H.264) and source-builds BoringSSL

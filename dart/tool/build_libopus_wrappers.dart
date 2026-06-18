@@ -2,10 +2,9 @@
 // via vcpkg's manifest mode and compiling the wrapper TU with MSVC
 // `cl.exe -LD` against the resulting `opus.lib`.
 //
-// Shared by:
-//   - .github/workflows/build-libopus-prebuilt.yaml  (CI release prebuilt)
-//   - dart/hook/build.dart                           (end-user source-build
-//                                                     opt-in, Windows)
+// Invoked by dart/hook/build.dart's Windows codec build (the default — and
+// only — path on Windows; macOS / Linux / Android build their codecs
+// directly in the hook).
 //
 // Caller's responsibility before invoking:
 //   - MSVC cl + link in PATH (vcvarsall.bat or ilammy/msvc-dev-cmd).

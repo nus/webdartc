@@ -50,9 +50,9 @@ jobs:
       - if: runner.os != 'Windows'
         working-directory: dart
         # `dart test` runs the build hook (dart/hook/build.dart): builds
-        # the bundled libopus + libvpx (VP8 + VP9) on both macOS and
-        # Linux, downloads the Cisco-prebuilt OpenH264 dylib on Linux,
-        # plus the VideoToolbox callback shim on macOS.
+        # libopus + libvpx (VP8 + VP9) — via vcpkg on macOS, from the
+        # submodules on Linux — downloads the Cisco-prebuilt OpenH264 dylib
+        # on Linux, plus the VideoToolbox callback shim on macOS.
         #
         # `coturn` is excluded here because most runners don't ship the
         # turnserver binary — the dedicated turn-integration job below
@@ -69,10 +69,11 @@ jobs:
         working-directory: dart
         # Codec tests for everything we bundle on Windows:
         #   - OpenH264 (Cisco prebuilt DLL, fetched by the build hook).
-        #   - VP8 / VP9 (`vpx-prebuilt-*` release zip, fetched by
-        #     `_bundleLibvpxPrebuilt` in dart/hook/build.dart).
-        #   - libopus (`opus-prebuilt-*` release zip, fetched by
-        #     `_bundleLibopusPrebuilt`).
+        #   - VP8 / VP9 + libopus: the build hook source-builds the wrapper
+        #     DLLs from libvpx / libopus via vcpkg + MSVC (vswhere locates
+        #     the VC++ toolset preinstalled on windows runners; vcpkg is
+        #     auto-bootstrapped). Cached across runs under the build-hook
+        #     artifact cache.
         run: |
           dart test \
             test/codec/openh264_version_test.dart \

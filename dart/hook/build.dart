@@ -1,8 +1,8 @@
 // Build hook for webdartc native code assets.
 //
 // Apple platforms (macOS / iOS): compile the VideoToolbox callback shim.
-// macOS + Linux: vendor-build each codec library and link it into a
-// dedicated wrapper shared library:
+// Every non-Apple-H.264 codec is source-built and linked into a dedicated
+// wrapper shared library:
 //   - libopus  → webdartc_codecs  (exports webdartc_opus_*)
 //   - libvpx   → webdartc_vp8     (exports webdartc_vp8_*)
 //              → webdartc_vp9     (exports webdartc_vp9_*)
@@ -13,18 +13,20 @@
 // libraries' own symbols cannot collide with another copy loaded into
 // the same process.
 //
-// Linux also bundles Cisco's prebuilt OpenH264 dylib (downloaded by
-// [_bundleOpenH264]). macOS uses VideoToolbox so OpenH264 isn't shipped
-// there.
+// Codec source per platform:
+//   - macOS / Windows: vcpkg ports (pinned by `tool/lib*_vcpkg/vcpkg.json`).
+//     vcpkg is auto-cloned + bootstrapped by [_vcpkgExe] if not already on
+//     VCPKG_ROOT / PATH. Windows additionally needs MSVC (vcvarsall.bat),
+//     which `flutter build windows` already requires.
+//   - Linux / Android: the bundled `third_party/{opus,libvpx}` submodules,
+//     built with cmake / configure+make.
 //
-// Windows is fully prebuilt by default — Cisco's OpenH264 plus our own
-// `webdartc_vp{8,9}.dll` and `webdartc_opus.dll` bundles published from
-// the matching `Build *-prebuilt` GitHub Actions workflows. Setting
-// `libvpx_source_build: true` / `libopus_source_build: true` pubspec
-// defines under `hooks.user_defines.webdartc` flips the corresponding
-// codec to build-from-source locally via the matching
-// `tool/build_lib*_wrappers.dart` (requires vcpkg + MSVC + ARM64/x64
-// cl in PATH).
+// Linux + Windows also bundle Cisco's prebuilt OpenH264 dylib/dll
+// (downloaded by [_bundleOpenH264]). macOS uses VideoToolbox so OpenH264
+// isn't shipped there.
+//
+// Linux + Android crypto links BoringSSL (vcpkg) into webdartc_crypto;
+// macOS / Windows use the platform-native crypto backends instead.
 
 import 'dart:io';
 
@@ -57,8 +59,8 @@ void main(List<String> args) async {
       if (targetOS == OS.linux || targetOS == OS.windows)
         _bundleOpenH264(input, output),
       if (targetOS == OS.windows) ...[
-        _libvpxOnWindows(input, output),
-        _libopusOnWindows(input, output),
+        _buildLibvpxFromSource(input, output),
+        _buildLibopusFromSource(input, output),
       ],
       // Linux + Android crypto: BoringSSL (built via vcpkg) statically linked
       // into the webdartc_crypto wrapper. macOS=Security.framework /
@@ -69,36 +71,10 @@ void main(List<String> args) async {
   });
 }
 
-/// Windows: bundled `webdartc_vp{8,9}.dll` via either the published
-/// prebuilt zip (default) or a local source build through
-/// `tool/build_libvpx_wrappers.dart` (opt-in via
-/// `hooks.user_defines.webdartc.libvpx_source_build: true` in
-/// `pubspec.yaml`).
-Future<void> _libvpxOnWindows(BuildInput input, BuildOutputBuilder output) =>
-    _windowsSourceBuildOpt(input, 'libvpx_source_build')
-        ? _buildLibvpxFromSource(input, output)
-        : _bundleLibvpxPrebuilt(input, output);
-
-/// Windows counterpart of [_libvpxOnWindows] for libopus — same
-/// download-or-source-build dispatch under
-/// `hooks.user_defines.webdartc.libopus_source_build`.
-Future<void> _libopusOnWindows(BuildInput input, BuildOutputBuilder output) =>
-    _windowsSourceBuildOpt(input, 'libopus_source_build')
-        ? _buildLibopusFromSource(input, output)
-        : _bundleLibopusPrebuilt(input, output);
-
-/// Reads a `lib*_source_build` user-define, accepting both YAML boolean
-/// `true` and the string `'true'` (a quoted value in pubspec.yaml would
-/// silently become a String).
-bool _windowsSourceBuildOpt(BuildInput input, String key) {
-  final raw = input.userDefines[key];
-  return raw == true || (raw is String && raw.toLowerCase() == 'true');
-}
-
 const _libvpxCodecs = ['vp8', 'vp9'];
 
-/// Emits `CodeAsset`s for each `webdartc_vp{8,9}.dll` sitting under [dllDir].
-/// Shared by the prebuilt-download and source-build paths.
+/// Emits `CodeAsset`s for each `webdartc_vp{8,9}.dll` sitting under [dllDir]
+/// (the Windows source-build output directory).
 void _registerLibvpxWrappers(BuildOutputBuilder output, Uri dllDir) {
   for (final codec in _libvpxCodecs) {
     output.assets.code.add(CodeAsset(
@@ -110,8 +86,8 @@ void _registerLibvpxWrappers(BuildOutputBuilder output, Uri dllDir) {
   }
 }
 
-/// Emits the `CodeAsset` for `webdartc_opus.dll` sitting under [dllDir].
-/// Shared by the prebuilt-download and source-build paths.
+/// Emits the `CodeAsset` for `webdartc_opus.dll` sitting under [dllDir]
+/// (the Windows source-build output directory).
 void _registerLibopusWrapper(BuildOutputBuilder output, Uri dllDir) {
   output.assets.code.add(CodeAsset(
     package: 'webdartc',
@@ -176,10 +152,15 @@ const _libopusArchiveCandidates = ['lib/libopus.a', 'lib64/libopus.a'];
 
 Future<void> _buildOpusCodecs(
     BuildInput input, BuildOutputBuilder output) async {
-  final (opusInstall, libopusA) = await _cmakeBuildOpus(input);
+  final targetOS = input.config.code.targetOS;
+  // macOS sources libopus via vcpkg; Linux / Android build the bundled
+  // submodule with cmake. Both produce a static `libopus.a` + `include/opus/`
+  // that the wrapper below links the same way.
+  final (opusInstall, libopusA) = targetOS == OS.macOS
+      ? await _vcpkgBuildOpus(input)
+      : await _cmakeBuildOpus(input);
   final includeDir = opusInstall.resolve('include/opus/').toFilePath();
 
-  final targetOS = input.config.code.targetOS;
   final builder = CBuilder.library(
     name: 'webdartc_codecs',
     assetName: 'codec/opus/webdartc_opus.dart',
@@ -374,9 +355,14 @@ Future<void> _buildLibvpxWrapper({
   required String assetName,
   required String source,
 }) async {
-  final (vpxInstall, libvpxA) = await _configureMakeLibvpx(input);
-  final includeDir = vpxInstall.resolve('include/').toFilePath();
   final targetOS = input.config.code.targetOS;
+  // macOS sources libvpx via vcpkg; Linux / Android build the bundled
+  // submodule with configure+make. Both produce a static `libvpx.a` +
+  // `include/vpx/` that the wrapper below links the same way.
+  final (vpxInstall, libvpxA) = targetOS == OS.macOS
+      ? await _vcpkgBuildLibvpx(input)
+      : await _configureMakeLibvpx(input);
+  final includeDir = vpxInstall.resolve('include/').toFilePath();
   final builder = CBuilder.library(
     name: name,
     assetName: assetName,
@@ -670,18 +656,18 @@ Future<(String, String)> _buildBoringSslArchiveOnce(
   if (input.config.code.targetOS == OS.android) {
     environment['ANDROID_NDK_HOME'] = _androidNdk(input).ndkRoot.toFilePath();
   }
-  await _runChecked(
-    vcpkg,
-    [
-      'install',
-      '--triplet=$triplet',
-      '--x-install-root=${installRoot.path}',
-      '--no-print-usage',
-    ],
-    desc: 'vcpkg install boringssl ($triplet)',
-    workingDirectory: manifestDir,
-    environment: environment.isEmpty ? null : environment,
-  );
+  await _serializeVcpkg(() => _runChecked(
+        vcpkg,
+        [
+          'install',
+          '--triplet=$triplet',
+          '--x-install-root=${installRoot.path}',
+          '--no-print-usage',
+        ],
+        desc: 'vcpkg install boringssl ($triplet)',
+        workingDirectory: manifestDir,
+        environment: environment.isEmpty ? null : environment,
+      ));
   if (!libA.existsSync()) {
     throw StateError('vcpkg boringssl ($triplet) produced no ${libA.path}');
   }
@@ -708,10 +694,131 @@ String _boringSslTriplet(OS targetOS, Architecture arch) {
   throw UnsupportedError('BoringSSL build: unsupported OS $targetOS');
 }
 
+// ── macOS codec source build via vcpkg ──────────────────────────────────
+//
+// On macOS the libvpx / libopus static archives come from vcpkg's ports
+// (pinned by `tool/lib*_vcpkg/vcpkg.json`) instead of the bundled
+// submodules, mirroring the BoringSSL crypto path above. The resulting
+// `.a` + headers are linked into the same `webdartc_vp{8,9}` / `webdartc_codecs`
+// wrappers by [_buildLibvpxWrapper] / [_buildOpusCodecs]. Linux / Android
+// keep building the submodules with configure+make / cmake.
+
+/// In-process memoisation keyed on the vcpkg triplet. VP8 and VP9 wrapper
+/// builds run concurrently via `Future.wait` and would otherwise both invoke
+/// `vcpkg install libvpx` against the same install root.
+final Map<String, Future<(Uri, String)>> _vcpkgLibvpxFutures = {};
+
+/// vcpkg-builds libvpx for the macOS target, returning the install prefix
+/// URI (`include/`, `lib/`) plus the resolved `libvpx.a` path.
+Future<(Uri, String)> _vcpkgBuildLibvpx(BuildInput input) {
+  final triplet = _osxTriplet(input.config.code.targetArchitecture, 'libvpx');
+  return _vcpkgLibvpxFutures[triplet] ??= _vcpkgInstallCodec(
+    input: input,
+    triplet: triplet,
+    manifestRelPath: 'tool/libvpx_vcpkg',
+    cacheSubdir: 'libvpx-vcpkg',
+    archiveRelPath: 'lib/libvpx.a',
+  );
+}
+
+/// vcpkg-builds libopus for the macOS target, returning the install prefix
+/// URI (`include/opus/`, `lib/`) plus the resolved `libopus.a` path. Called
+/// once per build (single opus wrapper), so no memoisation is needed.
+Future<(Uri, String)> _vcpkgBuildOpus(BuildInput input) {
+  final triplet = _osxTriplet(input.config.code.targetArchitecture, 'libopus');
+  return _vcpkgInstallCodec(
+    input: input,
+    triplet: triplet,
+    manifestRelPath: 'tool/libopus_vcpkg',
+    cacheSubdir: 'opus-vcpkg',
+    archiveRelPath: 'lib/libopus.a',
+  );
+}
+
+String _osxTriplet(Architecture arch, String label) => switch (arch) {
+      Architecture.arm64 => 'arm64-osx',
+      Architecture.x64 => 'x64-osx',
+      _ => throw UnsupportedError(
+          '$label macOS vcpkg build: unsupported arch $arch'),
+    };
+
+/// `vcpkg install`s the codec port at [manifestRelPath] for [triplet] and
+/// returns the per-triplet install prefix URI plus the resolved static
+/// archive path. Cached under [BuildInput.outputDirectoryShared]/[cacheSubdir]/,
+/// re-validated by the archive's existence — the same scheme as
+/// [_buildBoringSslArchiveOnce].
+///
+/// `--overlay-triplets` points at `tool/vcpkg_triplets/`, whose `*-osx`
+/// triplets pin VCPKG_OSX_DEPLOYMENT_TARGET so the vendored objects' Mach-O
+/// minimum stays no newer than the wrapper dylib's.
+Future<(Uri, String)> _vcpkgInstallCodec({
+  required BuildInput input,
+  required String triplet,
+  required String manifestRelPath,
+  required String cacheSubdir,
+  required String archiveRelPath,
+}) async {
+  final shared = input.outputDirectoryShared;
+  final installRoot = Directory.fromUri(shared.resolve('$cacheSubdir/'));
+  final tripletRoot = installRoot.uri.resolve('$triplet/');
+  final archive = File.fromUri(tripletRoot.resolve(archiveRelPath));
+  final includeDir = Directory.fromUri(tripletRoot.resolve('include/'));
+  if (archive.existsSync() && includeDir.existsSync()) {
+    return (tripletRoot, archive.path);
+  }
+
+  final vcpkg = await _vcpkgExe(input);
+  final manifestDir = input.packageRoot.resolve('$manifestRelPath/').toFilePath();
+  final overlayTriplets =
+      input.packageRoot.resolve('tool/vcpkg_triplets/').toFilePath();
+  await _serializeVcpkg(() => _runChecked(
+        vcpkg,
+        [
+          'install',
+          '--triplet=$triplet',
+          '--overlay-triplets=$overlayTriplets',
+          '--x-install-root=${installRoot.path}',
+          '--no-print-usage',
+        ],
+        desc: 'vcpkg install $cacheSubdir ($triplet)',
+        workingDirectory: manifestDir,
+      ));
+  if (!archive.existsSync()) {
+    throw StateError(
+        'vcpkg $cacheSubdir ($triplet) produced no ${archive.path}');
+  }
+  return (tripletRoot, archive.path);
+}
+
+/// In-process guard so a single build that drives several vcpkg consumers
+/// concurrently (e.g. macOS libvpx + libopus) clones + bootstraps vcpkg
+/// exactly once. Without it, the parallel first-time callers race on the
+/// same `git clone` / bootstrap of the shared `vcpkg/` dir and one fails.
+Future<String>? _vcpkgExeFuture;
+
+/// Serialises `vcpkg install` invocations. vcpkg holds an exclusive lock on
+/// its root's `buildtrees/` (`vcpkg-running.lock`), so two installs against
+/// the same vcpkg clone can't run concurrently — and macOS builds libvpx +
+/// libopus in parallel (likewise Windows for the two wrapper DLLs). Each
+/// install still differs only in `--x-install-root`, so chaining them keeps
+/// correctness while avoiding "another vcpkg may be running" lock failures.
+/// The per-triplet result caches mean this chain runs each port just once.
+Future<void> _vcpkgChain = Future<void>.value();
+Future<T> _serializeVcpkg<T>(Future<T> Function() action) {
+  final result = _vcpkgChain.then((_) => action());
+  // Keep the chain alive even if an install fails, so a later install still
+  // runs (and surfaces its own error) instead of inheriting this failure.
+  _vcpkgChain = result.then((_) {}, onError: (_) {});
+  return result;
+}
+
 /// Locates a `vcpkg` executable (`VCPKG_ROOT`, then PATH), else clones +
 /// bootstraps microsoft/vcpkg into the shared cache. A full (non-shallow) clone
 /// is required so the manifest's `builtin-baseline` commit is present.
-Future<String> _vcpkgExe(BuildInput input) async {
+Future<String> _vcpkgExe(BuildInput input) =>
+    _vcpkgExeFuture ??= _vcpkgExeOnce(input);
+
+Future<String> _vcpkgExeOnce(BuildInput input) async {
   final sep = Platform.pathSeparator;
   final exeName = Platform.isWindows ? 'vcpkg.exe' : 'vcpkg';
   final root = Platform.environment['VCPKG_ROOT'];
@@ -954,109 +1061,16 @@ Future<void> _downloadFile(String url, File dest) async {
 
 // ── libvpx on Windows ──────────────────────────────────────────────────
 //
-// Default path downloads webdartc-libvpx-prebuilt-<ver>-r<rev>-<plat>.zip
-// from the matching `vpx-prebuilt-*` GitHub release on this repo and
-// hands the two DLLs to the asset registry. The release contents are
-// produced by `.github/workflows/build-libvpx-prebuilt.yaml`, which in
-// turn drives `tool/build_libvpx_wrappers.dart`.
+// Windows source-builds the `webdartc_vp{8,9}.dll` wrappers from libvpx
+// (pinned by `tool/libvpx_vcpkg/vcpkg.json`) via
+// `tool/build_libvpx_wrappers.dart`, run under an MSVC environment by
+// [_windowsWrapperSourceBuild]. Requires MSVC (vcvarsall.bat) — already a
+// `flutter build windows` prerequisite. vcpkg is auto-bootstrapped by
+// [_vcpkgExe] if absent.
 //
-// Bumping the libvpx pin:
-//   1. Edit `tool/libvpx_vcpkg/vcpkg.json` (libvpx version and
-//      `builtin-baseline`).
-//   2. Bump `WRAPPER_REVISION` in the workflow if wrapper sources also
-//      changed since the prior release.
-//   3. Land that change, then tag `vpx-prebuilt-v<ver>-r<rev>` and let
-//      the workflow publish the zip assets.
-//   4. Read the published zip SHA-256 off the release (or
-//      `gh release view <tag> --json assets`) and update the matching
-//      `_libvpxPrebuiltWin*` constant below + the version constants.
-
-const String _libvpxVersion = '1.16.0';
-const String _libvpxWrapperRev = 'r1';
-const String _libvpxReleaseTag =
-    'vpx-prebuilt-v$_libvpxVersion-$_libvpxWrapperRev';
-
-class _LibvpxPrebuilt {
-  /// `win-x64` or `win-arm64`. Used in the cache directory, zip filename
-  /// and the published GitHub asset name.
-  final String platform;
-
-  /// SHA-256 of the published zip as a whole. The zip's individual
-  /// payloads (`webdartc_vp{8,9}.dll`, `LICENSE`, `NOTICE.txt`) inherit
-  /// their integrity from the zip's SHA.
-  final String zipSha256;
-
-  const _LibvpxPrebuilt({required this.platform, required this.zipSha256});
-
-  String get zipName =>
-      'webdartc-libvpx-prebuilt-v$_libvpxVersion-$_libvpxWrapperRev-$platform.zip';
-
-  String get downloadUrl =>
-      'https://github.com/nus/webdartc/releases/download/$_libvpxReleaseTag/$zipName';
-}
-
-const _libvpxPrebuiltWinX64 = _LibvpxPrebuilt(
-  platform: 'win-x64',
-  zipSha256: '26fb097ae4786ef7d354df84263a132eb5c1e61b394da5a812d0775e0068112d',
-);
-
-const _libvpxPrebuiltWinArm64 = _LibvpxPrebuilt(
-  platform: 'win-arm64',
-  zipSha256: '487d5c8c5d850135c04f5cbbcc931ece33a09aec6239846ca2158806267015db',
-);
-
-_LibvpxPrebuilt _resolveLibvpxPrebuilt(Architecture arch) => switch (arch) {
-      Architecture.x64 => _libvpxPrebuiltWinX64,
-      Architecture.arm64 => _libvpxPrebuiltWinArm64,
-      _ => throw UnsupportedError(
-          'libvpx prebuilt: unsupported Windows arch $arch'),
-    };
-
-Future<void> _bundleLibvpxPrebuilt(
-    BuildInput input, BuildOutputBuilder output) async {
-  final prebuilt =
-      _resolveLibvpxPrebuilt(input.config.code.targetArchitecture);
-
-  final cacheDir = Directory.fromUri(input.outputDirectoryShared.resolve(
-      'libvpx-prebuilt-$_libvpxReleaseTag-${prebuilt.platform}/'));
-  final vp8 = File.fromUri(cacheDir.uri.resolve('webdartc_vp8.dll'));
-  final vp9 = File.fromUri(cacheDir.uri.resolve('webdartc_vp9.dll'));
-  // Marker so we can re-verify the cache hit against the expected SHA
-  // without keeping the original zip around.
-  final marker = File.fromUri(cacheDir.uri.resolve('zip.sha256'));
-
-  final cached = vp8.existsSync() &&
-      vp9.existsSync() &&
-      marker.existsSync() &&
-      (await marker.readAsString()).trim() == prebuilt.zipSha256;
-
-  if (!cached) {
-    await cacheDir.create(recursive: true);
-    final zipFile = File.fromUri(cacheDir.uri.resolve(prebuilt.zipName));
-    await _downloadFile(prebuilt.downloadUrl, zipFile);
-    final actualSha = await _sha256Hex(zipFile);
-    if (actualSha != prebuilt.zipSha256) {
-      throw StateError(
-          'libvpx prebuilt SHA-256 mismatch for ${prebuilt.platform}:\n'
-          '  expected: ${prebuilt.zipSha256}\n'
-          '  actual:   $actualSha\n'
-          'Either the release asset was re-uploaded (verify and update '
-          'the matching _libvpxPrebuiltWin* constant) or the download '
-          'was corrupted.');
-    }
-    final archive = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
-    for (final entry in archive.files) {
-      if (!entry.isFile) continue;
-      final out = File.fromUri(cacheDir.uri.resolve(entry.name));
-      await out.create(recursive: true);
-      await out.writeAsBytes(entry.content as List<int>);
-    }
-    await zipFile.delete();
-    await marker.writeAsString(prebuilt.zipSha256);
-  }
-
-  _registerLibvpxWrappers(output, cacheDir.uri);
-}
+// Bumping the libvpx pin: edit the libvpx version + `builtin-baseline` in
+// `tool/libvpx_vcpkg/vcpkg.json`. The next build picks it up (the CI
+// hook-artifact cache key hashes the manifest, so it re-builds).
 
 Future<void> _buildLibvpxFromSource(
     BuildInput input, BuildOutputBuilder output) async {
@@ -1091,10 +1105,26 @@ Future<Uri> _windowsWrapperSourceBuild({
       .resolve('$label-source-build-$triplet/'));
   await outDir.create(recursive: true);
 
+  // Short-circuit on a cache hit: outDir lives under outputDirectoryShared,
+  // which CI restores via actions/cache and which persists locally across
+  // builds. If the wrapper DLL(s) are already there, skip the multi-minute
+  // vcpkg source build + cl link entirely. The expensive vcpkg work writes
+  // to `<manifest>/vcpkg_installed/` (outside the cache), so without this
+  // guard every build would rebuild libvpx/opus from source.
+  final dlls = outDir
+      .listSync()
+      .whereType<File>()
+      .where((f) => f.uri.pathSegments.last.toLowerCase().endsWith('.dll'));
+  if (dlls.isNotEmpty) return outDir.uri;
+
   final pkg = input.packageRoot;
   final scriptPath = pkg.resolve(scriptRelPath).toFilePath();
   final manifestDir = pkg.resolve(manifestRelPath).toFilePath();
   final srcDir = pkg.resolve('src').toFilePath();
+  // Auto-bootstrap vcpkg (clone + bootstrap into the shared cache) if it
+  // isn't on VCPKG_ROOT / PATH, matching the macOS / Linux codec paths.
+  // build_*_wrappers.dart takes the path via --vcpkg.
+  final vcpkg = await _vcpkgExe(input);
   // Directory.path keeps the trailing `\`; trim it so the closing `"`
   // in `--out-dir="$outPath"` isn't escaped to a literal quote.
   final outPath = outDir.path.endsWith(r'\')
@@ -1106,11 +1136,15 @@ Future<Uri> _windowsWrapperSourceBuild({
   // by the time we reach here. Source vcvarsall.bat into a wrapper batch
   // before invoking `dart <script>`.
   //
+  // vcvarsall.bat is located via vswhere.exe (fixed Installer path on every
+  // machine with VS), so this works regardless of edition — Community /
+  // Professional / Enterprise (e.g. GitHub's windows runners) or the
+  // standalone Build Tools — rather than assuming one hardcoded install dir.
+  // Requires the VC++ toolset, which `flutter build windows` already needs.
+  //
   // `dart <script>` (no `run`) executes the script directly — `dart run`
   // would recursively re-enter `package:hooks_runner` and deadlock on
   // the same `.lock` file this hook is already holding.
-  final vcvarsall =
-      r'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat';
   final vcvarsArch = _vcvarsArchArg(arch);
   // Place the launcher .bat outside outDir so it survives the wrapper
   // script's post-run cleanup of non-DLL files — otherwise cmd loses
@@ -1120,16 +1154,29 @@ Future<Uri> _windowsWrapperSourceBuild({
       .toFilePath();
   File(batPath).writeAsStringSync(
     '@echo off\r\n'
-    'call "$vcvarsall" $vcvarsArch\r\n'
+    'set "VSWHERE=%ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe"\r\n'
+    'set "VCVARSALL="\r\n'
+    'if exist "%VSWHERE%" (\r\n'
+    '  for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * '
+    '-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 '
+    '-property installationPath`) do set "VCVARSALL=%%i\\VC\\Auxiliary\\Build\\vcvarsall.bat"\r\n'
+    ')\r\n'
+    'if not defined VCVARSALL set "VCVARSALL=C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvarsall.bat"\r\n'
+    'if not exist "%VCVARSALL%" (echo could not locate vcvarsall.bat - install the Visual Studio "Desktop development with C++" workload 1>&2 & exit /b 1)\r\n'
+    'call "%VCVARSALL%" $vcvarsArch\r\n'
     'if errorlevel 1 exit /b 1\r\n'
     '"${Platform.resolvedExecutable}" "$scriptPath"'
     ' --triplet=$triplet'
+    ' --vcpkg="$vcpkg"'
     ' --manifest-dir="$manifestDir"'
     ' --src-dir="$srcDir"'
     ' --out-dir="$outPath"\r\n',
   );
-  await _runChecked('cmd', ['/c', batPath],
-      desc: '$label wrapper source build ($triplet)');
+  // The script runs `vcpkg install` internally, so serialise the whole
+  // wrapper build against the other codec's (libvpx vs libopus run in
+  // parallel) to avoid vcpkg's buildtrees lock contention.
+  await _serializeVcpkg(() => _runChecked('cmd', ['/c', batPath],
+      desc: '$label wrapper source build ($triplet)'));
 
   return outDir.uri;
 }
@@ -1157,119 +1204,11 @@ Future<String> _sha256Hex(File f) async {
 
 // ── libopus on Windows ─────────────────────────────────────────────────
 //
-// Same shape as the libvpx Windows section above: the default path
-// downloads `webdartc-libopus-prebuilt-v<ver>-r<rev>-<plat>.zip` from the
-// matching `opus-prebuilt-*` GitHub release on this repo, produced by
-// `.github/workflows/build-libopus-prebuilt.yaml` (which drives
-// `tool/build_libopus_wrappers.dart`). The `libopus_source_build: true`
-// user-define switches to a local source build of the same wrapper.
-//
-// Bumping the libopus pin:
-//   1. Edit `tool/libopus_vcpkg/vcpkg.json` (libopus version and
-//      `builtin-baseline`).
-//   2. Bump `WRAPPER_REVISION` in the workflow if wrapper sources also
-//      changed since the prior release.
-//   3. Land that change, then tag `opus-prebuilt-v<ver>-r<rev>` and let
-//      the workflow publish the zip assets.
-//   4. Read the published zip SHA-256 off the release (or
-//      `gh release view <tag> --json assets`) and update the matching
-//      `_libopusPrebuiltWin*` constant below + the version constants.
-
-const String _libopusVersion = '1.5.2';
-const String _libopusWrapperRev = 'r1';
-const String _libopusReleaseTag =
-    'opus-prebuilt-v$_libopusVersion-$_libopusWrapperRev';
-
-class _LibopusPrebuilt {
-  /// `win-x64` or `win-arm64`. Used in the cache directory, zip filename
-  /// and the published GitHub asset name.
-  final String platform;
-
-  /// SHA-256 of the published zip as a whole. The zip's individual
-  /// payloads (`webdartc_opus.dll`, `LICENSE`, `NOTICE.txt`) inherit
-  /// their integrity from the zip's SHA.
-  final String zipSha256;
-
-  const _LibopusPrebuilt({required this.platform, required this.zipSha256});
-
-  String get zipName =>
-      'webdartc-libopus-prebuilt-v$_libopusVersion-$_libopusWrapperRev-$platform.zip';
-
-  String get downloadUrl =>
-      'https://github.com/nus/webdartc/releases/download/$_libopusReleaseTag/$zipName';
-}
-
-const _libopusPrebuiltWinX64 = _LibopusPrebuilt(
-  platform: 'win-x64',
-  zipSha256: 'fcbc655462b793f56e79255fb4a7ca72af9348cc150a6d1c2e630f3777853c93',
-);
-
-const _libopusPrebuiltWinArm64 = _LibopusPrebuilt(
-  platform: 'win-arm64',
-  zipSha256: '60a0c57ab4fd98e20abaa4ef1f03716fc073e4d90073bdcb768994618c72a483',
-);
-
-_LibopusPrebuilt _resolveLibopusPrebuilt(Architecture arch) => switch (arch) {
-      Architecture.x64 => _libopusPrebuiltWinX64,
-      Architecture.arm64 => _libopusPrebuiltWinArm64,
-      _ => throw UnsupportedError(
-          'libopus prebuilt: unsupported Windows arch $arch'),
-    };
-
-Future<void> _bundleLibopusPrebuilt(
-    BuildInput input, BuildOutputBuilder output) async {
-  final prebuilt =
-      _resolveLibopusPrebuilt(input.config.code.targetArchitecture);
-
-  if (prebuilt.zipSha256.isEmpty) {
-    throw StateError(
-        'libopus prebuilt for ${prebuilt.platform} has no published zip yet '
-        '— tag `$_libopusReleaseTag` first to trigger '
-        'build-libopus-prebuilt.yaml, then read the asset SHA-256 and '
-        'update the matching _libopusPrebuiltWin* constant. To build '
-        'locally instead, set '
-        '`hooks.user_defines.webdartc.libopus_source_build: true` '
-        'in pubspec.yaml (requires vcpkg + MSVC).');
-  }
-
-  final cacheDir = Directory.fromUri(input.outputDirectoryShared.resolve(
-      'libopus-prebuilt-$_libopusReleaseTag-${prebuilt.platform}/'));
-  final dll = File.fromUri(cacheDir.uri.resolve('webdartc_opus.dll'));
-  // Marker so we can re-verify the cache hit against the expected SHA
-  // without keeping the original zip around.
-  final marker = File.fromUri(cacheDir.uri.resolve('zip.sha256'));
-
-  final cached = dll.existsSync() &&
-      marker.existsSync() &&
-      (await marker.readAsString()).trim() == prebuilt.zipSha256;
-
-  if (!cached) {
-    await cacheDir.create(recursive: true);
-    final zipFile = File.fromUri(cacheDir.uri.resolve(prebuilt.zipName));
-    await _downloadFile(prebuilt.downloadUrl, zipFile);
-    final actualSha = await _sha256Hex(zipFile);
-    if (actualSha != prebuilt.zipSha256) {
-      throw StateError(
-          'libopus prebuilt SHA-256 mismatch for ${prebuilt.platform}:\n'
-          '  expected: ${prebuilt.zipSha256}\n'
-          '  actual:   $actualSha\n'
-          'Either the release asset was re-uploaded (verify and update '
-          'the matching _libopusPrebuiltWin* constant) or the download '
-          'was corrupted.');
-    }
-    final archive = ZipDecoder().decodeBytes(await zipFile.readAsBytes());
-    for (final entry in archive.files) {
-      if (!entry.isFile) continue;
-      final out = File.fromUri(cacheDir.uri.resolve(entry.name));
-      await out.create(recursive: true);
-      await out.writeAsBytes(entry.content as List<int>);
-    }
-    await zipFile.delete();
-    await marker.writeAsString(prebuilt.zipSha256);
-  }
-
-  _registerLibopusWrapper(output, cacheDir.uri);
-}
+// Same shape as the libvpx Windows section above: Windows source-builds
+// `webdartc_opus.dll` from libopus (pinned by
+// `tool/libopus_vcpkg/vcpkg.json`) via `tool/build_libopus_wrappers.dart`
+// under MSVC. Bump the pin by editing the libopus version +
+// `builtin-baseline` in that manifest.
 
 Future<void> _buildLibopusFromSource(
     BuildInput input, BuildOutputBuilder output) async {
