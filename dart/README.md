@@ -31,22 +31,24 @@ Data channels and media (audio + video, send + receive) are both supported.
   (hardware-accelerated on macOS) or Cisco-prebuilt OpenH264 (Linux + Windows),
   Opus via libopus. On Android, libvpx + libopus are cross-compiled with the NDK
   (VP8 / VP9 / Opus; no H.264). See [Codec backends](#codec-backends) for the
-  per-OS source-vs-prebuilt split.
+  per-OS codec source split (vcpkg on macOS / Windows, submodules elsewhere).
 
 ## Requirements
 
 - Dart SDK `>= 3.11.0 < 4.0.0`.
-- **macOS** — Xcode (VideoToolbox / CoreMedia / CoreVideo) and CMake. The
-  `dart/third_party/opus` + `dart/third_party/libvpx` submodules must be checked
-  out.
+- **macOS** — Xcode (VideoToolbox / CoreMedia / CoreVideo). libvpx + libopus are
+  source-built via vcpkg, which the build hook clones + bootstraps itself (or
+  honours `VCPKG_ROOT`) and which brings its own CMake; no submodules needed.
 - **Linux** — `cmake clang nasm pkg-config` (build libopus, assemble libvpx's
   x86_64 SIMD; pkg-config for vcpkg's BoringSSL port). OpenH264 is
-  auto-downloaded; BoringSSL is source-built via vcpkg (the build hook clones +
-  bootstraps vcpkg itself, or honours `VCPKG_ROOT`). Submodules required.
-- **Windows** — no extra tooling for the default path: `dart pub get` downloads
-  the VP8 / VP9 / Opus wrapper DLLs and the Cisco OpenH264 binary, and CNG
-  provides crypto. Submodules are only needed for the MSVC + vcpkg source-build
-  opt-in.
+  auto-downloaded; codecs come from the submodules; BoringSSL is source-built
+  via vcpkg (the build hook clones + bootstraps vcpkg itself, or honours
+  `VCPKG_ROOT`). Submodules required.
+- **Windows** — MSVC (Visual Studio "Desktop development with C++", already
+  required by `flutter build windows`). The VP8 / VP9 / Opus wrapper DLLs are
+  source-built from libvpx / libopus via vcpkg (auto-cloned + bootstrapped by
+  the build hook, or `VCPKG_ROOT`); the Cisco OpenH264 binary is downloaded and
+  CNG provides crypto. No submodules needed.
 - **Android** — built through Flutter (`flutter test integration_test`, not
   `dart test`); needs the Android SDK + NDK + CMake + pkg-config. The build
   hook cross-compiles libvpx + libopus (codecs) with the NDK and source-builds
@@ -132,7 +134,7 @@ lib/
 │   ├── codec_registry.dart
 │   ├── video_codec.dart       # W3C VideoEncoder / VideoDecoder
 │   ├── audio_codec.dart       # W3C AudioEncoder / AudioDecoder
-│   ├── vp8/, vp9/             # libvpx FFI (source-built macOS/Linux, prebuilt DLL Windows)
+│   ├── vp8/, vp9/             # libvpx FFI (vcpkg macOS/Windows, submodule Linux/Android)
 │   ├── opus/                  # libopus FFI (same split as vp8/vp9)
 │   └── h264/                  # OpenH264 (Linux/Windows) + VideoToolbox (macOS) backends
 └── core/                      # state machine base, Result<T,E>, shared types
@@ -199,9 +201,9 @@ hardware-accelerated.
 | Codec | macOS | Linux | Windows | Android |
 |-------|-------|-------|---------|---------|
 | H.264 | VideoToolbox (HW); `hook/build.dart` compiles `src/wvt_callback.c` | OpenH264, pinned download from `ciscobinary.openh264.org` | OpenH264, same Cisco prebuilt path | — (no Cisco Android build; MediaCodec is a backlog item) |
-| VP8   | libvpx submodule, source-built + statically linked | same as macOS | `webdartc_vp8.dll` wrapper (source build opt-in) | libvpx submodule, NDK cross-compiled per ABI |
+| VP8   | libvpx via vcpkg, statically linked | libvpx submodule, source-built + statically linked | `webdartc_vp8.dll` wrapper from libvpx via vcpkg + MSVC | libvpx submodule, NDK cross-compiled per ABI |
 | VP9   | same as VP8 (shares the libvpx archive) | same as VP8 | `webdartc_vp9.dll` (same archive as vp8) | same as VP8 (shares the libvpx archive) |
-| Opus  | libopus submodule, source-built + statically linked | same as macOS | `webdartc_opus.dll` wrapper (source build opt-in) | libopus submodule, NDK cross-compiled per ABI |
+| Opus  | libopus via vcpkg, statically linked | libopus submodule, source-built + statically linked | `webdartc_opus.dll` wrapper from libopus via vcpkg + MSVC | libopus submodule, NDK cross-compiled per ABI |
 
 [`hook/build.dart`](hook/build.dart) runs on every platform and selects the path:
 
@@ -213,15 +215,18 @@ hardware-accelerated.
   (`_openH264Version` / `_openH264Sha256` pin version + hash) and registers it as
   a `DynamicLoadingBundled` asset. See <https://www.openh264.org/> for upstream
   terms.
-- **libopus / libvpx source build (macOS / Linux)** — CMake / libvpx's
-  `configure` produce `libopus.a` / `libvpx.a`; the `webdartc_{opus,vp8,vp9}.c`
-  wrappers link them into bundled dylibs exporting only `webdartc_*`. The libvpx
-  archive is built once per arch and shared by VP8 + VP9.
-- **libopus / libvpx prebuilt (Windows)** — wrapper DLLs are produced by the
-  `build-lib{opus,vpx}-prebuilt.yaml` workflows and downloaded at build time, so
-  consumers need no MSVC / vcpkg. Opt into a local source build by setting
-  `hooks.user_defines.webdartc.lib{vpx,opus}_source_build=true` in the
-  workspace-root `pubspec.yaml`.
+- **libopus / libvpx source build (macOS / Windows, via vcpkg)** — `vcpkg
+  install` (ports pinned by `tool/lib{opus,vpx}_vcpkg/vcpkg.json`) produces
+  `libopus.a` / `libvpx.a`; on macOS the build hook links them directly into the
+  bundled dylibs, on Windows `tool/build_lib{opus,vpx}_wrappers.dart` compiles
+  the `webdartc_*` DLLs with MSVC. vcpkg is auto-cloned + bootstrapped if not on
+  `VCPKG_ROOT` / PATH; Windows additionally needs MSVC (already a `flutter build
+  windows` prerequisite). The libvpx archive is built once per triplet and
+  shared by VP8 + VP9.
+- **libopus / libvpx source build (Linux / Android, via submodules)** — CMake /
+  libvpx's `configure` build the bundled `third_party/{opus,libvpx}` submodules
+  (Android cross-compiles through the NDK toolchain). Same `webdartc_{opus,vp8,vp9}.c`
+  wrappers, exporting only `webdartc_*`.
 
 Every codec symbol is hidden (`-fvisibility=hidden` on macOS / Linux;
 `__declspec(dllexport)` for `webdartc_*` only on Windows) so the bundled copies

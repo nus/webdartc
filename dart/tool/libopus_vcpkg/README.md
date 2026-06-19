@@ -1,16 +1,17 @@
 # libopus vcpkg manifest
 
 `vcpkg.json` pins the upstream libopus version and the vcpkg registry
-baseline. Two consumers point at it:
+baseline. `dart/hook/build.dart` consumes it to source-build the static
+libopus archive that the `webdartc_codecs` (opus) wrapper links against:
 
-* `.github/workflows/build-libopus-prebuilt.yaml` — produces the
-  release-attached prebuilt zips that end users download.
-* `dart/hook/build.dart` (Windows source-build opt-in path) — builds
-  the same `webdartc_opus.dll` locally when the user sets the
-  `libopus_source_build` pubspec define.
+* **macOS** — `vcpkg install --triplet=arm64-osx|x64-osx` directly in the
+  build hook (`_vcpkgBuildOpus`), with the overlay triplets in
+  `dart/tool/vcpkg_triplets/` pinning the deployment target.
+* **Windows** — `dart/tool/build_libopus_wrappers.dart` installs libopus
+  here, then compiles `webdartc_opus.dll` with MSVC.
 
-Both paths go through `dart/tool/build_libopus_wrappers.dart`, so the
-two outputs stay bit-compatible.
+Linux / Android instead build the bundled `third_party/opus` submodule.
 
-See the workflow's `WRAPPER_REVISION` env var for the version-bump
-procedure.
+To bump libopus: edit the `opus` version (`overrides`) and the
+`builtin-baseline` in `vcpkg.json`. The CI build-hook artifact cache key
+hashes this file, so a bump invalidates the cache and triggers a rebuild.

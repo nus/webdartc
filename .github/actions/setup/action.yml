@@ -99,7 +99,12 @@ runs:
       uses: actions/cache@v5
       with:
         path: dart/.dart_tool/hooks_runner/shared/webdartc
-        key: hooks-${{ runner.os }}-${{ runner.arch }}-${{ steps.build_cache_key.outputs.submods }}-${{ hashFiles('dart/hook/build.dart', 'dart/src/**') }}
+        # `submods` pins the Linux/Android codec source (the libvpx / opus
+        # submodules). The vcpkg manifests + overlay triplets pin the
+        # macOS/Windows codec source (and the BoringSSL crypto port), so
+        # hashing them invalidates the cache exactly when a vcpkg-pinned
+        # version is bumped.
+        key: hooks-${{ runner.os }}-${{ runner.arch }}-${{ steps.build_cache_key.outputs.submods }}-${{ hashFiles('dart/hook/build.dart', 'dart/src/**', 'dart/tool/**/vcpkg.json', 'dart/tool/vcpkg_triplets/**') }}
 
     - if: ${{ inputs.cache-chrome == 'true' }}
       name: Cache Chrome for Testing
