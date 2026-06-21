@@ -14,12 +14,13 @@
 // the same process.
 //
 // Codec source per platform:
-//   - macOS / Windows: vcpkg ports (pinned by `tool/lib*_vcpkg/vcpkg.json`).
-//     vcpkg is auto-cloned + bootstrapped by [_vcpkgExe] if not already on
-//     VCPKG_ROOT / PATH. Windows additionally needs MSVC (vcvarsall.bat),
-//     which `flutter build windows` already requires.
-//   - Linux / Android: the bundled `third_party/{opus,libvpx}` submodules,
-//     built with cmake / configure+make.
+//   - macOS / Linux / Windows: vcpkg ports (pinned by
+//     `tool/lib*_vcpkg/vcpkg.json`). vcpkg is auto-cloned + bootstrapped by
+//     [_vcpkgExe] if not already on VCPKG_ROOT / PATH. Windows additionally
+//     needs MSVC (vcvarsall.bat), which `flutter build windows` already
+//     requires.
+//   - Android: the bundled `third_party/{opus,libvpx}` submodules, built with
+//     cmake / configure+make (vcpkg's android triplets don't cover them).
 //
 // Linux + Windows also bundle Cisco's prebuilt OpenH264 dylib/dll
 // (downloaded by [_bundleOpenH264]). macOS uses VideoToolbox so OpenH264
@@ -151,13 +152,20 @@ Future<void> _buildAppleShim({
 // distros; libopus's own CMakeLists honours GNUInstallDirs. Probe both.
 const _libopusArchiveCandidates = ['lib/libopus.a', 'lib64/libopus.a'];
 
+/// Whether libvpx / libopus come from vcpkg ports rather than the bundled
+/// `third_party` submodules. Android builds the submodules (vcpkg's android
+/// triplets don't cover these ports); every other codec platform (macOS /
+/// Linux) uses vcpkg. Only ever called for the codec-build platforms
+/// (macOS / Linux / Android) gated in [main]; Windows source-builds the
+/// wrapper DLLs on its own path and never reaches here.
+bool _codecsUseVcpkg(OS targetOS) => targetOS != OS.android;
+
 Future<void> _buildOpusCodecs(
     BuildInput input, BuildOutputBuilder output) async {
   final targetOS = input.config.code.targetOS;
-  // macOS sources libopus via vcpkg; Linux / Android build the bundled
-  // submodule with cmake. Both produce a static `libopus.a` + `include/opus/`
-  // that the wrapper below links the same way.
-  final (opusInstall, libopusA) = targetOS == OS.macOS
+  // Both paths produce a static `libopus.a` + `include/opus/` that the
+  // wrapper below links the same way.
+  final (opusInstall, libopusA) = _codecsUseVcpkg(targetOS)
       ? await _vcpkgBuildOpus(input)
       : await _cmakeBuildOpus(input);
   final includeDir = opusInstall.resolve('include/opus/').toFilePath();
@@ -365,10 +373,9 @@ Future<void> _buildLibvpxWrapper({
   required String source,
 }) async {
   final targetOS = input.config.code.targetOS;
-  // macOS sources libvpx via vcpkg; Linux / Android build the bundled
-  // submodule with configure+make. Both produce a static `libvpx.a` +
-  // `include/vpx/` that the wrapper below links the same way.
-  final (vpxInstall, libvpxA) = targetOS == OS.macOS
+  // Both paths produce a static `libvpx.a` + `include/vpx/` that the wrapper
+  // below links the same way.
+  final (vpxInstall, libvpxA) = _codecsUseVcpkg(targetOS)
       ? await _vcpkgBuildLibvpx(input)
       : await _configureMakeLibvpx(input);
   final includeDir = vpxInstall.resolve('include/').toFilePath();
@@ -677,42 +684,70 @@ String _boringSslTriplet(OS targetOS, Architecture arch) {
   throw UnsupportedError('BoringSSL build: unsupported OS $targetOS');
 }
 
-// ── macOS codec source build via vcpkg ──────────────────────────────────
+// ── macOS / Linux codec source build via vcpkg ──────────────────────────
 //
-// On macOS the libvpx / libopus static archives come from vcpkg's ports
-// (pinned by `tool/lib*_vcpkg/vcpkg.json`) instead of the bundled
+// On macOS + Linux the libvpx / libopus static archives come from vcpkg's
+// ports (pinned by `tool/lib*_vcpkg/vcpkg.json`) instead of the bundled
 // submodules, mirroring the BoringSSL crypto path above. The resulting
 // `.a` + headers are linked into the same `webdartc_vp{8,9}` / `webdartc_codecs`
-// wrappers by [_buildLibvpxWrapper] / [_buildOpusCodecs]. Linux / Android
-// keep building the submodules with configure+make / cmake.
+// wrappers by [_buildLibvpxWrapper] / [_buildOpusCodecs]. Android keeps
+// building the submodules with configure+make / cmake.
+//
+// PIC (required because the .a is linked into a `-shared` wrapper) is covered
+// without a custom triplet: the libvpx port passes `--enable-pic`, and vcpkg's
+// linux toolchain seeds `CMAKE_C_FLAGS_INIT` with `-fPIC` for the CMake-based
+// opus port. Only macOS needs an overlay triplet (to pin the deployment
+// target); the built-in `x64-linux` / `arm64-linux` triplets suffice on Linux.
 
-/// vcpkg-builds libvpx for the macOS target, returning the install prefix
-/// URI (`include/`, `lib/`) plus the resolved `libvpx.a` path.
-Future<(Uri, String)> _vcpkgBuildLibvpx(BuildInput input) => _vcpkgInstall(
-      input: input,
-      triplet: _osxTriplet(input.config.code.targetArchitecture),
-      manifestRelPath: 'tool/libvpx_vcpkg',
-      cacheSubdir: 'libvpx-vcpkg',
-      archiveRelPath: 'lib/libvpx.a',
-      overlayTriplets: true,
-    );
+/// vcpkg-builds libvpx for the macOS / Linux target, returning the install
+/// prefix URI (`include/`, `lib/`) plus the resolved `libvpx.a` path.
+Future<(Uri, String)> _vcpkgBuildLibvpx(BuildInput input) {
+  final targetOS = input.config.code.targetOS;
+  return _vcpkgInstall(
+    input: input,
+    triplet: _codecVcpkgTriplet(targetOS, input.config.code.targetArchitecture),
+    manifestRelPath: 'tool/libvpx_vcpkg',
+    cacheSubdir: 'libvpx-vcpkg',
+    archiveRelPath: 'lib/libvpx.a',
+    overlayTriplets: targetOS == OS.macOS,
+  );
+}
 
-/// vcpkg-builds libopus for the macOS target, returning the install prefix
-/// URI (`include/opus/`, `lib/`) plus the resolved `libopus.a` path.
-Future<(Uri, String)> _vcpkgBuildOpus(BuildInput input) => _vcpkgInstall(
-      input: input,
-      triplet: _osxTriplet(input.config.code.targetArchitecture),
-      manifestRelPath: 'tool/libopus_vcpkg',
-      cacheSubdir: 'opus-vcpkg',
-      archiveRelPath: 'lib/libopus.a',
-      overlayTriplets: true,
-    );
+/// vcpkg-builds libopus for the macOS / Linux target, returning the install
+/// prefix URI (`include/opus/`, `lib/`) plus the resolved `libopus.a` path.
+Future<(Uri, String)> _vcpkgBuildOpus(BuildInput input) {
+  final targetOS = input.config.code.targetOS;
+  return _vcpkgInstall(
+    input: input,
+    triplet: _codecVcpkgTriplet(targetOS, input.config.code.targetArchitecture),
+    manifestRelPath: 'tool/libopus_vcpkg',
+    cacheSubdir: 'opus-vcpkg',
+    archiveRelPath: 'lib/libopus.a',
+    overlayTriplets: targetOS == OS.macOS,
+  );
+}
 
-String _osxTriplet(Architecture arch) => switch (arch) {
+/// vcpkg triplet for the libvpx / libopus codec ports. macOS uses the
+/// deployment-target-pinned overlay triplets in `tool/vcpkg_triplets/`; Linux
+/// uses vcpkg's built-in static `*-linux` triplets (same ones the BoringSSL
+/// crypto path uses).
+String _codecVcpkgTriplet(OS targetOS, Architecture arch) {
+  if (targetOS == OS.macOS) {
+    return switch (arch) {
       Architecture.arm64 => 'arm64-osx',
       Architecture.x64 => 'x64-osx',
-      _ => throw UnsupportedError('macOS vcpkg build: unsupported arch $arch'),
+      _ => throw UnsupportedError('macOS vcpkg codec build: unsupported arch $arch'),
     };
+  }
+  if (targetOS == OS.linux) {
+    return switch (arch) {
+      Architecture.arm64 => 'arm64-linux',
+      Architecture.x64 => 'x64-linux',
+      _ => throw UnsupportedError('Linux vcpkg codec build: unsupported arch $arch'),
+    };
+  }
+  throw UnsupportedError('vcpkg codec build: unsupported OS $targetOS');
+}
 
 /// In-process memoisation keyed on `<cacheSubdir>/<triplet>`. Concurrent
 /// callers for the same port (e.g. the VP8 + VP9 wrappers both needing libvpx)
