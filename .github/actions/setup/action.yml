@@ -56,15 +56,15 @@ runs:
 
     - if: ${{ runner.os == 'Linux' && inputs.install-linux-deps == 'true' }}
       name: Install native build deps
-      # nasm: assembles both libvpx's x86_64 SIMD and vcpkg's BoringSSL
-      # crypto. libvpx prefers yasm but falls back to nasm; the BoringSSL
-      # port requires nasm specifically and only auto-acquires it on Windows
-      # — on Linux it must come from the system, so nasm covers both.
-      # pkg-config: the BoringSSL port runs vcpkg_fixup_pkgconfig during
-      # install. cmake comes preinstalled on ubuntu-latest. The build hook
-      # source-builds BoringSSL (crypto) via vcpkg — which it clones +
-      # bootstraps itself — so no libssl-dev. VP8 / VP9 / Opus / OpenH264
-      # are vendored / downloaded.
+      # nasm: assembles libvpx's x86_64 SIMD (vcpkg libvpx port) and vcpkg's
+      # BoringSSL crypto. libvpx prefers yasm but falls back to nasm; the
+      # BoringSSL port requires nasm specifically and only auto-acquires it on
+      # Windows — on Linux it must come from the system, so nasm covers both.
+      # pkg-config: the BoringSSL, libvpx and opus ports all run
+      # vcpkg_fixup_pkgconfig during install. cmake comes preinstalled on
+      # ubuntu-latest. The build hook source-builds BoringSSL (crypto) +
+      # libvpx + opus via vcpkg — which it clones + bootstraps itself — so no
+      # libssl-dev. OpenH264 is downloaded prebuilt.
       shell: bash
       run: |
         sudo apt-get update
@@ -99,9 +99,9 @@ runs:
       uses: actions/cache@v5
       with:
         path: dart/.dart_tool/hooks_runner/shared/webdartc
-        # `submods` pins the Linux/Android codec source (the libvpx / opus
+        # `submods` pins the Android codec source (the libvpx / opus
         # submodules). The vcpkg manifests + overlay triplets pin the
-        # macOS/Windows codec source (and the BoringSSL crypto port), so
+        # macOS/Linux/Windows codec source (and the BoringSSL crypto port), so
         # hashing them invalidates the cache exactly when a vcpkg-pinned
         # version is bumped.
         key: hooks-${{ runner.os }}-${{ runner.arch }}-${{ steps.build_cache_key.outputs.submods }}-${{ hashFiles('dart/hook/build.dart', 'dart/src/**', 'dart/tool/**/vcpkg.json', 'dart/tool/vcpkg_triplets/**') }}

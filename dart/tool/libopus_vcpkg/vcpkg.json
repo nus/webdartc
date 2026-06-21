@@ -2,11 +2,11 @@
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "webdartc-libopus",
   "version-string": "1.5.2",
-  "description": "vcpkg manifest pinning libopus. Consumed by dart/hook/build.dart to source-build the static libopus archive that the webdartc_codecs (opus) wrapper links against on macOS and Windows. Built per-triplet via `vcpkg install`.",
+  "description": "vcpkg manifest pinning libopus. Consumed by dart/hook/build.dart to source-build the static libopus archive that the webdartc_codecs (opus) wrapper links against on macOS, Linux and Windows. Built per-triplet via `vcpkg install`.",
   "dependencies": [
     {
       "name": "opus",
-      "platform": "windows | osx"
+      "platform": "windows | osx | linux"
     }
   ],
   "overrides": [

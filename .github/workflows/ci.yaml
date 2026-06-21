@@ -50,9 +50,9 @@ jobs:
       - if: runner.os != 'Windows'
         working-directory: dart
         # `dart test` runs the build hook (dart/hook/build.dart): builds
-        # libopus + libvpx (VP8 + VP9) — via vcpkg on macOS, from the
-        # submodules on Linux — downloads the Cisco-prebuilt OpenH264 dylib
-        # on Linux, plus the VideoToolbox callback shim on macOS.
+        # libopus + libvpx (VP8 + VP9) — via vcpkg on macOS + Linux —
+        # downloads the Cisco-prebuilt OpenH264 dylib on Linux, plus the
+        # VideoToolbox callback shim on macOS.
         #
         # `coturn` is excluded here because most runners don't ship the
         # turnserver binary — the dedicated turn-integration job below
