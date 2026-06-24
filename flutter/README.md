@@ -6,13 +6,13 @@ Flutter integration for [webdartc](../dart) — renders decoded video frames, br
 
 | Surface | macOS | iOS | Linux | Windows | Android |
 |---------|-------|-----|-------|---------|---------|
-| Video renderer | ✅ Metal (`ShaderVideoRenderer`) | roadmap | roadmap (GLES) | ✅ PixelBufferTexture (CPU I420 → BGRA8) | ✅ SurfaceTexture (CPU I420 → ARGB) |
+| Video renderer | ✅ Metal (`ShaderVideoRenderer`) | roadmap | ✅ FlPixelBufferTexture (CPU I420 → RGBA8) | ✅ PixelBufferTexture (CPU I420 → BGRA8) | ✅ SurfaceTexture (CPU I420 → ARGB) |
 | Camera capture | roadmap | roadmap | roadmap | roadmap | roadmap |
 | Mic / speaker | roadmap | roadmap | roadmap | roadmap | roadmap |
 
 ## Renderer
 
-`ShaderVideoRenderer` takes CPU I420 frames (produced by `webdartc`'s `VideoDecoder`) and presents them through a Flutter `Texture`. On **macOS** the plugin wraps each frame as an **NV12 `CVPixelBuffer`** — Flutter's Metal compositor samples it with its built-in YUV→RGB shader, so no custom shader code lives in this package. On **Windows**, `flutter::PixelBufferTexture` is BGRA8-only, so the plugin runs a small BT.601 full-range integer I420 → BGRA8 conversion in C++ before handing the buffer back to Flutter. On **Android**, the Kotlin plugin runs the same BT.601 I420 → ARGB conversion and posts it to a `SurfaceTexture` via `Surface.lockCanvas`. GPU paths — a `GpuSurfaceTexture` HLSL shader on Windows, and zero-copy `MediaCodec` output Surface / GLES YUV→RGB on Android — are filed in the backlog as follow-ups.
+`ShaderVideoRenderer` takes CPU I420 frames (produced by `webdartc`'s `VideoDecoder`) and presents them through a Flutter `Texture`. On **macOS** the plugin wraps each frame as an **NV12 `CVPixelBuffer`** — Flutter's Metal compositor samples it with its built-in YUV→RGB shader, so no custom shader code lives in this package. On **Windows**, `flutter::PixelBufferTexture` is BGRA8-only, so the plugin runs a small BT.601 full-range integer I420 → BGRA8 conversion in C++ before handing the buffer back to Flutter. On **Android**, the Kotlin plugin runs the same BT.601 I420 → ARGB conversion and posts it to a `SurfaceTexture` via `Surface.lockCanvas`. On **Linux**, the GTK plugin runs the same BT.601 conversion to RGBA8 and returns it from an `FlPixelBufferTexture`, which Flutter's GLES compositor uploads as a `GL_RGBA` texture. GPU paths — a `GpuSurfaceTexture` HLSL shader on Windows, and zero-copy `MediaCodec` output Surface / GLES YUV→RGB on Android — are filed in the backlog as follow-ups.
 
 ```dart
 import 'package:webdartc/webdartc.dart';
