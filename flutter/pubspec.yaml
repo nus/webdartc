@@ -26,6 +26,8 @@ flutter:
       android:
         package: dev.webdartc.webdartc_flutter
         pluginClass: WebdartcFlutterPlugin
+      linux:
+        pluginClass: WebdartcFlutterPlugin
       macos:
         pluginClass: WebdartcFlutterPlugin
       windows:
