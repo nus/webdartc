@@ -6,12 +6,14 @@ import 'dart:typed_data';
 import '../api/media_engine.dart';
 import '../api/setting_engine.dart';
 import '../api/stats.dart';
+import '../codec/default_codecs.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
 import '../dtls/state_machine.dart';
 import '../ice/state_machine.dart';
 import '../media/media_stream.dart';
 import '../media/media_stream_track.dart';
+import '../media/receive_pipeline.dart';
 import '../rtp/parser.dart';
 import '../rtp/receive_stats.dart';
 import '../rtp/rtcp_math.dart';
@@ -178,7 +180,14 @@ final class PeerConnection {
     required this.configuration,
     this.settingEngine = const SettingEngine(),
     this.mediaEngine = const MediaEngine(),
+    bool autoRegisterCodecs = true,
   }) {
+    // Register the bundled codec backends so the W3C receive path
+    // (`onTrack` → `track.onVideoFrame`) decodes out of the box. Only stores
+    // factory closures — native libraries load lazily on first use, so this
+    // costs nothing for data-channel-only connections. Opt out to control
+    // which backends are available (then register a subset yourself).
+    if (autoRegisterCodecs) registerDefaultCodecs();
     _init();
   }
 
@@ -449,16 +458,20 @@ final class PeerConnection {
         final pt = int.tryParse(fmt);
         if (pt != null) _ptKindMap[pt] = m.type;
       }
-      // PT→clock-rate from a=rtpmap ("<PT> <codec>/<clock>[/<ch>]"), used by
-      // the receive path for RFC 3550 §A.8 jitter.
+      // PT→clock-rate / PT→codec from a=rtpmap ("<PT> <codec>/<clock>[/<ch>]").
+      // Clock rate feeds the RFC 3550 §A.8 jitter calc; the codec name (lower-
+      // cased to a CodecRegistry key) lets the receive path build a decoder.
       for (final rtpmap in m.getAll('rtpmap')) {
         final space = rtpmap.indexOf(' ');
         if (space < 0) continue;
         final pt = int.tryParse(rtpmap.substring(0, space));
         if (pt == null) continue;
         final parts = rtpmap.substring(space + 1).split('/');
+        if (parts[0].isNotEmpty) _ptCodecMap[pt] = parts[0].toLowerCase();
         final rate = parts.length > 1 ? int.tryParse(parts[1]) : null;
         if (rate != null) _ptClockRateMap[pt] = rate;
+        final ch = parts.length > 2 ? int.tryParse(parts[2]) : null;
+        if (ch != null) _ptChannelsMap[pt] = ch;
       }
     }
 
@@ -1422,11 +1435,18 @@ final class PeerConnection {
     // Route to per-SSRC receiver
     final existing = _receivers[ssrc];
     if (existing != null) {
-      existing._deliver(rtp);
+      existing._deliver(rtp, arrivalUs);
     } else {
       // New SSRC — create receiver and fire onTrack
       final kind = _resolveTrackKind(rtp.payloadType);
-      final receiver = RtpReceiver._(kind: kind, ssrc: ssrc);
+      final receiver = RtpReceiver._(
+        kind: kind,
+        ssrc: ssrc,
+        codecKey: _codecForPt(rtp.payloadType),
+        clockRate: _clockRateForPt(rtp.payloadType, kind),
+        channels: _channelsForPt(rtp.payloadType),
+        requestKeyframe: () => _sendPli(ssrc),
+      );
       _receivers[ssrc] = receiver;
       // Associate the receiver with a matching transceiver (W3C: each
       // transceiver has one receiver) so getTransceivers() reflects it.
@@ -1436,8 +1456,9 @@ final class PeerConnection {
           break;
         }
       }
-      _trackController.add(TrackEvent(kind: kind, ssrc: ssrc, receiver: receiver));
-      receiver._deliver(rtp);
+      _trackController.add(TrackEvent(
+          kind: kind, ssrc: ssrc, receiver: receiver, track: receiver.track));
+      receiver._deliver(rtp, arrivalUs);
       if (_debug) _log('[pc] onTrack fired: kind=$kind ssrc=$ssrc');
       // Send initial RTCP RR after first packet (triggers Chrome video encoder)
       _sendRtcpRR();
@@ -1447,15 +1468,29 @@ final class PeerConnection {
     }
   }
 
-  // Dynamic PT→kind / PT→clock-rate maps built from SDP negotiation.
+  // Dynamic PT→kind / PT→clock-rate / PT→codec maps built from SDP negotiation.
   final Map<int, String> _ptKindMap = {};
   final Map<int, int> _ptClockRateMap = {};
+  final Map<int, String> _ptCodecMap = {};
+  final Map<int, int> _ptChannelsMap = {};
+
+  /// Audio channel count for [payloadType] from `a=rtpmap` (the optional
+  /// third field, e.g. `opus/48000/2`), defaulting to 2 (WebRTC's Opus
+  /// default) when unspecified.
+  int _channelsForPt(int payloadType) => _ptChannelsMap[payloadType] ?? 2;
 
   /// RTP clock rate for [payloadType] — from the negotiated `a=rtpmap`,
   /// falling back to the WebRTC defaults (Opus 48 kHz, video 90 kHz) for
   /// static or unmapped PTs.
   int _clockRateForPt(int payloadType, String kind) =>
       _ptClockRateMap[payloadType] ?? (kind == 'audio' ? 48000 : 90000);
+
+  /// Codec key (CodecRegistry lookup key, e.g. `vp8`, `h264`, `opus`) for
+  /// [payloadType] from the negotiated `a=rtpmap`, or null if unmapped. The
+  /// `a=rtpmap` encoding name (e.g. `VP8`, `H264`, `opus`) is lower-cased to
+  /// match the keys CodecRegistry registers under (see [VideoCodecName] /
+  /// [AudioCodecName], which are already lower-case).
+  String? _codecForPt(int payloadType) => _ptCodecMap[payloadType];
 
   String _resolveTrackKind(int payloadType) {
     // Check dynamically negotiated PTs first (populated from SDP).
@@ -1538,9 +1573,27 @@ final class PeerConnection {
 
   void _startRtcpTimer() {
     _rtcpTimer?.cancel();
-    // Send RTCP RR + transport-cc every 100ms for fast feedback.
-    _rtcpTimer = Timer.periodic(const Duration(milliseconds: 100), (_) => _sendRtcpRR());
+    // Send RTCP RR + transport-cc and pump receive pipelines every 100ms.
+    // The receive pipelines deliberately share this timer rather than owning a
+    // separate one — jitter-buffer playout granularity is therefore 100ms,
+    // coarser than the 50ms default playout delay but adequate; revisit with a
+    // dedicated faster pump if playout latency becomes a concern.
+    _rtcpTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      _sendRtcpRR();
+      _tickReceivers();
+    });
     Future<void>.delayed(const Duration(milliseconds: 50), _sendRtcpRR);
+  }
+
+  /// Pump each receiver's decode pipeline: release jitter-buffered packets,
+  /// depacketize, decode, and retransmit PLI as needed. Uses the transport's
+  /// monotonic clock so playout timing matches packet arrival timestamps.
+  void _tickReceivers() {
+    if (_receivers.isEmpty) return;
+    final nowUs = _transport.nowUs;
+    for (final r in _receivers.values) {
+      r._tick(nowUs);
+    }
   }
 
   void _sendRtcpRR() {

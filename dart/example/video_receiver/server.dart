@@ -1,7 +1,9 @@
 /// webdartc video-receiver example — receives a browser camera stream
-/// (VP8 or H.264 / SRTP / DTLS / ICE), depacketises (RFC 7741 /
-/// RFC 6184) and decodes (libvpx for VP8, VideoToolbox or OpenH264 for
-/// H.264).
+/// (VP8 or H.264 / SRTP / DTLS / ICE) using the W3C receive path:
+/// `onTrack` → `track.onVideoFrame` yields decoded frames. The jitter
+/// buffer, depacketiser (RFC 7741 / RFC 6184) and decoder (libvpx for
+/// VP8, VideoToolbox or OpenH264 for H.264) all live inside the track —
+/// no manual RTP plumbing required.
 ///
 /// HTTP + WebSocket + Dart peer in one binary. The browser is the
 /// offerer: it captures `getUserMedia({video:true})`, adds the track,
@@ -20,7 +22,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:webdartc/rtp/packetizer.dart';
 import 'package:webdartc/webdartc.dart';
 
 import '../serve.dart';
@@ -37,12 +38,8 @@ Future<void> main(List<String> args) async {
     stderr.writeln('Unsupported codec: $_codec (expected vp8 or h264)');
     exit(2);
   }
-  switch (_codec) {
-    case 'vp8':
-      registerVp8Codec();
-    case 'h264':
-      registerH264Codec();
-  }
+  // Codec backends are auto-registered by PeerConnection, so the W3C receive
+  // path decodes out of the box — no registerVp8Codec()/registerH264Codec().
 
   final server = await HttpServer.bind(InternetAddress.anyIPv4, _port);
   print(
@@ -97,7 +94,22 @@ Future<void> _handleWs(WebSocket ws) async {
             if (evt.kind != 'video') return;
             print(
                 '[video_receiver] onTrack kind=${evt.kind} ssrc=${evt.ssrc}');
-            _pipeIncoming(evt.receiver, _codec);
+            final track = evt.track;
+            if (track == null) {
+              print('[video_receiver] no decoder available for this codec');
+              return;
+            }
+            // Subscribing starts the jitter→depacketize→decode pipeline.
+            var decoded = 0;
+            track.onVideoFrame.listen((frame) {
+              decoded++;
+              if (decoded <= 3 || decoded % 30 == 0) {
+                print('[video_receiver] decoded #$decoded '
+                    '${frame.codedWidth}x${frame.codedHeight} '
+                    'ts=${frame.timestamp}');
+              }
+              frame.close();
+            });
           });
 
           await pc!.setRemoteDescription(SessionDescription(
@@ -126,40 +138,4 @@ Future<void> _handleWs(WebSocket ws) async {
     },
     onError: (_) async => await pc?.close(),
   );
-}
-
-void _pipeIncoming(RtpReceiver receiver, String codec) {
-  final VideoPayloadDepacketizer depack =
-      codec == 'h264' ? H264Depacketizer() : Vp8Depacketizer();
-  var decoded = 0;
-  var decoderConfigured = false;
-  final decoder = VideoDecoder(
-    output: (frame) {
-      decoded++;
-      if (decoded <= 3 || decoded % 30 == 0) {
-        print('[video_receiver] decoded #$decoded '
-            '${frame.codedWidth}x${frame.codedHeight} '
-            'ts=${frame.timestamp}');
-      }
-      frame.close();
-    },
-    error: (e) => stderr.writeln('[video_receiver] decoder error: $e'),
-  );
-
-  receiver.onRtp.listen((rtp) {
-    final chunk = depack.depacketize(
-      rtp.payload,
-      marker: rtp.marker,
-      timestamp: rtp.timestamp,
-    );
-    if (chunk == null) return;
-    if (!decoderConfigured) {
-      // Wait for the first keyframe so the H.264 decoder has SPS/PPS
-      // (or the VP8 decoder has a reference frame).
-      if (chunk.type != EncodedVideoChunkType.key) return;
-      decoder.configure(VideoDecoderConfig(codec: codec));
-      decoderConfigured = true;
-    }
-    decoder.decode(chunk);
-  });
 }

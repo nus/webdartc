@@ -108,6 +108,11 @@ final class TransportController {
   /// clock jumps that DateTime.now() is subject to.
   final Stopwatch _arrivalClock = Stopwatch()..start();
 
+  /// Current value of the monotonic arrival clock in microseconds. Shares the
+  /// clock used for `onRtp`'s `arrivalUs`, so the receive path can compare
+  /// packet arrival times against "now" (e.g. for jitter-buffer playout).
+  int get nowUs => _arrivalClock.elapsedMicroseconds;
+
   /// Called when an RTP packet is decrypted (SRTP → RTP).
   /// The [int] parameter is the monotonic arrival timestamp in microseconds.
   void Function(Uint8List, int arrivalUs)? onRtp;

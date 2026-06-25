@@ -354,3 +354,25 @@ final class OpusDepacketizer implements AudioPayloadDepacketizer {
     );
   }
 }
+
+// ── Depacketizer factories ──────────────────────────────────────────────────
+
+/// A fresh [VideoPayloadDepacketizer] for [codecKey] (a lower-case
+/// CodecRegistry key, e.g. `vp8` / `h264`), or null if the codec has no RTP
+/// depacketizer. The single source of truth for which video codecs can be
+/// received; a new instance is returned per call since depacketizers are
+/// stateful (they accumulate fragments).
+VideoPayloadDepacketizer? videoDepacketizerFor(String codecKey) =>
+    switch (codecKey) {
+      'vp8' => Vp8Depacketizer(),
+      'h264' => H264Depacketizer(),
+      _ => null,
+    };
+
+/// A fresh [AudioPayloadDepacketizer] for [codecKey], or null if unsupported.
+/// See [videoDepacketizerFor].
+AudioPayloadDepacketizer? audioDepacketizerFor(String codecKey) =>
+    switch (codecKey) {
+      'opus' => OpusDepacketizer(),
+      _ => null,
+    };

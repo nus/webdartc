@@ -27,7 +27,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:webdartc/rtp/packetizer.dart';
+import 'package:webdartc/rtp/packetizer.dart'; // H264Packetizer (send path)
 import 'package:webdartc/webdartc.dart';
 import 'package:webdartc_flutter/webdartc_flutter.dart';
 
@@ -251,8 +251,8 @@ class _CallViewState extends State<_CallView> {
   PeerConnection? _pc;
   WebSocket? _ws;
   VideoEncoder? _encoder;
-  VideoDecoder? _decoder;
   StreamSubscription<VideoFrame>? _sourceSub;
+  StreamSubscription<VideoFrame>? _remoteSub;
 
   /// True when *we* should send the offer (the room already had a peer
   /// when we registered — Ayame `isExistClient: true`).
@@ -338,8 +338,11 @@ class _CallViewState extends State<_CallView> {
     stdout.writeln('[flutter] accepted (offerer=$_isOfferer, '
         'iceServers=${iceServers.length})');
 
+    // This demo registers codecs selectively above (Android: VP8+Opus,
+    // desktop: H.264), so opt out of auto-registration to keep that control.
     final pc = PeerConnection(
-        configuration: PeerConnectionConfiguration(iceServers: iceServers));
+        configuration: PeerConnectionConfiguration(iceServers: iceServers),
+        autoRegisterCodecs: false);
     _pc = pc;
 
     pc.addTransceiver('video',
@@ -360,7 +363,7 @@ class _CallViewState extends State<_CallView> {
     pc.onTrack.listen((evt) {
       if (evt.kind != 'video') return;
       stdout.writeln('[flutter] onTrack ssrc=${evt.ssrc}');
-      _wireIncomingTrack(evt.receiver);
+      _wireIncomingTrack(evt.track);
     });
 
     pc.onConnectionStateChange.listen((s) {
@@ -447,43 +450,30 @@ class _CallViewState extends State<_CallView> {
     });
   }
 
-  void _wireIncomingTrack(RtpReceiver receiver) {
-    final depack = H264Depacketizer();
-    var configured = false;
-    _decoder = VideoDecoder(
-      output: (frame) {
-        _framesIn++;
-        if (_framesIn == 1 || _framesIn % 30 == 0) {
-          stdout.writeln('[flutter] recv=$_framesIn');
-        }
-        _remoteRenderer.render(frame);
-        frame.close();
-      },
-      error: (e) => stderr.writeln('[flutter] decoder error: $e'),
-    );
-    receiver.onRtp.listen((rtp) {
-      final chunk = depack.depacketize(
-        rtp.payload,
-        marker: rtp.marker,
-        timestamp: rtp.timestamp,
-      );
-      if (chunk == null) return;
-      if (!configured) {
-        // First decoded chunk must be a keyframe so the H.264 decoder has
-        // SPS/PPS in hand. P-frames before a keyframe are dropped.
-        if (chunk.type != EncodedVideoChunkType.key) return;
-        _decoder!.configure(const VideoDecoderConfig(codec: 'h264'));
-        configured = true;
+  void _wireIncomingTrack(MediaStreamTrack? track) {
+    if (track == null) {
+      stderr.writeln('[flutter] onTrack: no decoder for negotiated codec');
+      return;
+    }
+    // The track decodes internally (jitter buffer → depacketize → decode);
+    // subscribing to onVideoFrame starts that pipeline and yields ready-to-
+    // render frames. The codec is resolved from SDP, so this works for VP8
+    // (Android) and H.264 (desktop) alike — no manual depacketizer choice.
+    _remoteSub = track.onVideoFrame.listen((frame) {
+      _framesIn++;
+      if (_framesIn == 1 || _framesIn % 30 == 0) {
+        stdout.writeln('[flutter] recv=$_framesIn');
       }
-      _decoder!.decode(chunk);
+      _remoteRenderer.render(frame);
+      frame.close();
     });
   }
 
   @override
   void dispose() {
     _sourceSub?.cancel();
+    _remoteSub?.cancel();
     _encoder?.close();
-    _decoder?.close();
     _pc?.close();
     try {
       _ws?.add(jsonEncode({'type': 'bye'}));
