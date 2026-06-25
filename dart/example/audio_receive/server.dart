@@ -1,8 +1,10 @@
 /// Browser mic → Dart speaker over WebRTC.
 ///
 /// The browser captures audio via `getUserMedia({audio:true})` and sends
-/// it (Opus / SRTP) to the Dart server, which depacketises, decodes, and
-/// plays the PCM through macOS AudioQueue via [AudioRenderer].
+/// it (Opus / SRTP) to the Dart server. The W3C receive path
+/// (`onTrack` → `track.onAudioData`) jitter-buffers, depacketises and
+/// decodes inside the track; this example just plays the decoded PCM
+/// through macOS AudioQueue via [AudioRenderer].
 ///
 /// Usage:
 ///   dart run example/audio_receive/server.dart [--port=8080]
@@ -15,7 +17,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:webdartc/media/macos/avf_audio_renderer.dart';
-import 'package:webdartc/rtp/packetizer.dart';
 import 'package:webdartc/webdartc.dart';
 
 int _port = 8080;
@@ -29,7 +30,8 @@ Future<void> main(List<String> args) async {
     exit(64);
   }
 
-  registerOpusCodec();
+  // The Opus backend is auto-registered by PeerConnection, so the W3C receive
+  // path decodes out of the box — no explicit registerOpusCodec().
 
   final server = await HttpServer.bind(InternetAddress.anyIPv4, _port);
   stdout.writeln('audio_receive server listening on http://127.0.0.1:$_port');
@@ -78,14 +80,11 @@ void _handleWs(WebSocket ws) {
 
   PeerConnection? pc;
   AudioRenderer? renderer;
-  AudioDecoder? decoder;
-  StreamSubscription<RtpPacket>? rtpSub;
+  StreamSubscription<AudioData>? audioSub;
 
   Future<void> teardown() async {
-    await rtpSub?.cancel();
-    rtpSub = null;
-    decoder?.close();
-    decoder = null;
+    await audioSub?.cancel();
+    audioSub = null;
     renderer?.close();
     renderer = null;
     await pc?.close();
@@ -108,27 +107,21 @@ void _handleWs(WebSocket ws) {
           pc!.onTrack.listen((evt) {
             if (evt.kind != 'audio') return;
             stdout.writeln('[track] ssrc=${evt.ssrc} — wiring playback');
-            renderer ??= AudioRenderer(
-                sampleRate: _sampleRate, channels: _channels);
-            decoder = AudioDecoder(
-              output: (audio) => renderer!.push(audio),
-              error: (e) => stderr.writeln('[decoder] $e'),
-            );
-            decoder!.configure(const AudioDecoderConfig(
-              codec: 'opus',
-              sampleRate: _sampleRate,
-              numberOfChannels: _channels,
-            ));
-            final depack = OpusDepacketizer();
-            var packets = 0;
-            rtpSub = evt.receiver.onRtp.listen((rtp) {
-              final chunk =
-                  depack.depacketize(rtp.payload, timestamp: rtp.timestamp);
-              if (chunk == null) return;
-              decoder!.decode(chunk);
-              packets++;
-              if (packets % 100 == 0) {
-                stdout.writeln('[rtp] decoded $packets Opus packets');
+            final track = evt.track;
+            if (track == null) {
+              stderr.writeln('[track] no Opus decoder available');
+              return;
+            }
+            renderer ??=
+                AudioRenderer(sampleRate: _sampleRate, channels: _channels);
+            // Subscribing starts the jitter→depacketize→decode pipeline; the
+            // track emits decoded PCM as [AudioData].
+            var frames = 0;
+            audioSub = track.onAudioData.listen((audio) {
+              renderer!.push(audio);
+              frames++;
+              if (frames % 100 == 0) {
+                stdout.writeln('[audio] played $frames decoded frames');
               }
             });
           });

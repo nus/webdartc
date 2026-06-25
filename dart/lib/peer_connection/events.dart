@@ -44,21 +44,52 @@ final class TrackEvent {
 /// RTP receiver — receives media RTP packets from a remote peer.
 ///
 /// Obtained from [TrackEvent.receiver] when [PeerConnection.onTrack] fires.
-/// For video, a PLI is sent on track creation to request a fresh keyframe.
+///
+/// When the negotiated codec has both a registered decoder backend and an RTP
+/// depacketizer, the receiver exposes a decoded-media [track]: subscribing to
+/// `track.onVideoFrame` / `track.onAudioData` lazily spins up a
+/// jitter-buffer → depacketize → decode pipeline (the W3C receive path). The
+/// raw [onRtp] stream is always available regardless, as a low-level escape
+/// hatch independent of codec registration.
+///
+/// For video, a PLI is sent on track creation (and retransmitted until the
+/// first keyframe decodes) to request a fresh keyframe.
 final class RtpReceiver {
   final String kind;
   final int ssrc;
   final _controller = StreamController<RtpPacket>.broadcast();
 
-  /// W3C: The MediaStreamTrack produced by this receiver (nullable until
-  /// a codec backend is registered).
-  MediaStreamTrack? _track;
-  MediaStreamTrack? get track => _track;
+  /// Decode pipeline (jitter → depacketize → decode → track), or null when the
+  /// negotiated codec has no registered decoder + depacketizer — in that case
+  /// [track] is null and consumers use the raw [onRtp] stream.
+  final ReceivePipeline? _pipeline;
+
+  /// W3C: The MediaStreamTrack produced by this receiver. Non-null when the
+  /// codec has a registered decoder + depacketizer; null otherwise (use
+  /// [onRtp] for low-level access in that case).
+  MediaStreamTrack? get track => _pipeline?.track;
 
   /// W3C RTP Transport: The RtpPacketReceiver for low-level access.
   RtpPacketReceiver? _packetReceiver;
 
-  RtpReceiver._({required this.kind, required this.ssrc});
+  RtpReceiver._({
+    required this.kind,
+    required this.ssrc,
+    String? codecKey,
+    int clockRate = 0,
+    int channels = 2,
+    void Function()? requestKeyframe,
+  }) : _pipeline = codecKey == null
+            ? null
+            : ReceivePipeline.tryCreate(
+                kind: kind,
+                codecKey: codecKey,
+                clockRate: clockRate,
+                channels: channels,
+                requestKeyframe: requestKeyframe,
+                onError: (Object e) => stderr.writeln(
+                    '[webdartc] receive pipeline error (ssrc=$ssrc): $e'),
+              );
 
   /// W3C RTP Transport: Get an RtpPacketReceiver for direct packet access.
   Future<RtpPacketReceiver> replacePacketReceiver() async {
@@ -66,15 +97,25 @@ final class RtpReceiver {
     return _packetReceiver!;
   }
 
-  /// Stream of received RTP packets for this track.
+  /// Stream of received RTP packets for this track. Always emits raw packets
+  /// in arrival order, independent of codec registration or the decode
+  /// pipeline.
   Stream<RtpPacket> get onRtp => _controller.stream;
 
-  void _deliver(RtpPacket packet) {
+  void _deliver(RtpPacket packet, int arrivalUs) {
     _packetReceiver?.deliverPacket(packet);
     _controller.add(packet);
+    _pipeline?.add(packet, arrivalUs);
   }
 
-  void _close() => _controller.close();
+  /// Periodic pump (driven by PeerConnection's RTCP tick): releases jitter-
+  /// buffered packets, depacketizes, decodes, and handles PLI retransmit.
+  void _tick(int nowUs) => _pipeline?.tick(nowUs);
+
+  void _close() {
+    _pipeline?.close();
+    unawaited(_controller.close());
+  }
 }
 
 /// ICE connection state.

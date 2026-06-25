@@ -84,6 +84,28 @@ dc.onMessage.listen((msg) => print('received: $msg'));
 dc.send('hello');
 ```
 
+Receiving media follows the W3C path — `onTrack` hands you a `MediaStreamTrack`
+that already decodes. The bundled codec backends (VP8 / VP9 / H.264 / Opus) are
+auto-registered, and subscribing to the track lazily starts an internal
+jitter-buffer → depacketize → decode pipeline:
+
+```dart
+pc.onTrack.listen((event) {
+  final track = event.track;            // non-null when the codec is supported
+  if (track == null) return;            // else use event.receiver.onRtp (raw RTP)
+  if (track.kind == 'video') {
+    track.onVideoFrame.listen((frame) { /* render */ frame.close(); });
+  } else {
+    track.onAudioData.listen((audio) { /* play */ });
+  }
+});
+```
+
+For raw RTP (relays, SFU forwarding, custom codecs) use `event.receiver.onRtp`,
+which always emits packets regardless of codec registration. To manage the
+backends yourself, pass `autoRegisterCodecs: false` to `PeerConnection` /
+`Webdartc` and register a subset.
+
 For configured ICE servers, codec preferences, or port ranges, build through the
 `Webdartc` factory:
 
@@ -130,8 +152,9 @@ lib/
 ├── ice/, turn/, dtls/, srtp/, sctp/, stun/, rtp/, sdp/
 ├── crypto/                    # platform crypto backends (FFI)
 ├── media/                     # MediaStream, tracks, frames, FakeVideoSource
+│                              #   receiver_track + receive_pipeline (decode path)
 ├── codec/
-│   ├── codec_registry.dart
+│   ├── codec_registry.dart    # + default_codecs.dart (registerDefaultCodecs)
 │   ├── video_codec.dart       # W3C VideoEncoder / VideoDecoder
 │   ├── audio_codec.dart       # W3C AudioEncoder / AudioDecoder
 │   ├── vp8/, vp9/             # libvpx FFI (vcpkg macOS/Windows, submodule Linux/Android)
@@ -156,7 +179,7 @@ example/
 ├── audio_send/                # Dart → browser audio (Opus)
 ├── audio_receive/             # browser → Dart audio
 ├── video_sender/              # Dart → browser video (VP8 / H.264 fake source)
-├── video_receiver/            # browser → Dart video (depacketize + decode)
+├── video_receiver/            # browser → Dart video (onTrack → onVideoFrame)
 ├── video_echo/                # browser → Dart → browser (RTP packet forward)
 ├── getusermedia_call/         # real camera + mic → browser (macOS, audio + video)
 ├── signaling/                 # HTTP + WS relay (OpenAyame, for the Flutter demo)
