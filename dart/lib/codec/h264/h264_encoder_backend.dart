@@ -16,22 +16,31 @@ import '../codec_registry.dart';
 import '../video_codec.dart';
 import '_openh264.dart' as wels;
 import 'h264_decoder_backend.dart';
+import 'mediacodec_decoder_backend.dart';
+import 'mediacodec_encoder_backend.dart';
 import 'openh264_bindings.g.dart' as oh;
 import 'videotoolbox_decoder_backend.dart';
 import 'videotoolbox_encoder_backend.dart';
 
 /// Registers H.264 codecs under the key `h264`.
 ///
-/// On macOS/iOS this wires up the hardware-accelerated VideoToolbox
-/// encoder/decoder. On other platforms it registers OpenH264's software
-/// encoder + decoder (the dylib is bundled as a code asset by
-/// `dart/hook/build.dart`; see `lib/codec/h264/_openh264.dart`).
+/// Backend per platform, each using the OS-provided (patent-licensed) codec
+/// where one exists:
+/// - macOS/iOS: hardware-accelerated VideoToolbox.
+/// - Android: hardware-accelerated MediaCodec (`AMediaCodec` via FFI).
+/// - Linux/Windows: Cisco OpenH264 software codec (bundled by
+///   `dart/hook/build.dart`; see `lib/codec/h264/_openh264.dart`).
 void registerH264Codec() {
   if (Platform.isMacOS || Platform.isIOS) {
     CodecRegistry.registerVideoEncoder(
         VideoCodecName.h264, VideoToolboxEncoderBackend.new);
     CodecRegistry.registerVideoDecoder(
         VideoCodecName.h264, VideoToolboxDecoderBackend.new);
+  } else if (Platform.isAndroid) {
+    CodecRegistry.registerVideoEncoder(
+        VideoCodecName.h264, MediaCodecEncoderBackend.new);
+    CodecRegistry.registerVideoDecoder(
+        VideoCodecName.h264, MediaCodecDecoderBackend.new);
   } else {
     CodecRegistry.registerVideoEncoder(
         VideoCodecName.h264, H264EncoderBackend.new);

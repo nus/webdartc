@@ -272,14 +272,11 @@ class _CallViewState extends State<_CallView> {
   }
 
   Future<void> _start() async {
-    // Android has no H.264 backend (no Cisco OpenH264 build; VideoToolbox is
-    // Apple-only), so use VP8 + Opus there. Desktop keeps H.264.
-    if (Platform.isAndroid) {
-      registerVp8Codec();
-      registerOpusCodec();
-    } else {
-      registerH264Codec();
-    }
+    // Every platform now has an H.264 backend (macOS/iOS=VideoToolbox,
+    // Android=MediaCodec, desktop=OpenH264), so register H.264 everywhere.
+    // Android additionally registers Opus for audio.
+    registerH264Codec();
+    if (Platform.isAndroid) registerOpusCodec();
     if (mounted) setState(() => _status = 'connecting ${widget.config.url}');
 
     try {

@@ -41,6 +41,12 @@ import '../../../dart/test/codec/vp8_roundtrip_test.dart' as vp8_roundtrip;
 import '../../../dart/test/codec/vp8_version_test.dart' as vp8_version;
 import '../../../dart/test/codec/vp8_wire_format_test.dart' as vp8_wire_format;
 import '../../../dart/test/codec/vp9_multistream_test.dart' as vp9_multistream;
+import '../../../dart/test/codec/h264_mediacodec_color_test.dart'
+    as h264_mediacodec_color;
+import '../../../dart/test/codec/h264_mediacodec_multistream_test.dart'
+    as h264_mediacodec_multistream;
+import '../../../dart/test/codec/h264_mediacodec_roundtrip_test.dart'
+    as h264_mediacodec_roundtrip;
 import '../../../dart/test/codec/vp9_roundtrip_test.dart' as vp9_roundtrip;
 import '../../../dart/test/codec/vp9_version_test.dart' as vp9_version;
 import '../../../dart/test/codec/opus_test.dart' as opus;
@@ -89,6 +95,10 @@ void main() {
   group('codec/vp8_version', vp8_version.main);
   group('codec/vp8_wire_format', vp8_wire_format.main);
   group('codec/vp9_multistream', vp9_multistream.main);
+  // H.264 via Android MediaCodec (Android-only; host `dart test` skips these).
+  group('codec/h264_mediacodec_color', h264_mediacodec_color.main);
+  group('codec/h264_mediacodec_multistream', h264_mediacodec_multistream.main);
+  group('codec/h264_mediacodec_roundtrip', h264_mediacodec_roundtrip.main);
   group('codec/vp9_roundtrip', vp9_roundtrip.main);
   group('codec/vp9_version', vp9_version.main);
   group('codec/opus', opus.main);

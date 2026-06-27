@@ -37,21 +37,37 @@ Each item:
   in `crypto/macos_backend.dart` and `crypto/security_framework.dart` stay as
   they are.
 
-### Android H.264 codec (MediaCodec via JNI)
+### Android H.264 codec (MediaCodec via NDK FFI) — DONE (2026-06-27)
 
 - **Found:** 2026-05-04, codec-status review. **Narrowed 2026-06-15:** VP8 / VP9 /
-  Opus now build + run on Android (software, via the NDK cross-compiled
-  libvpx / libopus — see the Android section below), so this entry is now only
-  about H.264.
-- **Detail:** Android has no H.264 backend. Cisco publishes no OpenH264 binary
-  for Android, and VideoToolbox is Apple-only — so the only route is
-  `MediaCodec` over JNI. The Android example currently sidesteps this by
-  negotiating VP8 instead of H.264.
-- **Why deferred:** JNI integration is large; needs Flutter-side native
-  plumbing. VP8/VP9 cover the Chrome/Firefox interop story without it.
-- **Acceptance:** `MediaCodec`-backed H.264 encoder/decoder on Android,
-  integrated through the plugin's native side; the example can negotiate H.264
-  on Android. (HW MediaCodec accel for VP8/VP9 could ride the same bridge.)
+  Opus build + run on Android. **Shipped 2026-06-27** (`android-h264-mediacodec`).
+- **Detail:** Android now has an H.264 backend built on the NDK `AMediaCodec`
+  (MediaCodec) via **pure-Dart FFI — no JNI / Flutter-side native plumbing**.
+  This uses the OS-provided patent-licensed codec, the Android analogue of
+  VideoToolbox (OpenH264-from-source was avoided: Cisco's royalty grant only
+  covers Cisco-distributed binaries, with no Android prebuilt).
+  - Synchronous buffer API (dequeue/queueInputBuffer), so **no C shim** unlike
+    the callback-based VideoToolbox helper; multistream works because each
+    track gets its own `AMediaCodec`, all driven on the isolate thread.
+    [dart/lib/codec/h264/mediacodec/mediacodec_helper.dart](dart/lib/codec/h264/mediacodec/mediacodec_helper.dart)
+    + `mediacodec_{encoder,decoder}_backend.dart`; `registerH264Codec()` gains
+    an `Platform.isAndroid` branch; the example negotiates H.264 everywhere.
+  - Colour as packed I420 (encoder converts straight into the native input
+    buffer as NV12, falling back to planar; decoder reads stride/slice-height).
+    Key frames prepend the cached CODEC_CONFIG SPS/PPS.
+  - `libmediandk.so` is loaded at runtime (no code asset / build-hook change);
+    bindings generated from the NDK sysroot by
+    [dart/tool/gen_mediacodec_bindings.dart](dart/tool/gen_mediacodec_bindings.dart)
+    (resolves the NDK from env, token template — no committed `$HOME` path).
+  - Tests: host colour-conversion unit tests + Android-gated roundtrip
+    (key-frame/SPS prepend, PTS, non-trivial luma) and 3-stream multistream,
+    run on-device via the integration_test aggregator. Verified bidirectional
+    H.264 vs a Chrome peer on an arm64 emulator (API 35).
+- **Not covered (follow-ups):** per-frame force-IDR (PLI-driven keyframe
+  recovery relies on the I-frame interval); input stride/slice-height padding
+  on HW encoders (v1 assumes width/height packing — fine on the emulator SW
+  codec); vendor-proprietary tiled decoder outputs are dropped. HW MediaCodec
+  accel for VP8/VP9 could ride the same FFI approach.
 
 ### AV1 codec
 
@@ -488,9 +504,11 @@ Each item:
 - **Primary direction — MediaCodec → Surface, zero-copy.** The biggest win is
   to *not convert on the CPU at all*: feed the Flutter texture's `Surface`
   (`SurfaceProducer`) directly as a hardware `MediaCodec` decoder's output
-  surface, so decoded frames never round-trip to Dart as I420. This depends on
-  the Android H.264/MediaCodec backend (see "Android H.264 codec" above) and
-  removes both the per-frame copy and the color convert.
+  surface, so decoded frames never round-trip to Dart as I420. The Android
+  H.264/MediaCodec backend now exists (see "Android H.264 codec" above —
+  DONE 2026-06-27), **but it decodes to a ByteBuffer (CPU I420), not a
+  Surface**, so this still needs the decoder reworked to `AMediaCodec_configure`
+  with an output `ANativeWindow` from the Flutter `SurfaceProducer`.
 - **Secondary — GPU convert for software-decoded I420.** When frames still come
   from the software libvpx/libopus path as raw I420, do the YUV→RGB on the GPU
   instead of the CPU. **Use GLES, not Vulkan:** for a single video quad the two
@@ -525,11 +543,14 @@ Each item:
     passes individually (`flutter test integration_test/<file> -d macos`);
     running the whole dir at once on macOS hits a desktop multi-file app-relaunch
     flake (not a test failure).
-- **Still not covered:** a full **browser↔Android** call (signaling + browser
-  peer, exercising ICE/DTLS/SRTP/codec/render end-to-end against Chrome/Firefox
-  — the suite above uses an in-process webdartc↔webdartc loopback, not a
-  browser), verification on a **physical device**, and a **CI** Android job
-  (existing CI is Linux/macOS/Windows only).
+- **Manually verified 2026-06-27:** a full **browser↔Android** call — bidirectional
+  H.264 against a Chrome fake-media peer over the local Ayame signaling server,
+  the emulator (API 35 arm64) decoding Chrome's stream and rendering it (done
+  while shipping the MediaCodec H.264 backend). Still **not automated**: this was
+  a hand-driven run, not a test.
+- **Still not covered:** an **automated** browser↔Android e2e (the manual run
+  above as a repeatable test), verification on a **physical device**, and a
+  **CI** Android job (existing CI is Linux/macOS/Windows only).
 - **Why deferred:** The browser↔Android e2e needs a signaling + browser harness
   reachable from the device/emulator network — heavier than the milestone; all
   its constituent pieces are already individually verified on-device.
