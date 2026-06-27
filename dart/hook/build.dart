@@ -251,8 +251,13 @@ Future<(Uri, String)> _cmakeBuildOpus(BuildInput input) async {
           final a => throw UnsupportedError('libopus build: unsupported arch $a'),
         };
   final shared = input.outputDirectoryShared;
-  final buildDir = Directory.fromUri(shared.resolve('opus-build-$arch/'));
-  final installDir = Directory.fromUri(shared.resolve('opus-install-$arch/'));
+  // The cache dir is keyed by OS *and* arch: the Android `x86_64` ABI name
+  // collides with the macOS `x86_64` arch name, so without the OS prefix a
+  // universal macOS build's Mach-O `libopus.a` gets reused for the Android
+  // link step ("not an ELF file"). vpx avoids this via its gcc target triple.
+  final cacheKey = '${targetOS.name}-$arch';
+  final buildDir = Directory.fromUri(shared.resolve('opus-build-$cacheKey/'));
+  final installDir = Directory.fromUri(shared.resolve('opus-install-$cacheKey/'));
   final cached = _findArchive(installDir.uri);
   if (cached != null) return (installDir.uri, cached);
 
