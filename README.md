@@ -79,11 +79,13 @@ without republishing.
 
 ## Codec matrix
 
-Every backend is software except VideoToolbox on macOS, which is hardware-accelerated.
+Every backend is software except VideoToolbox on macOS and MediaCodec on
+Android, which use the OS-provided codec (hardware-accelerated where the device
+offers it).
 
 | Codec | macOS | Linux | Windows | Android |
 |-------|-------|-------|---------|---------|
-| H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt) | OpenH264 (Cisco prebuilt) | — (no Cisco build; example negotiates VP8) |
+| H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt) | OpenH264 (Cisco prebuilt) | MediaCodec (NDK `AMediaCodec` via FFI) |
 | VP8 / VP9 | libvpx (vcpkg, source-built) | libvpx (submodule, source-built) | libvpx (vcpkg, source-built) | libvpx (submodule, source-built via NDK) |
 | Opus | libopus (vcpkg, source-built) | libopus (submodule, source-built) | libopus (vcpkg, source-built) | libopus (submodule, source-built via NDK) |
 
@@ -93,7 +95,9 @@ Every backend is software except VideoToolbox on macOS, which is hardware-accele
 compiles the VideoToolbox C shim on macOS, source-builds libopus + libvpx via
 vcpkg on macOS / Windows and from the submodules on Linux (and via the NDK on
 Android), and fetches Cisco's OpenH264 (version + SHA-256 pinned) on Linux +
-Windows. The full per-OS breakdown and symbol-hiding rationale live in
+Windows. Android H.264 needs no native asset — it binds the system
+`libmediandk.so` (`AMediaCodec`) directly via pure-Dart FFI. The full per-OS
+breakdown and symbol-hiding rationale live in
 [`dart/README.md#codec-backends`](dart/README.md#codec-backends).
 
 ### Native requirements
@@ -114,8 +118,9 @@ Windows. The full per-OS breakdown and symbol-hiding rationale live in
   downloaded, and the OS's CNG (`bcrypt.dll`) provides crypto.
 - **Android** — the Flutter Android toolchain (SDK + NDK + CMake, e.g. via
   Android Studio) plus pkg-config. The build hook cross-compiles libvpx +
-  libopus with the NDK (VP8 / VP9 / Opus; no H.264) and source-builds BoringSSL
-  (crypto) via vcpkg per ABI.
+  libopus with the NDK (VP8 / VP9 / Opus) and source-builds BoringSSL (crypto)
+  via vcpkg per ABI. H.264 uses the system MediaCodec (`AMediaCodec`) via FFI,
+  so it needs no build step.
 
 ## What `flutter` owns
 

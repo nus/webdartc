@@ -28,10 +28,11 @@ Data channels and media (audio + video, send + receive) are both supported.
   statically linked into the bundled `webdartc_crypto` wrapper) on Linux +
   Android.
 - **Codecs** — VP8 / VP9 via libvpx, H.264 via Apple VideoToolbox
-  (hardware-accelerated on macOS) or Cisco-prebuilt OpenH264 (Linux + Windows),
-  Opus via libopus. On Android, libvpx + libopus are cross-compiled with the NDK
-  (VP8 / VP9 / Opus; no H.264). See [Codec backends](#codec-backends) for the
-  per-OS codec source split (vcpkg on macOS / Windows, submodules elsewhere).
+  (hardware-accelerated on macOS), Android MediaCodec (`AMediaCodec` via FFI), or
+  Cisco-prebuilt OpenH264 (Linux + Windows), Opus via libopus. On Android, libvpx
+  + libopus are cross-compiled with the NDK (VP8 / VP9 / Opus). See
+  [Codec backends](#codec-backends) for the per-OS codec source split (vcpkg on
+  macOS / Windows, submodules elsewhere).
 
 ## Requirements
 
@@ -52,7 +53,8 @@ Data channels and media (audio + video, send + receive) are both supported.
 - **Android** — built through Flutter (`flutter test integration_test`, not
   `dart test`); needs the Android SDK + NDK + CMake + pkg-config. The build
   hook cross-compiles libvpx + libopus (codecs) with the NDK and source-builds
-  BoringSSL (crypto) via vcpkg for each ABI (`ANDROID_NDK_HOME`).
+  BoringSSL (crypto) via vcpkg for each ABI (`ANDROID_NDK_HOME`). H.264 binds
+  the system MediaCodec (`AMediaCodec`) via FFI and needs no build step.
 
 ## Installation
 
@@ -218,12 +220,13 @@ dart run example/video_echo/server.dart --port=8080
 
 ## Codec backends
 
-Every backend is software except VideoToolbox on macOS, which is
-hardware-accelerated.
+Every backend is software except VideoToolbox on macOS and MediaCodec on
+Android, which use the OS-provided codec (hardware-accelerated where the device
+offers it).
 
 | Codec | macOS | Linux | Windows | Android |
 |-------|-------|-------|---------|---------|
-| H.264 | VideoToolbox (HW); `hook/build.dart` compiles `src/wvt_callback.c` | OpenH264, pinned download from `ciscobinary.openh264.org` | OpenH264, same Cisco prebuilt path | — (no Cisco Android build; MediaCodec is a backlog item) |
+| H.264 | VideoToolbox (HW); `hook/build.dart` compiles `src/wvt_callback.c` | OpenH264, pinned download from `ciscobinary.openh264.org` | OpenH264, same Cisco prebuilt path | MediaCodec (NDK `AMediaCodec` via FFI); no build step |
 | VP8   | libvpx via vcpkg, statically linked | libvpx submodule, source-built + statically linked | `webdartc_vp8.dll` wrapper from libvpx via vcpkg + MSVC | libvpx submodule, NDK cross-compiled per ABI |
 | VP9   | same as VP8 (shares the libvpx archive) | same as VP8 | `webdartc_vp9.dll` (same archive as vp8) | same as VP8 (shares the libvpx archive) |
 | Opus  | libopus via vcpkg, statically linked | libopus submodule, source-built + statically linked | `webdartc_opus.dll` wrapper from libopus via vcpkg + MSVC | libopus submodule, NDK cross-compiled per ABI |
@@ -238,6 +241,12 @@ hardware-accelerated.
   (`_openH264Version` / `_openH264Sha256` pin version + hash) and registers it as
   a `DynamicLoadingBundled` asset. See <https://www.openh264.org/> for upstream
   terms.
+- **MediaCodec (Android)** — no native asset; `lib/codec/h264/mediacodec/`
+  binds the system `libmediandk.so` (`AMediaCodec`) via pure-Dart FFI, using the
+  synchronous buffer API so it needs no C shim (unlike the VideoToolbox path).
+  MediaCodec is the OS-provided, patent-licensed codec — the Android analogue of
+  VideoToolbox. Regenerate the FFI bindings with
+  `dart run tool/gen_mediacodec_bindings.dart` (needs the NDK's libclang).
 - **libopus / libvpx source build (macOS / Windows, via vcpkg)** — `vcpkg
   install` (ports pinned by `tool/lib{opus,vpx}_vcpkg/vcpkg.json`) produces
   `libopus.a` / `libvpx.a`; on macOS the build hook links them directly into the
