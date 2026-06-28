@@ -344,19 +344,6 @@ jobs:
           # target than both the host-native X64 jobs and the android-arm64
           # build gate, so it needs its own hooks-cache key.
           cache-key-suffix: '-android-x64'
-      # `flutter test integration_test`, run from the example dir inside the
-      # pub workspace, anchors to the workspace root and can't see the
-      # example's integration_test dev_dependency ("cannot run without a
-      # dependency on package:integration_test" — the example isn't a workspace
-      # member, and making it one would force every member onto one lints
-      # version). Drop the workspace root pubspec + the members'
-      # `resolution: workspace` lines so the example resolves standalone (as it
-      # does for a developer running the test locally), then pre-resolve it.
-      - name: Detach example from the pub workspace
-        run: |
-          rm -f pubspec.yaml
-          sed -i '/^resolution: workspace$/d' flutter/pubspec.yaml dart/pubspec.yaml
-          (cd flutter/example && flutter pub get)
       # KVM lets the x86_64 emulator boot accelerated (reactivecircus's
       # recommended udev rule to grant the runner access to /dev/kvm).
       - name: Enable KVM
@@ -403,7 +390,8 @@ jobs:
           # it (the Create AVD snapshot step above owns snapshot generation).
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           # `flutter test integration_test` builds only the emulator's ABI
-          # (x86_64).
-          script: |
-            cd flutter/example
-            flutter test integration_test/dart_suite_test.dart -d emulator-5554 --timeout=300s
+          # (x86_64). Single line: the action runs each script line in its own
+          # `sh -c`, so `cd` must be chained with `&&` to reach flutter/example
+          # (otherwise flutter runs at the repo root and the test resolves the
+          # wrong project — missing its integration_test dependency).
+          script: cd flutter/example && flutter test integration_test/dart_suite_test.dart -d emulator-5554 --timeout=300s
