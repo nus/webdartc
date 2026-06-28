@@ -293,12 +293,12 @@ jobs:
       - working-directory: flutter/example
         run: ./build/windows/x64/plugins/webdartc_flutter/Debug/webdartc_flutter_test.exe
 
-  # Cross-compile the example app's debug APK for arm64. This is the cheap,
-  # reliable gate: building the APK runs the full native build hook
-  # (libvpx + libopus cross-compiled with the NDK, BoringSSL via vcpkg) and
-  # compiles the Kotlin renderer plugin. arm64-only because Android x86_64
-  # can't build libopus — its x86 SIMD .asm is fed to clang as `-f elf64`
-  # and errors — so only arm64-v8a / armeabi-v7a codecs build today.
+  # Cross-compile the example app's debug APK for arm64 — the production
+  # Android ABI. This is the cheap, reliable gate: building the APK runs the
+  # full native build hook (libvpx + libopus cross-compiled with the NDK,
+  # BoringSSL via vcpkg) and compiles the Kotlin renderer plugin. arm64 keeps
+  # its NEON intrinsics, so this guards the real shipping codepath; the x86_64
+  # emulator job below covers on-device runtime behaviour.
   flutter-android-build:
     name: flutter / Android build (arm64)
     runs-on: ubuntu-latest
@@ -315,19 +315,23 @@ jobs:
           # must not collide with the dart/flutter X64 jobs' cache.
           cache-key-suffix: '-android-arm64'
       - working-directory: flutter/example
-        # arm64 only: x86_64 hits the libopus asm gap above. nasm + pkg-config
-        # for the BoringSSL vcpkg port come from the Linux setup step; cmake is
-        # preinstalled on ubuntu-latest.
+        # nasm + pkg-config for the BoringSSL vcpkg port come from the Linux
+        # setup step; cmake is preinstalled on ubuntu-latest.
         run: flutter build apk --debug --target-platform=android-arm64
 
   # Run the Dart package's platform-relevant tests ON-DEVICE via the
   # integration_test aggregator (crypto, VP8/VP9, opus, H.264 MediaCodec,
-  # PeerConnection). Needs an arm64 emulator (the libopus asm gap rules out
-  # x86_64) and arm64 hardware acceleration needs an arm64 host, hence
-  # macos-latest (Apple Silicon, HVF-accelerated).
+  # PeerConnection). Uses an x86_64 emulator on ubuntu-latest: GitHub's hosted
+  # Apple-Silicon runners can't accelerate an arm64 emulator (no nested HVF),
+  # and the hosted Linux arm64 runners have no /dev/kvm — so an accelerated
+  # x86_64 emulator under KVM on the x64 Linux runner is the only viable hosted
+  # path. The build hook builds all three native deps for x86_64-android:
+  # libvpx assembles its x86 SIMD with nasm (see _androidLibvpxEnv in
+  # dart/hook/build.dart — needs nasm + readelf on the runner), libopus +
+  # BoringSSL build straight from source.
   flutter-android-integration:
-    name: flutter / Android integration tests (arm64 emulator)
-    runs-on: macos-latest
+    name: flutter / Android integration tests (x86_64 emulator)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
@@ -336,7 +340,18 @@ jobs:
         with:
           flavor: flutter
           install-android-ndk: 'true'
-          cache-key-suffix: '-android-arm64'
+          # Cross-compiles for android-x86_64 on the X64 runner — a different
+          # target than both the host-native X64 jobs and the android-arm64
+          # build gate, so it needs its own hooks-cache key.
+          cache-key-suffix: '-android-x64'
+      # KVM lets the x86_64 emulator boot accelerated (reactivecircus's
+      # recommended udev rule to grant the runner access to /dev/kvm).
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       # Cache the AVD + its warm snapshot so the emulator restores from a
       # snapshot instead of cold-booting (~40-60s) every run. Keyed by the
       # dimensions that define the image (api-level / arch / target).
@@ -350,7 +365,7 @@ jobs:
           # -v1 is a manual bump token: the dimensions below don't change on
           # their own, so bump it to force a fresh snapshot if a system-image
           # update makes the cached one stale.
-          key: avd-arm64-v8a-api35-google_apis-v1
+          key: avd-x86_64-api35-google_apis-v1
       # On a cache miss, create the AVD and write a booted snapshot. Runs only
       # when the cache is cold; its emulator-options omit -no-snapshot-save so
       # the snapshot is persisted for the next run to restore.
@@ -359,23 +374,23 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
-          arch: arm64-v8a
+          arch: x86_64
           target: google_apis
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: echo "AVD snapshot generated."
-      - name: Run integration tests on arm64 emulator
+      - name: Run integration tests on x86_64 emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
-          arch: arm64-v8a
+          arch: x86_64
           target: google_apis
           force-avd-creation: false
           # -no-snapshot-save: boot from the cached snapshot but don't rewrite
           # it (the Create AVD snapshot step above owns snapshot generation).
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           # `flutter test integration_test` builds only the emulator's ABI
-          # (arm64-v8a), so the x86_64 libopus gap is never hit.
+          # (x86_64).
           script: |
             cd flutter/example
             flutter test integration_test/dart_suite_test.dart -d emulator-5554 --timeout=300s

@@ -71,10 +71,14 @@ runs:
       # ubuntu-latest. The build hook source-builds BoringSSL (crypto) +
       # libvpx + opus via vcpkg — which it clones + bootstraps itself — so no
       # libssl-dev. OpenH264 is downloaded prebuilt.
+      # binutils: libvpx's android-x86_64 configure probes the assembler with
+      # `readelf -WS` (build/make/configure.sh); without it the nasm check fails
+      # ("does not support section alignment"). Preinstalled on ubuntu-latest,
+      # pinned here so the android-x86_64 integration build can't regress on it.
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y nasm pkg-config
+        sudo apt-get install -y nasm pkg-config binutils
 
     - if: ${{ inputs.install-android-ndk == 'true' }}
       name: Pin Android NDK version
