@@ -389,9 +389,8 @@ jobs:
           # -no-snapshot-save: boot from the cached snapshot but don't rewrite
           # it (the Create AVD snapshot step above owns snapshot generation).
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
-          # `flutter test integration_test` builds only the emulator's ABI
-          # (x86_64). Single line: the action runs each script line in its own
-          # `sh -c`, so `cd` must be chained with `&&` to reach flutter/example
-          # (otherwise flutter runs at the repo root and the test resolves the
-          # wrong project — missing its integration_test dependency).
-          script: cd flutter/example && flutter test integration_test/dart_suite_test.dart -d emulator-5554 --timeout=300s
+          # Run from the example dir (its own Flutter project) so flutter test
+          # resolves the example's integration_test dependency rather than the
+          # workspace root. It builds only the emulator's ABI (x86_64).
+          working-directory: ./flutter/example
+          script: flutter test integration_test/dart_suite_test.dart -d emulator-5554 --timeout=300s
