@@ -35,8 +35,8 @@ VideoRendererWidget(renderer: renderer)
 A runnable macOS / Android demo acting as a full WebRTC peer against a browser
 (Flutter ↔ browser bidirectional video over real DTLS/SRTP/ICE) lives
 at [`example/`](example). It shows `local` (FakeVideoSource preview) and
-`remote` (decoded browser camera) tiles side-by-side. macOS negotiates H.264;
-Android negotiates VP8 (no Android H.264 backend yet).
+`remote` (decoded browser camera) tiles side-by-side. Both macOS and Android
+negotiate H.264 (macOS via VideoToolbox, Android via MediaCodec).
 
 ```bash
 # Terminal 1 — from dart/: signaling + static HTTP server
