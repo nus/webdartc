@@ -1,21 +1,20 @@
-/// H.264 video decoder backend powered by Android MediaCodec.
+/// VP8 video decoder backend powered by Android MediaCodec.
 ///
-/// Available on Android. Drives the generic [MediaCodecVideoDecoder] with the
-/// `video/avc` MIME and adapts it to the generic [VideoDecoderBackend]. The
-/// decoder is configured without csd — SPS/PPS arrive in-band on key frames
-/// (the MediaCodec encoder prepends them) and MediaCodec parses them
-/// automatically. Output is converted to packed I420, draining synchronously
-/// per `decode`.
+/// Available on Android when the device provides a VP8 decoder (probed at
+/// registration; falls back to the bundled libvpx otherwise). Drives the
+/// generic [MediaCodecVideoDecoder] with the `video/x-vnd.on2.vp8` MIME. VP8
+/// frames are self-describing (no csd). Output is converted to packed I420,
+/// draining synchronously per `decode`.
 library;
 
 import '../../media/video_frame.dart';
 import '../mediacodec/mediacodec_video.dart';
 import '../video_codec.dart';
 
-const String _h264Mime = 'video/avc';
+const String _vp8Mime = 'video/x-vnd.on2.vp8';
 
-/// MediaCodec-backed H.264 decoder.
-final class MediaCodecDecoderBackend implements VideoDecoderBackend {
+/// MediaCodec-backed VP8 decoder.
+final class MediaCodecVp8DecoderBackend implements VideoDecoderBackend {
   MediaCodecVideoDecoder? _dec;
 
   void Function(VideoFrame)? _onOutput;
@@ -30,10 +29,10 @@ final class MediaCodecDecoderBackend implements VideoDecoderBackend {
   @override
   void configure(VideoDecoderConfig config) {
     // Nominal dimensions; the decoder re-reads the real size from the output
-    // format once the first key frame's SPS is parsed.
+    // format once the first key frame is parsed.
     final w = config.codedWidth ?? 640;
     final h = config.codedHeight ?? 480;
-    _dec = MediaCodecVideoDecoder.create(mime: _h264Mime, width: w, height: h);
+    _dec = MediaCodecVideoDecoder.create(mime: _vp8Mime, width: w, height: h);
   }
 
   @override

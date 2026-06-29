@@ -1,17 +1,24 @@
-/// Android MediaCodec H.264 encoder/decoder helper (Android only).
+/// Generic Android MediaCodec video encoder/decoder helper (Android only).
 ///
 /// Pure-Dart FFI over the NDK `libmediandk.so` (`AMediaCodec` / `AMediaFormat`),
-/// driven entirely through the **synchronous** buffer API
-/// (`dequeue`/`queueInputBuffer` + `dequeueOutputBuffer`). Because the
-/// synchronous API delivers nothing on foreign threads, no C shim or
-/// thread-safe queue is needed — unlike the macOS/iOS VideoToolbox helper,
-/// which is callback-based and therefore needs `dart/src/wvt_callback.c`.
+/// driven through the **synchronous** buffer API (`dequeue`/`queueInputBuffer`
+/// + `dequeueOutputBuffer`). Because the synchronous API delivers nothing on
+/// foreign threads, no C shim or thread-safe queue is needed — unlike the
+/// macOS/iOS VideoToolbox helper, which is callback-based and therefore needs
+/// `dart/src/wvt_callback.c`.
 ///
-/// Each [MediaCodecH264Encoder] / [MediaCodecH264Decoder] owns one independent
-/// `AMediaCodec` instance, so multiple streams just create multiple helpers;
-/// all are driven on the calling isolate thread (see the codec registry / the
-/// `*_multistream_test.dart` suites). The colour handling mirrors VideoToolbox:
-/// frames are exchanged as packed I420 and converted to/from whatever planar
+/// Codec-agnostic: the MIME string selects the codec (`video/avc` for H.264,
+/// `video/x-vnd.on2.vp8` for VP8, …). The encoder is parameterised by a
+/// [VideoUnitFinisher] that turns each raw output buffer into an
+/// [EncodedVideoUnit] — this is where codec-specific output handling lives
+/// (H.264 prepends the cached SPS/PPS to key frames; VP8 just reads the
+/// key-frame flag). The decoder is fully shared (compressed frames in, packed
+/// I420 out).
+///
+/// Each encoder/decoder owns one independent `AMediaCodec` instance, so
+/// multiple streams just create multiple helpers; all are driven on the calling
+/// isolate thread. Colour handling mirrors VideoToolbox: frames are exchanged as
+/// packed I420 and converted to/from whatever planar
 /// (`COLOR_FormatYUV420Planar` = 19) or semi-planar (`…SemiPlanar` = 21) layout
 /// the codec uses, reading the codec's reported stride / slice-height.
 library;
@@ -32,19 +39,16 @@ const int _colorFormatYUV420SemiPlanar = 21; // NV12 (Y, interleaved UV)
 const int _colorFormatYUV420Flexible = 0x7F420888;
 
 const int _configureFlagEncode = 1;
-const int _bufferFlagCodecConfig = 2; // SPS/PPS config blob
+const int _bufferFlagCodecConfig = 2; // codec config blob (e.g. H.264 SPS/PPS)
+
+/// `MediaCodec.BUFFER_FLAG_KEY_FRAME` — set on encoded key-frame output buffers.
+/// Codecs without an out-of-band config (VP8/VP9) use this to mark key frames.
+const int bufferFlagKeyFrame = 1;
 
 // AMediaCodec_dequeueOutputBuffer sentinel indices.
 const int _infoOutputFormatChanged = -2;
 // -1 (TRY_AGAIN_LATER) / -3 (OUTPUT_BUFFERS_CHANGED) handled by `< 0` checks.
 const int _infoTryAgainLater = -1;
-
-const String _h264Mime = 'video/avc';
-
-// H.264 Annex B NAL parsing.
-const int _nalTypeMask = 0x1F;
-const int _nalTypeIdr = 5;
-const int _nalTypeSps = 7;
 
 // Input/output dequeue timeouts (microseconds). Output drains non-blocking
 // (0); input waits briefly so a momentarily-busy codec doesn't drop frames.
@@ -60,13 +64,13 @@ bool _ok(media_status_t s) => s == media_status_t.AMEDIA_OK;
 
 // ── Output value types ──────────────────────────────────────────────────────
 
-/// One encoded H.264 access unit (Annex B byte-stream), SPS/PPS already
-/// prepended on key frames.
-final class EncodedH264 {
+/// One encoded access unit. For H.264 this is an Annex B byte-stream with
+/// SPS/PPS already prepended on key frames; for VP8/VP9 it is the raw frame.
+final class EncodedVideoUnit {
   final Uint8List data;
   final int ptsUs;
   final bool keyframe;
-  const EncodedH264(this.data, this.ptsUs, this.keyframe);
+  const EncodedVideoUnit(this.data, this.ptsUs, this.keyframe);
 }
 
 /// One decoded frame as packed I420.
@@ -78,10 +82,17 @@ final class DecodedI420 {
   const DecodedI420(this.data, this.width, this.height, this.ptsUs);
 }
 
+/// Turns one raw encoder output buffer into an [EncodedVideoUnit]. [flags] is
+/// the `AMediaCodecBufferInfo.flags`; [codecConfig] is the most recent
+/// CODEC_CONFIG blob the codec emitted (null until/unless one is seen — VP8/VP9
+/// never emit one). Codec-specific logic (H.264 SPS/PPS prepend, key-frame
+/// detection) lives in the implementation passed by each backend.
+typedef VideoUnitFinisher = EncodedVideoUnit Function(
+    Uint8List bytes, int flags, int ptsUs, Uint8List? codecConfig);
+
 // ── Colour conversion (pure Dart, unit-testable) ────────────────────────────
 
-/// Packed I420 (`w*h` Y, then `w/2*h/2` U, then V) → packed NV12
-/// (`w*h` Y, then interleaved `V`? no — U,V interleaved as U,V,U,V…).
+/// Packed I420 (`w*h` Y, then `w/2*h/2` U, then V) → packed NV12.
 ///
 /// Android's `COLOR_FormatYUV420SemiPlanar` is NV12: the chroma plane is
 /// `U V U V …` (Cb first). I420 stores full U then full V planes, so we
@@ -162,48 +173,19 @@ Uint8List nv12ToI420(
   return out;
 }
 
-// ── Annex B helpers ─────────────────────────────────────────────────────────
-
-/// Returns `(hasIdr, hasSps)` by scanning Annex B NAL unit types.
-(bool, bool) _scanNals(Uint8List b) {
-  var hasIdr = false, hasSps = false;
-  final n = b.length;
-  var i = 0;
-  while (i + 3 < n) {
-    // Match a 3- or 4-byte start code.
-    if (b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1) {
-      final t = b[i + 3] & _nalTypeMask;
-      if (t == _nalTypeIdr) hasIdr = true;
-      if (t == _nalTypeSps) hasSps = true;
-      i += 4;
-    } else if (i + 4 < n &&
-        b[i] == 0 &&
-        b[i + 1] == 0 &&
-        b[i + 2] == 0 &&
-        b[i + 3] == 1) {
-      final t = b[i + 4] & _nalTypeMask;
-      if (t == _nalTypeIdr) hasIdr = true;
-      if (t == _nalTypeSps) hasSps = true;
-      i += 5;
-    } else {
-      i++;
-    }
-  }
-  return (hasIdr, hasSps);
-}
-
 // ── Small FFI scratch helpers ───────────────────────────────────────────────
 
 ffi.Pointer<ffi.Char> _utf8(String s) => s.toNativeUtf8().cast<ffi.Char>();
 
 // ── Encoder ─────────────────────────────────────────────────────────────────
 
-final class MediaCodecH264Encoder {
+final class MediaCodecVideoEncoder {
   final ffi.Pointer<AMediaCodec> _codec;
   final int _width;
   final int _height;
   final int _inputColorFormat; // 19 (planar) or 21 (semi-planar)
-  Uint8List? _csd; // SPS+PPS Annex B captured from the CODEC_CONFIG output
+  final VideoUnitFinisher _finishUnit;
+  Uint8List? _csd; // CODEC_CONFIG blob (e.g. H.264 SPS+PPS); null for VP8/VP9
 
   // Reusable FFI scratch, allocated once and freed in close(), so the
   // per-frame hot path doesn't churn the C heap (mirrors the OpenH264 backend).
@@ -211,28 +193,35 @@ final class MediaCodecH264Encoder {
   final ffi.Pointer<AMediaCodecBufferInfo> _info =
       pkgffi.calloc<AMediaCodecBufferInfo>();
 
-  MediaCodecH264Encoder._(
-      this._codec, this._width, this._height, this._inputColorFormat);
+  MediaCodecVideoEncoder._(this._codec, this._width, this._height,
+      this._inputColorFormat, this._finishUnit);
 
-  /// Creates and starts an H.264 encoder. Tries NV12 (best hardware
+  /// Creates and starts an encoder for [mime]. Tries NV12 (best hardware
   /// compatibility) first, then planar I420 (no conversion; reliable on the
   /// emulator's software codec). Throws [StateError] if neither configures.
-  static MediaCodecH264Encoder create(
-      int width, int height, int bitrate, int fps, int keyframeIntervalSec) {
+  static MediaCodecVideoEncoder create({
+    required String mime,
+    required int width,
+    required int height,
+    required int bitrate,
+    required int fps,
+    required int keyframeIntervalSec,
+    required VideoUnitFinisher finishUnit,
+  }) {
     Object? lastErr;
     for (final color in const [
       _colorFormatYUV420SemiPlanar,
       _colorFormatYUV420Planar,
     ]) {
-      final mime = _utf8(_h264Mime);
-      final codec = _mc.AMediaCodec_createEncoderByType(mime);
-      pkgffi.malloc.free(mime);
+      final mimeC = _utf8(mime);
+      final codec = _mc.AMediaCodec_createEncoderByType(mimeC);
+      pkgffi.malloc.free(mimeC);
       if (codec == ffi.nullptr) {
-        lastErr = 'AMediaCodec_createEncoderByType returned null';
+        lastErr = 'AMediaCodec_createEncoderByType($mime) returned null';
         continue;
       }
       final fmt = _buildEncoderFormat(
-          width, height, bitrate, fps, keyframeIntervalSec, color);
+          mime, width, height, bitrate, fps, keyframeIntervalSec, color);
       final cfg = _mc.AMediaCodec_configure(
           codec, fmt, ffi.nullptr, ffi.nullptr, _configureFlagEncode);
       _mc.AMediaFormat_delete(fmt);
@@ -246,17 +235,17 @@ final class MediaCodecH264Encoder {
         _mc.AMediaCodec_delete(codec);
         continue;
       }
-      return MediaCodecH264Encoder._(codec, width, height, color);
+      return MediaCodecVideoEncoder._(codec, width, height, color, finishUnit);
     }
-    throw StateError('MediaCodec H.264 encoder creation failed: $lastErr');
+    throw StateError('MediaCodec encoder creation failed ($mime): $lastErr');
   }
 
-  static ffi.Pointer<AMediaFormat> _buildEncoderFormat(int width, int height,
-      int bitrate, int fps, int keyframeIntervalSec, int color) {
+  static ffi.Pointer<AMediaFormat> _buildEncoderFormat(String mime, int width,
+      int height, int bitrate, int fps, int keyframeIntervalSec, int color) {
     final fmt = _mc.AMediaFormat_new();
-    final mime = _utf8(_h264Mime);
-    _mc.AMediaFormat_setString(fmt, _mc.AMEDIAFORMAT_KEY_MIME, mime);
-    pkgffi.malloc.free(mime);
+    final mimeC = _utf8(mime);
+    _mc.AMediaFormat_setString(fmt, _mc.AMEDIAFORMAT_KEY_MIME, mimeC);
+    pkgffi.malloc.free(mimeC);
     _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_WIDTH, width);
     _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_HEIGHT, height);
     _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_BIT_RATE, bitrate);
@@ -269,7 +258,7 @@ final class MediaCodecH264Encoder {
 
   /// Encodes one packed-I420 frame and returns any encoded units now available
   /// (the synchronous codec may emit zero or more per call).
-  List<EncodedH264> encode(Uint8List i420, int ptsUs) {
+  List<EncodedVideoUnit> encode(Uint8List i420, int ptsUs) {
     final idx = _mc.AMediaCodec_dequeueInputBuffer(_codec, _inputTimeoutUs);
     if (idx < 0) return const []; // codec busy — skip this frame
     final frameSize = _width * _height * 3 ~/ 2;
@@ -290,8 +279,8 @@ final class MediaCodecH264Encoder {
     return _drain();
   }
 
-  List<EncodedH264> _drain() {
-    final out = <EncodedH264>[];
+  List<EncodedVideoUnit> _drain() {
+    final out = <EncodedVideoUnit>[];
     while (true) {
       final idx =
           _mc.AMediaCodec_dequeueOutputBuffer(_codec, _info, _outputTimeoutUs);
@@ -305,29 +294,14 @@ final class MediaCodecH264Encoder {
       if (buf != ffi.nullptr && len > 0) {
         final bytes = buf.asTypedList(off + len).sublist(off, off + len);
         if ((flags & _bufferFlagCodecConfig) != 0) {
-          _csd = bytes; // SPS+PPS; emitted once, prepended to key frames
+          _csd = bytes; // codec config (H.264 SPS+PPS); emitted once
         } else {
-          out.add(_finishUnit(bytes, pts));
+          out.add(_finishUnit(bytes, flags, pts, _csd));
         }
       }
       _mc.AMediaCodec_releaseOutputBuffer(_codec, idx, false);
     }
     return out;
-  }
-
-  EncodedH264 _finishUnit(Uint8List bytes, int ptsUs) {
-    final (hasIdr, hasSps) = _scanNals(bytes);
-    // MediaCodec emits SPS/PPS once via the CODEC_CONFIG buffer and does not
-    // repeat them inline before each IDR; WebRTC peers need them with every
-    // key frame, so prepend the cached config (mirrors the VideoToolbox path).
-    if (hasIdr && !hasSps && _csd != null) {
-      final csd = _csd!;
-      final merged = Uint8List(csd.length + bytes.length)
-        ..setRange(0, csd.length, csd)
-        ..setRange(csd.length, csd.length + bytes.length, bytes);
-      return EncodedH264(merged, ptsUs, true);
-    }
-    return EncodedH264(bytes, ptsUs, hasIdr);
   }
 
   void close() {
@@ -340,7 +314,7 @@ final class MediaCodecH264Encoder {
 
 // ── Decoder ─────────────────────────────────────────────────────────────────
 
-final class MediaCodecH264Decoder {
+final class MediaCodecVideoDecoder {
   final ffi.Pointer<AMediaCodec> _codec;
   // Output layout, learned from INFO_OUTPUT_FORMAT_CHANGED before any frame.
   int _width;
@@ -355,20 +329,24 @@ final class MediaCodecH264Decoder {
       pkgffi.calloc<AMediaCodecBufferInfo>();
   final ffi.Pointer<ffi.Int32> _int32 = pkgffi.calloc<ffi.Int32>();
 
-  MediaCodecH264Decoder._(this._codec, this._width, this._height);
+  MediaCodecVideoDecoder._(this._codec, this._width, this._height);
 
-  /// Creates and starts an H.264 decoder. SPS/PPS are not passed as csd —
-  /// they arrive in-band on key frames (the encoder prepends them), which the
-  /// decoder parses automatically.
-  static MediaCodecH264Decoder create(int width, int height) {
-    final mime = _utf8(_h264Mime);
-    final codec = _mc.AMediaCodec_createDecoderByType(mime);
-    pkgffi.malloc.free(mime);
+  /// Creates and starts a decoder for [mime]. No csd is passed — H.264 SPS/PPS
+  /// arrive in-band on key frames (the encoder prepends them); VP8/VP9 frames
+  /// are self-describing. Throws [StateError] on failure.
+  static MediaCodecVideoDecoder create({
+    required String mime,
+    required int width,
+    required int height,
+  }) {
+    final mimeC = _utf8(mime);
+    final codec = _mc.AMediaCodec_createDecoderByType(mimeC);
+    pkgffi.malloc.free(mimeC);
     if (codec == ffi.nullptr) {
-      throw StateError('AMediaCodec_createDecoderByType returned null');
+      throw StateError('AMediaCodec_createDecoderByType($mime) returned null');
     }
     final fmt = _mc.AMediaFormat_new();
-    final m2 = _utf8(_h264Mime);
+    final m2 = _utf8(mime);
     _mc.AMediaFormat_setString(fmt, _mc.AMEDIAFORMAT_KEY_MIME, m2);
     pkgffi.malloc.free(m2);
     _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_WIDTH, width);
@@ -378,24 +356,24 @@ final class MediaCodecH264Decoder {
     _mc.AMediaFormat_delete(fmt);
     if (!_ok(cfg)) {
       _mc.AMediaCodec_delete(codec);
-      throw StateError('AMediaCodec_configure (decoder) failed: $cfg');
+      throw StateError('AMediaCodec_configure (decoder, $mime) failed: $cfg');
     }
     if (!_ok(_mc.AMediaCodec_start(codec))) {
       _mc.AMediaCodec_delete(codec);
-      throw StateError('AMediaCodec_start (decoder) failed');
+      throw StateError('AMediaCodec_start (decoder, $mime) failed');
     }
-    return MediaCodecH264Decoder._(codec, width, height);
+    return MediaCodecVideoDecoder._(codec, width, height);
   }
 
-  /// Decodes one Annex B access unit, returning any frames now available.
-  List<DecodedI420> decode(Uint8List annexB, int ptsUs) {
+  /// Decodes one compressed access unit, returning any frames now available.
+  List<DecodedI420> decode(Uint8List frame, int ptsUs) {
     final idx = _mc.AMediaCodec_dequeueInputBuffer(_codec, _inputTimeoutUs);
     if (idx >= 0) {
       final buf = _mc.AMediaCodec_getInputBuffer(_codec, idx, _sizePtr);
-      if (buf != ffi.nullptr && _sizePtr.value >= annexB.length) {
-        buf.asTypedList(annexB.length).setAll(0, annexB);
+      if (buf != ffi.nullptr && _sizePtr.value >= frame.length) {
+        buf.asTypedList(frame.length).setAll(0, frame);
         _mc.AMediaCodec_queueInputBuffer(
-            _codec, idx, 0, annexB.length, ptsUs, 0);
+            _codec, idx, 0, frame.length, ptsUs, 0);
       } else {
         _mc.AMediaCodec_queueInputBuffer(_codec, idx, 0, 0, ptsUs, 0);
       }

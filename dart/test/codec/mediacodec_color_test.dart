@@ -1,14 +1,15 @@
-/// Host-runnable unit tests for the MediaCodec helper's pure colour-conversion
-/// functions (I420 <-> NV12, strided plane unpacking). These touch no native
-/// code — the `libmediandk.so` binding is a lazily-initialised top-level final
-/// that these functions never reference — so they run under plain `dart test`
-/// on any platform, unlike the on-device MediaCodec codec tests.
+/// Host-runnable unit tests for the generic MediaCodec helper's pure
+/// colour-conversion functions (I420 <-> NV12, strided plane unpacking), shared
+/// by every MediaCodec video backend (H.264, VP8). These touch no native code —
+/// the `libmediandk.so` binding is a lazily-initialised top-level final that
+/// these functions never reference — so they run under plain `dart test` on any
+/// platform, unlike the on-device MediaCodec codec tests.
 library;
 
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/h264/mediacodec/mediacodec_helper.dart';
+import 'package:webdartc/codec/mediacodec/mediacodec_video.dart';
 
 /// Builds a packed I420 buffer where every sample is a deterministic function
 /// of its plane and (row, col), so conversions are easy to assert.

@@ -1,11 +1,11 @@
-/// H.264 video encoder backend powered by Android MediaCodec.
+/// VP8 video encoder backend powered by Android MediaCodec.
 ///
-/// Available on Android. Drives the generic [MediaCodecVideoEncoder] (a
-/// synchronous, pure-Dart-FFI helper over the NDK `AMediaCodec`) with the
-/// `video/avc` MIME and an H.264-specific [VideoUnitFinisher] that re-attaches
-/// the cached SPS/PPS to every key frame, and adapts it to the generic W3C-style
-/// [VideoEncoderBackend]. Mirrors the VideoToolbox encoder backend: I420 in,
-/// Annex B out, drained synchronously per `encode`.
+/// Available on Android when the device provides a VP8 encoder (probed at
+/// registration; falls back to the bundled libvpx otherwise). Drives the
+/// generic [MediaCodecVideoEncoder] with the `video/x-vnd.on2.vp8` MIME. VP8
+/// has no out-of-band codec config (no SPS/PPS), so the [VideoUnitFinisher]
+/// just reads MediaCodec's key-frame flag and passes the frame through
+/// unchanged. I420 in, VP8 frames out, drained synchronously per `encode`.
 library;
 
 import 'dart:typed_data';
@@ -14,58 +14,16 @@ import '../../media/video_frame.dart';
 import '../mediacodec/mediacodec_video.dart';
 import '../video_codec.dart';
 
-const String _h264Mime = 'video/avc';
+const String _vp8Mime = 'video/x-vnd.on2.vp8';
 
-// H.264 Annex B NAL parsing.
-const int _nalTypeMask = 0x1F;
-const int _nalTypeIdr = 5;
-const int _nalTypeSps = 7;
+/// VP8 carries no out-of-band config; the key frame is marked by MediaCodec's
+/// `BUFFER_FLAG_KEY_FRAME`, and the frame bytes are emitted as-is.
+EncodedVideoUnit _vp8FinishUnit(
+        Uint8List bytes, int flags, int ptsUs, Uint8List? csd) =>
+    EncodedVideoUnit(bytes, ptsUs, (flags & bufferFlagKeyFrame) != 0);
 
-/// Returns `(hasIdr, hasSps)` by scanning Annex B NAL unit types.
-(bool, bool) _scanNals(Uint8List b) {
-  var hasIdr = false, hasSps = false;
-  final n = b.length;
-  var i = 0;
-  while (i + 3 < n) {
-    // Match a 3- or 4-byte start code.
-    if (b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1) {
-      final t = b[i + 3] & _nalTypeMask;
-      if (t == _nalTypeIdr) hasIdr = true;
-      if (t == _nalTypeSps) hasSps = true;
-      i += 4;
-    } else if (i + 4 < n &&
-        b[i] == 0 &&
-        b[i + 1] == 0 &&
-        b[i + 2] == 0 &&
-        b[i + 3] == 1) {
-      final t = b[i + 4] & _nalTypeMask;
-      if (t == _nalTypeIdr) hasIdr = true;
-      if (t == _nalTypeSps) hasSps = true;
-      i += 5;
-    } else {
-      i++;
-    }
-  }
-  return (hasIdr, hasSps);
-}
-
-/// MediaCodec emits SPS/PPS once via the CODEC_CONFIG buffer and does not repeat
-/// them inline before each IDR; WebRTC peers need them with every key frame, so
-/// prepend the cached config (mirrors the VideoToolbox path).
-EncodedVideoUnit _h264FinishUnit(
-    Uint8List bytes, int flags, int ptsUs, Uint8List? csd) {
-  final (hasIdr, hasSps) = _scanNals(bytes);
-  if (hasIdr && !hasSps && csd != null) {
-    final merged = Uint8List(csd.length + bytes.length)
-      ..setRange(0, csd.length, csd)
-      ..setRange(csd.length, csd.length + bytes.length, bytes);
-    return EncodedVideoUnit(merged, ptsUs, true);
-  }
-  return EncodedVideoUnit(bytes, ptsUs, hasIdr);
-}
-
-/// MediaCodec-backed H.264 encoder.
-final class MediaCodecEncoderBackend implements VideoEncoderBackend {
+/// MediaCodec-backed VP8 encoder.
+final class MediaCodecVp8EncoderBackend implements VideoEncoderBackend {
   MediaCodecVideoEncoder? _enc;
   VideoDecoderConfig? _decoderConfig;
   int _width = 0;
@@ -88,21 +46,21 @@ final class MediaCodecEncoderBackend implements VideoEncoderBackend {
     _height = config.height;
     final fps = (config.framerate ?? 30).round();
     final bitrate = config.bitrate ?? 400000;
-    // Key frame every ~2 seconds. MediaCodec emits an IDR at start; periodic
-    // IDRs come from this interval. (Per-frame force-IDR is not wired in v1.)
+    // Key frame every ~2 seconds (periodic IDRs from this interval; MediaCodec
+    // also emits one at start). Per-frame force-keyframe is not wired in v1.
     const keyframeIntervalSec = 2;
 
     _enc = MediaCodecVideoEncoder.create(
-      mime: _h264Mime,
+      mime: _vp8Mime,
       width: _width,
       height: _height,
       bitrate: bitrate,
       fps: fps,
       keyframeIntervalSec: keyframeIntervalSec,
-      finishUnit: _h264FinishUnit,
+      finishUnit: _vp8FinishUnit,
     );
     _decoderConfig = VideoDecoderConfig(
-      codec: VideoCodecName.h264,
+      codec: VideoCodecName.vp8,
       codedWidth: _width,
       codedHeight: _height,
     );
