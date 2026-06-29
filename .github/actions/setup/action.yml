@@ -11,12 +11,18 @@ inputs:
   cache-hooks:
     description: 'Cache the native-asset build artifacts under dart/.dart_tool/hooks_runner/shared/webdartc/'
     default: 'true'
+  cache-key-suffix:
+    description: 'Extra suffix appended to the build-hook cache key. Needed when a job cross-compiles for a different target on the same host (e.g. an android-arm64 build on a Linux-X64 runner) so it does not collide with the host-native jobs key.'
+    default: ''
   cache-chrome:
     description: 'Cache the Chrome-for-Testing download under dart/.local/chrome_for_testing/'
     default: 'false'
   install-linux-deps:
     description: 'apt-install nasm + pkg-config on Linux runners (everything that runs the build hook needs them)'
     default: 'true'
+  install-android-ndk:
+    description: 'sdkmanager-install the Android NDK (pinned to flutter.ndkVersion) and export ANDROID_NDK_HOME, for jobs that cross-compile the build hook for Android'
+    default: 'false'
 
 runs:
   using: composite
@@ -65,10 +71,43 @@ runs:
       # ubuntu-latest. The build hook source-builds BoringSSL (crypto) +
       # libvpx + opus via vcpkg — which it clones + bootstraps itself — so no
       # libssl-dev. OpenH264 is downloaded prebuilt.
+      # binutils: libvpx's android-x86_64 configure probes the assembler with
+      # `readelf -WS` (build/make/configure.sh); without it the nasm check fails
+      # ("does not support section alignment"). Preinstalled on ubuntu-latest,
+      # pinned here so the android-x86_64 integration build can't regress on it.
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y nasm pkg-config
+        sudo apt-get install -y nasm pkg-config binutils
+
+    - if: ${{ inputs.install-android-ndk == 'true' }}
+      name: Pin Android NDK version
+      # Single source of truth for the NDK version — matches flutter.ndkVersion
+      # (flutter/example/android/app/build.gradle.kts). Bump here only. The cache
+      # + install steps below reference $NDK_VERSION / env.NDK_VERSION.
+      shell: bash
+      run: echo "NDK_VERSION=28.2.13676358" >> "$GITHUB_ENV"
+
+    - if: ${{ inputs.install-android-ndk == 'true' }}
+      name: Cache Android NDK
+      # Keyed by os + arch: the Linux and macOS (and per-arch) NDKs are
+      # different host toolchains, so they can't share a cache entry — same
+      # convention as the build-hook key below.
+      uses: actions/cache@v5
+      with:
+        path: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        key: ndk-${{ runner.os }}-${{ runner.arch }}-${{ env.NDK_VERSION }}
+
+    - if: ${{ inputs.install-android-ndk == 'true' }}
+      name: Install Android NDK
+      # Skip the sdkmanager install when the NDK is already present (cache hit,
+      # or preinstalled on the runner) — only the ANDROID_NDK_HOME export has to
+      # run every time, so the build hook + Gradle can resolve it.
+      shell: bash
+      run: |
+        ndk_dir="$ANDROID_HOME/ndk/$NDK_VERSION"
+        [ -d "$ndk_dir" ] || yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION"
+        echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
 
     - if: ${{ inputs.flavor == 'dart-analyze' || inputs.flavor == 'dart' }}
       name: Detach from workspace
@@ -104,7 +143,7 @@ runs:
         # macOS/Linux/Windows codec source (and the BoringSSL crypto port), so
         # hashing them invalidates the cache exactly when a vcpkg-pinned
         # version is bumped.
-        key: hooks-${{ runner.os }}-${{ runner.arch }}-${{ steps.build_cache_key.outputs.submods }}-${{ hashFiles('dart/hook/build.dart', 'dart/src/**', 'dart/tool/**/vcpkg.json', 'dart/tool/vcpkg_triplets/**') }}
+        key: hooks-${{ runner.os }}-${{ runner.arch }}-${{ steps.build_cache_key.outputs.submods }}-${{ hashFiles('dart/hook/build.dart', 'dart/src/**', 'dart/tool/**/vcpkg.json', 'dart/tool/vcpkg_triplets/**') }}${{ inputs.cache-key-suffix }}
 
     - if: ${{ inputs.cache-chrome == 'true' }}
       name: Cache Chrome for Testing

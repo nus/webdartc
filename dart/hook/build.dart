@@ -607,11 +607,17 @@ Map<String, String> _androidLibvpxEnv(BuildInput input, Architecture arch) {
   final triple = _androidClangTriple(arch);
   String bin(String exe) => ndk.binDir.resolve(exe).toFilePath();
   final cc = bin('$triple$api-clang');
+  // x86/x86_64 SIMD ships as nasm-syntax `.asm`; libvpx assembles it with
+  // `$(AS) -f elf64`, which clang's integrated assembler can't parse ("unknown
+  // argument: -f"). Point AS at nasm (resolved from PATH — the CI runner apt-
+  // installs it). arm64/armv7 have no nasm `.asm` (NEON intrinsics + ads2gas
+  // ARM asm go through the C compiler), so they keep clang.
+  final isX86 = arch == Architecture.x64 || arch == Architecture.ia32;
   return {
     'CC': cc,
     'CXX': bin('$triple$api-clang++'),
     'LD': cc,
-    'AS': cc, // clang's integrated assembler
+    'AS': isX86 ? 'nasm' : cc,
     'AR': bin('llvm-ar'),
     'STRIP': bin('llvm-strip'),
     'NM': bin('llvm-nm'),
