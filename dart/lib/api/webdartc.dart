@@ -19,7 +19,11 @@ import 'setting_engine.dart';
 /// ```
 final class Webdartc {
   final SettingEngine settingEngine;
-  final MediaEngine mediaEngine;
+
+  /// Codecs advertised in SDP. When null, each [PeerConnection] uses
+  /// [MediaEngine.forPlatform] (the defaults narrowed to what this platform can
+  /// encode + decode). Pass an explicit engine to override.
+  final MediaEngine? mediaEngine;
 
   /// Whether each created [PeerConnection] auto-registers the bundled codec
   /// backends (VP8, VP9, H.264, Opus) so the W3C receive path decodes out of
@@ -29,7 +33,7 @@ final class Webdartc {
 
   const Webdartc({
     this.settingEngine = const SettingEngine(),
-    this.mediaEngine = const MediaEngine(),
+    this.mediaEngine,
     this.autoRegisterCodecs = true,
   });
 

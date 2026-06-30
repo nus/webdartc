@@ -179,9 +179,9 @@ final class PeerConnection {
   PeerConnection({
     required this.configuration,
     this.settingEngine = const SettingEngine(),
-    this.mediaEngine = const MediaEngine(),
+    MediaEngine? mediaEngine,
     bool autoRegisterCodecs = true,
-  }) {
+  }) : mediaEngine = mediaEngine ?? MediaEngine.forPlatform() {
     // Register the bundled codec backends so the W3C receive path
     // (`onTrack` → `track.onVideoFrame`) decodes out of the box. Only stores
     // factory closures — native libraries load lazily on first use, so this

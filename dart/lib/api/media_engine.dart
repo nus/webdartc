@@ -1,3 +1,4 @@
+import '../codec/platform_codecs.dart';
 import '../sdp/parser.dart' show RtpCodec;
 
 /// Catalog of RTP codec capabilities that this peer is willing to negotiate
@@ -41,6 +42,24 @@ final class MediaEngine {
   /// to register every codec capability explicitly.
   static const MediaEngine empty =
       MediaEngine(audioCodecs: [], videoCodecs: []);
+
+  /// The default codecs, narrowed to those this platform can actually encode
+  /// *and* decode (see [platformCodecAvailable]). On Android a codec without a
+  /// MediaCodec component — e.g. Opus on API < 29 — is dropped here so it never
+  /// reaches the SDP offer/answer; elsewhere this equals the full defaults.
+  /// This is the engine [PeerConnection] uses when the app doesn't supply one;
+  /// an app that passes its own [MediaEngine] is taken verbatim (so
+  /// packet-passthrough advertising is unaffected).
+  factory MediaEngine.forPlatform() => MediaEngine(
+        videoCodecs: [
+          for (final c in defaultVideoCodecs)
+            if (platformCodecAvailable(c.name)) c,
+        ],
+        audioCodecs: [
+          for (final c in defaultAudioCodecs)
+            if (platformCodecAvailable(c.name)) c,
+        ],
+      );
 
   static const List<RtpCodec> defaultVideoCodecs = [
     RtpCodec(
