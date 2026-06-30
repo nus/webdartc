@@ -14,10 +14,7 @@ import 'dart:ffi' as ffi;
 
 import 'package:ffi/ffi.dart' as pkgffi;
 
-import 'bindings.g.dart';
-
-final MediaCodecBindings _mc =
-    MediaCodecBindings(ffi.DynamicLibrary.open('libmediandk.so'));
+import 'mediacodec_lib.dart';
 
 /// Whether the device has a MediaCodec encoder for [mime]
 /// (e.g. `video/x-vnd.on2.vp8`, `audio/opus`).
@@ -35,11 +32,11 @@ bool _probe(String mime, {required bool encoder}) {
   try {
     final m = mime.toNativeUtf8().cast<ffi.Char>();
     final codec = encoder
-        ? _mc.AMediaCodec_createEncoderByType(m)
-        : _mc.AMediaCodec_createDecoderByType(m);
+        ? mediaCodecLib.AMediaCodec_createEncoderByType(m)
+        : mediaCodecLib.AMediaCodec_createDecoderByType(m);
     pkgffi.malloc.free(m);
     if (codec == ffi.nullptr) return false;
-    _mc.AMediaCodec_delete(codec);
+    mediaCodecLib.AMediaCodec_delete(codec);
     return true;
   } catch (_) {
     return false;

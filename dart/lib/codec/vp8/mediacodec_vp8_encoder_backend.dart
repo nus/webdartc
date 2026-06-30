@@ -12,9 +12,8 @@ import 'dart:typed_data';
 
 import '../../media/video_frame.dart';
 import '../mediacodec/mediacodec_video.dart';
+import '../mediacodec/mime_types.dart';
 import '../video_codec.dart';
-
-const String _vp8Mime = 'video/x-vnd.on2.vp8';
 
 /// VP8 carries no out-of-band config; the key frame is marked by MediaCodec's
 /// `BUFFER_FLAG_KEY_FRAME`, and the frame bytes are emitted as-is.
@@ -51,7 +50,7 @@ final class MediaCodecVp8EncoderBackend implements VideoEncoderBackend {
     const keyframeIntervalSec = 2;
 
     _enc = MediaCodecVideoEncoder.create(
-      mime: _vp8Mime,
+      mime: vp8Mime,
       width: _width,
       height: _height,
       bitrate: bitrate,

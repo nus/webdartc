@@ -1,25 +1,25 @@
-/// H.264 video decoder backend powered by Android MediaCodec.
+/// Generic video decoder backend powered by Android MediaCodec.
 ///
-/// Available on Android. Drives the generic [MediaCodecVideoDecoder] with the
-/// `video/avc` MIME and adapts it to the generic [VideoDecoderBackend]. The
-/// decoder is configured without csd — SPS/PPS arrive in-band on key frames
-/// (the MediaCodec encoder prepends them) and MediaCodec parses them
-/// automatically. Output is converted to packed I420, draining synchronously
-/// per `decode`.
+/// Available on Android. Drives the [MediaCodecVideoDecoder] for a given MIME
+/// (`video/avc` for H.264, `video/x-vnd.on2.vp8` for VP8, …) and adapts it to
+/// the W3C-style [VideoDecoderBackend]. Decoding is codec-agnostic — compressed
+/// frames in (H.264 SPS/PPS arrive in-band on key frames; VP8 frames are
+/// self-describing), packed I420 out, drained synchronously per `decode` — so a
+/// single class serves every MediaCodec video codec, parameterised only by MIME.
 library;
 
 import '../../media/video_frame.dart';
-import '../mediacodec/mediacodec_video.dart';
 import '../video_codec.dart';
+import 'mediacodec_video.dart';
 
-const String _h264Mime = 'video/avc';
-
-/// MediaCodec-backed H.264 decoder.
-final class MediaCodecDecoderBackend implements VideoDecoderBackend {
+final class MediaCodecVideoDecoderBackend implements VideoDecoderBackend {
+  final String _mime;
   MediaCodecVideoDecoder? _dec;
 
   void Function(VideoFrame)? _onOutput;
   void Function(Object)? _onError;
+
+  MediaCodecVideoDecoderBackend(this._mime);
 
   @override
   set onOutput(void Function(VideoFrame) cb) => _onOutput = cb;
@@ -30,10 +30,10 @@ final class MediaCodecDecoderBackend implements VideoDecoderBackend {
   @override
   void configure(VideoDecoderConfig config) {
     // Nominal dimensions; the decoder re-reads the real size from the output
-    // format once the first key frame's SPS is parsed.
+    // format once the first key frame is parsed.
     final w = config.codedWidth ?? 640;
     final h = config.codedHeight ?? 480;
-    _dec = MediaCodecVideoDecoder.create(mime: _h264Mime, width: w, height: h);
+    _dec = MediaCodecVideoDecoder.create(mime: _mime, width: w, height: h);
   }
 
   @override

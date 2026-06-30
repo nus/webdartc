@@ -12,9 +12,8 @@ import 'dart:typed_data';
 
 import '../../media/video_frame.dart';
 import '../mediacodec/mediacodec_video.dart';
+import '../mediacodec/mime_types.dart';
 import '../video_codec.dart';
-
-const String _h264Mime = 'video/avc';
 
 // H.264 Annex B NAL parsing.
 const int _nalTypeMask = 0x1F;
@@ -93,7 +92,7 @@ final class MediaCodecEncoderBackend implements VideoEncoderBackend {
     const keyframeIntervalSec = 2;
 
     _enc = MediaCodecVideoEncoder.create(
-      mime: _h264Mime,
+      mime: h264Mime,
       width: _width,
       height: _height,
       bitrate: bitrate,

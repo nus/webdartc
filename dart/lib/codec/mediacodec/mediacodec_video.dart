@@ -29,6 +29,7 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart' as pkgffi;
 
 import 'bindings.g.dart';
+import 'mediacodec_lib.dart';
 
 // ── MediaCodec constants (stable Android values; safe to hardcode) ──────────
 // These are android.media.MediaCodecInfo.CodecCapabilities / MediaCodec
@@ -55,10 +56,8 @@ const int _infoTryAgainLater = -1;
 const int _inputTimeoutUs = 16000;
 const int _outputTimeoutUs = 0;
 
-// ── Library + bindings (loaded lazily on first use; Android only) ────────────
-
-final MediaCodecBindings _mc =
-    MediaCodecBindings(ffi.DynamicLibrary.open('libmediandk.so'));
+// The NDK MediaCodec bindings (libmediandk.so) — the single shared handle from
+// mediacodec_lib.dart, loaded lazily on first use (Android only).
 
 bool _ok(media_status_t s) => s == media_status_t.AMEDIA_OK;
 
@@ -214,7 +213,7 @@ final class MediaCodecVideoEncoder {
       _colorFormatYUV420Planar,
     ]) {
       final mimeC = _utf8(mime);
-      final codec = _mc.AMediaCodec_createEncoderByType(mimeC);
+      final codec = mediaCodecLib.AMediaCodec_createEncoderByType(mimeC);
       pkgffi.malloc.free(mimeC);
       if (codec == ffi.nullptr) {
         lastErr = 'AMediaCodec_createEncoderByType($mime) returned null';
@@ -222,17 +221,17 @@ final class MediaCodecVideoEncoder {
       }
       final fmt = _buildEncoderFormat(
           mime, width, height, bitrate, fps, keyframeIntervalSec, color);
-      final cfg = _mc.AMediaCodec_configure(
+      final cfg = mediaCodecLib.AMediaCodec_configure(
           codec, fmt, ffi.nullptr, ffi.nullptr, _configureFlagEncode);
-      _mc.AMediaFormat_delete(fmt);
+      mediaCodecLib.AMediaFormat_delete(fmt);
       if (!_ok(cfg)) {
         lastErr = 'AMediaCodec_configure failed (color=$color): $cfg';
-        _mc.AMediaCodec_delete(codec);
+        mediaCodecLib.AMediaCodec_delete(codec);
         continue;
       }
-      if (!_ok(_mc.AMediaCodec_start(codec))) {
+      if (!_ok(mediaCodecLib.AMediaCodec_start(codec))) {
         lastErr = 'AMediaCodec_start failed (color=$color)';
-        _mc.AMediaCodec_delete(codec);
+        mediaCodecLib.AMediaCodec_delete(codec);
         continue;
       }
       return MediaCodecVideoEncoder._(codec, width, height, color, finishUnit);
@@ -242,30 +241,30 @@ final class MediaCodecVideoEncoder {
 
   static ffi.Pointer<AMediaFormat> _buildEncoderFormat(String mime, int width,
       int height, int bitrate, int fps, int keyframeIntervalSec, int color) {
-    final fmt = _mc.AMediaFormat_new();
+    final fmt = mediaCodecLib.AMediaFormat_new();
     final mimeC = _utf8(mime);
-    _mc.AMediaFormat_setString(fmt, _mc.AMEDIAFORMAT_KEY_MIME, mimeC);
+    mediaCodecLib.AMediaFormat_setString(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_MIME, mimeC);
     pkgffi.malloc.free(mimeC);
-    _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_WIDTH, width);
-    _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_HEIGHT, height);
-    _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_BIT_RATE, bitrate);
-    _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_FRAME_RATE, fps);
-    _mc.AMediaFormat_setInt32(
-        fmt, _mc.AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, keyframeIntervalSec);
-    _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_COLOR_FORMAT, color);
+    mediaCodecLib.AMediaFormat_setInt32(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_WIDTH, width);
+    mediaCodecLib.AMediaFormat_setInt32(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_HEIGHT, height);
+    mediaCodecLib.AMediaFormat_setInt32(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_BIT_RATE, bitrate);
+    mediaCodecLib.AMediaFormat_setInt32(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_FRAME_RATE, fps);
+    mediaCodecLib.AMediaFormat_setInt32(
+        fmt, mediaCodecLib.AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, keyframeIntervalSec);
+    mediaCodecLib.AMediaFormat_setInt32(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_COLOR_FORMAT, color);
     return fmt;
   }
 
   /// Encodes one packed-I420 frame and returns any encoded units now available
   /// (the synchronous codec may emit zero or more per call).
   List<EncodedVideoUnit> encode(Uint8List i420, int ptsUs) {
-    final idx = _mc.AMediaCodec_dequeueInputBuffer(_codec, _inputTimeoutUs);
+    final idx = mediaCodecLib.AMediaCodec_dequeueInputBuffer(_codec, _inputTimeoutUs);
     if (idx < 0) return const []; // codec busy — skip this frame
     final frameSize = _width * _height * 3 ~/ 2;
-    final buf = _mc.AMediaCodec_getInputBuffer(_codec, idx, _sizePtr);
+    final buf = mediaCodecLib.AMediaCodec_getInputBuffer(_codec, idx, _sizePtr);
     if (buf == ffi.nullptr || _sizePtr.value < frameSize) {
       // Can't fill the buffer; queue an empty one to release the slot.
-      _mc.AMediaCodec_queueInputBuffer(_codec, idx, 0, 0, ptsUs, 0);
+      mediaCodecLib.AMediaCodec_queueInputBuffer(_codec, idx, 0, 0, ptsUs, 0);
       return const [];
     }
     // Convert straight into the native input buffer — no intermediate copy.
@@ -275,7 +274,7 @@ final class MediaCodecVideoEncoder {
     } else {
       dst.setAll(0, i420); // planar I420 needs no conversion
     }
-    _mc.AMediaCodec_queueInputBuffer(_codec, idx, 0, frameSize, ptsUs, 0);
+    mediaCodecLib.AMediaCodec_queueInputBuffer(_codec, idx, 0, frameSize, ptsUs, 0);
     return _drain();
   }
 
@@ -283,10 +282,10 @@ final class MediaCodecVideoEncoder {
     final out = <EncodedVideoUnit>[];
     while (true) {
       final idx =
-          _mc.AMediaCodec_dequeueOutputBuffer(_codec, _info, _outputTimeoutUs);
+          mediaCodecLib.AMediaCodec_dequeueOutputBuffer(_codec, _info, _outputTimeoutUs);
       if (idx == _infoTryAgainLater) break;
       if (idx < 0) continue; // FORMAT/BUFFERS changed — nothing to read
-      final buf = _mc.AMediaCodec_getOutputBuffer(_codec, idx, _sizePtr);
+      final buf = mediaCodecLib.AMediaCodec_getOutputBuffer(_codec, idx, _sizePtr);
       final off = _info.ref.offset;
       final len = _info.ref.size;
       final flags = _info.ref.flags;
@@ -299,14 +298,14 @@ final class MediaCodecVideoEncoder {
           out.add(_finishUnit(bytes, flags, pts, _csd));
         }
       }
-      _mc.AMediaCodec_releaseOutputBuffer(_codec, idx, false);
+      mediaCodecLib.AMediaCodec_releaseOutputBuffer(_codec, idx, false);
     }
     return out;
   }
 
   void close() {
-    _mc.AMediaCodec_stop(_codec);
-    _mc.AMediaCodec_delete(_codec);
+    mediaCodecLib.AMediaCodec_stop(_codec);
+    mediaCodecLib.AMediaCodec_delete(_codec);
     pkgffi.calloc.free(_sizePtr);
     pkgffi.calloc.free(_info);
   }
@@ -340,26 +339,26 @@ final class MediaCodecVideoDecoder {
     required int height,
   }) {
     final mimeC = _utf8(mime);
-    final codec = _mc.AMediaCodec_createDecoderByType(mimeC);
+    final codec = mediaCodecLib.AMediaCodec_createDecoderByType(mimeC);
     pkgffi.malloc.free(mimeC);
     if (codec == ffi.nullptr) {
       throw StateError('AMediaCodec_createDecoderByType($mime) returned null');
     }
-    final fmt = _mc.AMediaFormat_new();
+    final fmt = mediaCodecLib.AMediaFormat_new();
     final m2 = _utf8(mime);
-    _mc.AMediaFormat_setString(fmt, _mc.AMEDIAFORMAT_KEY_MIME, m2);
+    mediaCodecLib.AMediaFormat_setString(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_MIME, m2);
     pkgffi.malloc.free(m2);
-    _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_WIDTH, width);
-    _mc.AMediaFormat_setInt32(fmt, _mc.AMEDIAFORMAT_KEY_HEIGHT, height);
+    mediaCodecLib.AMediaFormat_setInt32(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_WIDTH, width);
+    mediaCodecLib.AMediaFormat_setInt32(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_HEIGHT, height);
     final cfg =
-        _mc.AMediaCodec_configure(codec, fmt, ffi.nullptr, ffi.nullptr, 0);
-    _mc.AMediaFormat_delete(fmt);
+        mediaCodecLib.AMediaCodec_configure(codec, fmt, ffi.nullptr, ffi.nullptr, 0);
+    mediaCodecLib.AMediaFormat_delete(fmt);
     if (!_ok(cfg)) {
-      _mc.AMediaCodec_delete(codec);
+      mediaCodecLib.AMediaCodec_delete(codec);
       throw StateError('AMediaCodec_configure (decoder, $mime) failed: $cfg');
     }
-    if (!_ok(_mc.AMediaCodec_start(codec))) {
-      _mc.AMediaCodec_delete(codec);
+    if (!_ok(mediaCodecLib.AMediaCodec_start(codec))) {
+      mediaCodecLib.AMediaCodec_delete(codec);
       throw StateError('AMediaCodec_start (decoder, $mime) failed');
     }
     return MediaCodecVideoDecoder._(codec, width, height);
@@ -367,15 +366,15 @@ final class MediaCodecVideoDecoder {
 
   /// Decodes one compressed access unit, returning any frames now available.
   List<DecodedI420> decode(Uint8List frame, int ptsUs) {
-    final idx = _mc.AMediaCodec_dequeueInputBuffer(_codec, _inputTimeoutUs);
+    final idx = mediaCodecLib.AMediaCodec_dequeueInputBuffer(_codec, _inputTimeoutUs);
     if (idx >= 0) {
-      final buf = _mc.AMediaCodec_getInputBuffer(_codec, idx, _sizePtr);
+      final buf = mediaCodecLib.AMediaCodec_getInputBuffer(_codec, idx, _sizePtr);
       if (buf != ffi.nullptr && _sizePtr.value >= frame.length) {
         buf.asTypedList(frame.length).setAll(0, frame);
-        _mc.AMediaCodec_queueInputBuffer(
+        mediaCodecLib.AMediaCodec_queueInputBuffer(
             _codec, idx, 0, frame.length, ptsUs, 0);
       } else {
-        _mc.AMediaCodec_queueInputBuffer(_codec, idx, 0, 0, ptsUs, 0);
+        mediaCodecLib.AMediaCodec_queueInputBuffer(_codec, idx, 0, 0, ptsUs, 0);
       }
     }
     return _drain();
@@ -385,7 +384,7 @@ final class MediaCodecVideoDecoder {
     final out = <DecodedI420>[];
     while (true) {
       final idx =
-          _mc.AMediaCodec_dequeueOutputBuffer(_codec, _info, _outputTimeoutUs);
+          mediaCodecLib.AMediaCodec_dequeueOutputBuffer(_codec, _info, _outputTimeoutUs);
       if (idx == _infoTryAgainLater) break;
       if (idx == _infoOutputFormatChanged) {
         _readOutputFormat();
@@ -394,21 +393,21 @@ final class MediaCodecVideoDecoder {
       if (idx < 0) continue; // OUTPUT_BUFFERS_CHANGED — nothing to read
       final frame = _readFrame(idx, _info.ref);
       if (frame != null) out.add(frame);
-      _mc.AMediaCodec_releaseOutputBuffer(_codec, idx, false);
+      mediaCodecLib.AMediaCodec_releaseOutputBuffer(_codec, idx, false);
     }
     return out;
   }
 
   void _readOutputFormat() {
-    final fmt = _mc.AMediaCodec_getOutputFormat(_codec);
+    final fmt = mediaCodecLib.AMediaCodec_getOutputFormat(_codec);
     if (fmt == ffi.nullptr) return;
-    _width = _getInt(fmt, _mc.AMEDIAFORMAT_KEY_WIDTH, _width);
-    _height = _getInt(fmt, _mc.AMEDIAFORMAT_KEY_HEIGHT, _height);
+    _width = _getInt(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_WIDTH, _width);
+    _height = _getInt(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_HEIGHT, _height);
     _colorFormat =
-        _getInt(fmt, _mc.AMEDIAFORMAT_KEY_COLOR_FORMAT, _colorFormat);
-    _stride = _getInt(fmt, _mc.AMEDIAFORMAT_KEY_STRIDE, _width);
-    _sliceHeight = _getInt(fmt, _mc.AMEDIAFORMAT_KEY_SLICE_HEIGHT, _height);
-    _mc.AMediaFormat_delete(fmt);
+        _getInt(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_COLOR_FORMAT, _colorFormat);
+    _stride = _getInt(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_STRIDE, _width);
+    _sliceHeight = _getInt(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_SLICE_HEIGHT, _height);
+    mediaCodecLib.AMediaFormat_delete(fmt);
   }
 
   DecodedI420? _readFrame(int idx, AMediaCodecBufferInfo info) {
@@ -417,7 +416,7 @@ final class MediaCodecVideoDecoder {
     if (_stride == 0) _readOutputFormat(); // first frame before a format event
     final stride = _stride > 0 ? _stride : _width;
     final sliceHeight = _sliceHeight > 0 ? _sliceHeight : _height;
-    final buf = _mc.AMediaCodec_getOutputBuffer(_codec, idx, _sizePtr);
+    final buf = mediaCodecLib.AMediaCodec_getOutputBuffer(_codec, idx, _sizePtr);
     if (buf == ffi.nullptr) return null;
     final src = buf.asTypedList(info.offset + len);
     final view = info.offset == 0
@@ -441,13 +440,13 @@ final class MediaCodecVideoDecoder {
 
   int _getInt(ffi.Pointer<AMediaFormat> fmt, ffi.Pointer<ffi.Char> key,
       int fallback) {
-    final got = _mc.AMediaFormat_getInt32(fmt, key, _int32);
+    final got = mediaCodecLib.AMediaFormat_getInt32(fmt, key, _int32);
     return got ? _int32.value : fallback;
   }
 
   void close() {
-    _mc.AMediaCodec_stop(_codec);
-    _mc.AMediaCodec_delete(_codec);
+    mediaCodecLib.AMediaCodec_stop(_codec);
+    mediaCodecLib.AMediaCodec_delete(_codec);
     pkgffi.calloc.free(_sizePtr);
     pkgffi.calloc.free(_info);
     pkgffi.calloc.free(_int32);

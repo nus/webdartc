@@ -11,8 +11,7 @@ library;
 import 'dart:io' show Platform;
 
 import 'mediacodec/mediacodec_probe.dart';
-
-const String _vp8Mime = 'video/x-vnd.on2.vp8';
+import 'mediacodec/mime_types.dart';
 
 /// Probe results are stable for the process lifetime, so cache them: each probe
 /// instantiates and destroys a MediaCodec, which we only want to do once.
@@ -40,7 +39,7 @@ bool _compute(String codec) {
     case 'vp9':
       return true;
     case 'vp8':
-      return mediaCodecHasEncoder(_vp8Mime) && mediaCodecHasDecoder(_vp8Mime);
+      return mediaCodecHasEncoder(vp8Mime) && mediaCodecHasDecoder(vp8Mime);
     // Opus still uses the bundled libopus, so it is always available for now.
     // When Opus moves to MediaCodec-only this becomes:
     //   mediaCodecHasEncoder(_opusMime) && mediaCodecHasDecoder(_opusMime)

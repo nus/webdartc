@@ -170,10 +170,17 @@ final class PeerConnection {
   /// callers.
   final SettingEngine settingEngine;
 
-  /// Codec capabilities to advertise in offer / answer SDP. Defaults to
-  /// VP8 + H.264 + Opus. Independent from the encoder/decoder backend
-  /// registry — register a codec here even when the application handles
-  /// RTP payloads directly via [onRtpPacket] / [RtpSender.sendRtp].
+  /// Codec capabilities to advertise in offer / answer SDP. When the
+  /// constructor is given none, defaults to [MediaEngine.forPlatform] — VP8 +
+  /// H.264 + Opus, narrowed to what this platform can actually encode/decode
+  /// (e.g. VP8 is dropped on an Android device whose MediaCodec lacks it).
+  ///
+  /// Independent from the encoder/decoder backend registry — a custom engine is
+  /// taken verbatim and is NOT availability-gated, so an app can advertise a
+  /// codec it forwards as raw RTP via [onRtpPacket] / [RtpSender.sendRtp]
+  /// without registering a backend. The flip side: advertising a codec that has
+  /// no registered backend negotiates fine but then fails to decode incoming
+  /// media — drive such codecs through the raw-RTP surface, not [onTrack].
   final MediaEngine mediaEngine;
 
   PeerConnection({

@@ -6,10 +6,11 @@ import 'dart:io' show Platform;
 import 'package:ffi/ffi.dart' as pkgffi;
 
 import '../codec_registry.dart';
+import '../mediacodec/mediacodec_video_decoder_backend.dart';
+import '../mediacodec/mime_types.dart';
 import '../platform_codecs.dart';
 import '../video_codec.dart';
 import '_libvpx.dart' as libvpx;
-import 'mediacodec_vp8_decoder_backend.dart';
 import 'mediacodec_vp8_encoder_backend.dart';
 import 'vp8_decoder_backend.dart';
 import 'vp8_encoder_backend.dart';
@@ -27,7 +28,7 @@ void registerVp8Codec() {
       CodecRegistry.registerVideoEncoder(
           VideoCodecName.vp8, MediaCodecVp8EncoderBackend.new);
       CodecRegistry.registerVideoDecoder(
-          VideoCodecName.vp8, MediaCodecVp8DecoderBackend.new);
+          VideoCodecName.vp8, () => MediaCodecVideoDecoderBackend(vp8Mime));
     }
   } else {
     CodecRegistry.registerVideoEncoder(
