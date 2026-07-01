@@ -56,9 +56,11 @@ import '../../../dart/test/codec/opus_mediacodec_multistream_test.dart'
     as opus_mediacodec_multistream;
 import '../../../dart/test/codec/vp9_roundtrip_test.dart' as vp9_roundtrip;
 import '../../../dart/test/codec/vp9_version_test.dart' as vp9_version;
-import '../../../dart/test/codec/opus_test.dart' as opus;
-import '../../../dart/test/codec/opus_libopus_update_test.dart'
-    as opus_libopus_update;
+// Opus encode/decode is Android MediaCodec (see registerOpusCodec), not libopus,
+// so the libopus Opus tests (opus_test / opus_libopus_update — round-trip,
+// per-frame emit, multi-sample-rate SNR) are host-only: they assume libopus'
+// synchronous behaviour, which MediaCodec doesn't match. On-device Opus is
+// covered by opus_mediacodec_{roundtrip,multistream} above.
 
 import '../../../dart/test/peer_connection/data_channel_open_test.dart'
     as data_channel_open;
@@ -93,7 +95,8 @@ void main() {
   group('crypto/tls_prf', tls_prf.main);
   group('crypto/x25519', x25519.main);
 
-  // codec — exercises the NDK cross-compiled libvpx / libopus on Android.
+  // codec — VP8/H.264/Opus go through Android MediaCodec here; VP9 still
+  // exercises the NDK cross-compiled libvpx.
   group('codec/vp8_version', vp8_version.main);
   group('codec/vp9_multistream', vp9_multistream.main);
   // H.264 via Android MediaCodec (Android-only; host `dart test` skips these).
@@ -106,8 +109,6 @@ void main() {
   group('codec/opus_mediacodec_multistream', opus_mediacodec_multistream.main);
   group('codec/vp9_roundtrip', vp9_roundtrip.main);
   group('codec/vp9_version', vp9_version.main);
-  group('codec/opus', opus.main);
-  group('codec/opus_libopus_update', opus_libopus_update.main);
 
   // peer_connection — full ICE → DTLS → SCTP over dart:io UDP (loopback),
   // driving the platform crypto backend end-to-end.
