@@ -32,14 +32,13 @@ import '../../../dart/test/crypto/sha_test.dart' as sha;
 import '../../../dart/test/crypto/tls_prf_test.dart' as tls_prf;
 import '../../../dart/test/crypto/x25519_test.dart' as x25519;
 
-import '../../../dart/test/codec/vp8_decoder_test.dart' as vp8_decoder;
-import '../../../dart/test/codec/vp8_encoder_test.dart' as vp8_encoder;
-import '../../../dart/test/codec/vp8_encoder_multiframe_test.dart'
-    as vp8_encoder_multiframe;
-import '../../../dart/test/codec/vp8_multistream_test.dart' as vp8_multistream;
-import '../../../dart/test/codec/vp8_roundtrip_test.dart' as vp8_roundtrip;
+// VP8 encode/decode is Android MediaCodec (see registerVp8Codec), not libvpx, so
+// the libvpx VP8 behaviour tests (roundtrip / multistream / encoder / decoder /
+// wire-format) are host-only — they assume libvpx's synchronous 1:1 emit, which
+// MediaCodec's buffered pipeline doesn't match. On-device VP8 is covered by
+// vp8_mediacodec_roundtrip below. vp8_version still applies: it loads the bundled
+// libvpx directly (still built for VP9).
 import '../../../dart/test/codec/vp8_version_test.dart' as vp8_version;
-import '../../../dart/test/codec/vp8_wire_format_test.dart' as vp8_wire_format;
 import '../../../dart/test/codec/vp9_multistream_test.dart' as vp9_multistream;
 import '../../../dart/test/codec/mediacodec_color_test.dart'
     as mediacodec_color;
@@ -89,13 +88,7 @@ void main() {
   group('crypto/x25519', x25519.main);
 
   // codec — exercises the NDK cross-compiled libvpx / libopus on Android.
-  group('codec/vp8_decoder', vp8_decoder.main);
-  group('codec/vp8_encoder', vp8_encoder.main);
-  group('codec/vp8_encoder_multiframe', vp8_encoder_multiframe.main);
-  group('codec/vp8_multistream', vp8_multistream.main);
-  group('codec/vp8_roundtrip', vp8_roundtrip.main);
   group('codec/vp8_version', vp8_version.main);
-  group('codec/vp8_wire_format', vp8_wire_format.main);
   group('codec/vp9_multistream', vp9_multistream.main);
   // H.264 via Android MediaCodec (Android-only; host `dart test` skips these).
   group('codec/mediacodec_color', mediacodec_color.main);
