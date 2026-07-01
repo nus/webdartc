@@ -31,35 +31,22 @@ import 'package:ffi/ffi.dart' as pkgffi;
 import 'bindings.g.dart';
 import 'mediacodec_lib.dart';
 
-// ── MediaCodec constants (stable Android values; safe to hardcode) ──────────
-// These are android.media.MediaCodecInfo.CodecCapabilities / MediaCodec
-// constants that the NDK does not export as symbols.
+// Video-specific MediaCodec constants (stable Android values; safe to hardcode).
+// The shared ones (configureFlagEncode, bufferFlagCodecConfig, the timeouts,
+// mediaCodecOk / mediaCodecUtf8) come from mediacodec_lib.dart.
 
 const int _colorFormatYUV420Planar = 19; // I420 (Y, U, V planes)
 const int _colorFormatYUV420SemiPlanar = 21; // NV12 (Y, interleaved UV)
 const int _colorFormatYUV420Flexible = 0x7F420888;
 
-const int _configureFlagEncode = 1;
-const int _bufferFlagCodecConfig = 2; // codec config blob (e.g. H.264 SPS/PPS)
-
 /// `MediaCodec.BUFFER_FLAG_KEY_FRAME` — set on encoded key-frame output buffers.
 /// Codecs without an out-of-band config (VP8/VP9) use this to mark key frames.
 const int bufferFlagKeyFrame = 1;
 
-// AMediaCodec_dequeueOutputBuffer sentinel indices.
+// AMediaCodec_dequeueOutputBuffer sentinel: FORMAT_CHANGED (-2). TRY_AGAIN_LATER
+// (-1) is `infoTryAgainLater` from mediacodec_lib.dart; OUTPUT_BUFFERS_CHANGED
+// (-3) is handled by the `< 0` checks.
 const int _infoOutputFormatChanged = -2;
-// -1 (TRY_AGAIN_LATER) / -3 (OUTPUT_BUFFERS_CHANGED) handled by `< 0` checks.
-const int _infoTryAgainLater = -1;
-
-// Input/output dequeue timeouts (microseconds). Output drains non-blocking
-// (0); input waits briefly so a momentarily-busy codec doesn't drop frames.
-const int _inputTimeoutUs = 16000;
-const int _outputTimeoutUs = 0;
-
-// The NDK MediaCodec bindings (libmediandk.so) — the single shared handle from
-// mediacodec_lib.dart, loaded lazily on first use (Android only).
-
-bool _ok(media_status_t s) => s == media_status_t.AMEDIA_OK;
 
 // ── Output value types ──────────────────────────────────────────────────────
 
@@ -172,10 +159,6 @@ Uint8List nv12ToI420(
   return out;
 }
 
-// ── Small FFI scratch helpers ───────────────────────────────────────────────
-
-ffi.Pointer<ffi.Char> _utf8(String s) => s.toNativeUtf8().cast<ffi.Char>();
-
 // ── Encoder ─────────────────────────────────────────────────────────────────
 
 final class MediaCodecVideoEncoder {
@@ -212,7 +195,7 @@ final class MediaCodecVideoEncoder {
       _colorFormatYUV420SemiPlanar,
       _colorFormatYUV420Planar,
     ]) {
-      final mimeC = _utf8(mime);
+      final mimeC = mediaCodecUtf8(mime);
       final codec = mediaCodecLib.AMediaCodec_createEncoderByType(mimeC);
       pkgffi.malloc.free(mimeC);
       if (codec == ffi.nullptr) {
@@ -222,14 +205,14 @@ final class MediaCodecVideoEncoder {
       final fmt = _buildEncoderFormat(
           mime, width, height, bitrate, fps, keyframeIntervalSec, color);
       final cfg = mediaCodecLib.AMediaCodec_configure(
-          codec, fmt, ffi.nullptr, ffi.nullptr, _configureFlagEncode);
+          codec, fmt, ffi.nullptr, ffi.nullptr, configureFlagEncode);
       mediaCodecLib.AMediaFormat_delete(fmt);
-      if (!_ok(cfg)) {
+      if (!mediaCodecOk(cfg)) {
         lastErr = 'AMediaCodec_configure failed (color=$color): $cfg';
         mediaCodecLib.AMediaCodec_delete(codec);
         continue;
       }
-      if (!_ok(mediaCodecLib.AMediaCodec_start(codec))) {
+      if (!mediaCodecOk(mediaCodecLib.AMediaCodec_start(codec))) {
         lastErr = 'AMediaCodec_start failed (color=$color)';
         mediaCodecLib.AMediaCodec_delete(codec);
         continue;
@@ -242,7 +225,7 @@ final class MediaCodecVideoEncoder {
   static ffi.Pointer<AMediaFormat> _buildEncoderFormat(String mime, int width,
       int height, int bitrate, int fps, int keyframeIntervalSec, int color) {
     final fmt = mediaCodecLib.AMediaFormat_new();
-    final mimeC = _utf8(mime);
+    final mimeC = mediaCodecUtf8(mime);
     mediaCodecLib.AMediaFormat_setString(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_MIME, mimeC);
     pkgffi.malloc.free(mimeC);
     mediaCodecLib.AMediaFormat_setInt32(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_WIDTH, width);
@@ -258,7 +241,7 @@ final class MediaCodecVideoEncoder {
   /// Encodes one packed-I420 frame and returns any encoded units now available
   /// (the synchronous codec may emit zero or more per call).
   List<EncodedVideoUnit> encode(Uint8List i420, int ptsUs) {
-    final idx = mediaCodecLib.AMediaCodec_dequeueInputBuffer(_codec, _inputTimeoutUs);
+    final idx = mediaCodecLib.AMediaCodec_dequeueInputBuffer(_codec, inputTimeoutUs);
     if (idx < 0) return const []; // codec busy — skip this frame
     final frameSize = _width * _height * 3 ~/ 2;
     final buf = mediaCodecLib.AMediaCodec_getInputBuffer(_codec, idx, _sizePtr);
@@ -282,8 +265,8 @@ final class MediaCodecVideoEncoder {
     final out = <EncodedVideoUnit>[];
     while (true) {
       final idx =
-          mediaCodecLib.AMediaCodec_dequeueOutputBuffer(_codec, _info, _outputTimeoutUs);
-      if (idx == _infoTryAgainLater) break;
+          mediaCodecLib.AMediaCodec_dequeueOutputBuffer(_codec, _info, outputTimeoutUs);
+      if (idx == infoTryAgainLater) break;
       if (idx < 0) continue; // FORMAT/BUFFERS changed — nothing to read
       final buf = mediaCodecLib.AMediaCodec_getOutputBuffer(_codec, idx, _sizePtr);
       final off = _info.ref.offset;
@@ -292,7 +275,7 @@ final class MediaCodecVideoEncoder {
       final pts = _info.ref.presentationTimeUs;
       if (buf != ffi.nullptr && len > 0) {
         final bytes = buf.asTypedList(off + len).sublist(off, off + len);
-        if ((flags & _bufferFlagCodecConfig) != 0) {
+        if ((flags & bufferFlagCodecConfig) != 0) {
           _csd = bytes; // codec config (H.264 SPS+PPS); emitted once
         } else {
           out.add(_finishUnit(bytes, flags, pts, _csd));
@@ -338,14 +321,14 @@ final class MediaCodecVideoDecoder {
     required int width,
     required int height,
   }) {
-    final mimeC = _utf8(mime);
+    final mimeC = mediaCodecUtf8(mime);
     final codec = mediaCodecLib.AMediaCodec_createDecoderByType(mimeC);
     pkgffi.malloc.free(mimeC);
     if (codec == ffi.nullptr) {
       throw StateError('AMediaCodec_createDecoderByType($mime) returned null');
     }
     final fmt = mediaCodecLib.AMediaFormat_new();
-    final m2 = _utf8(mime);
+    final m2 = mediaCodecUtf8(mime);
     mediaCodecLib.AMediaFormat_setString(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_MIME, m2);
     pkgffi.malloc.free(m2);
     mediaCodecLib.AMediaFormat_setInt32(fmt, mediaCodecLib.AMEDIAFORMAT_KEY_WIDTH, width);
@@ -353,11 +336,11 @@ final class MediaCodecVideoDecoder {
     final cfg =
         mediaCodecLib.AMediaCodec_configure(codec, fmt, ffi.nullptr, ffi.nullptr, 0);
     mediaCodecLib.AMediaFormat_delete(fmt);
-    if (!_ok(cfg)) {
+    if (!mediaCodecOk(cfg)) {
       mediaCodecLib.AMediaCodec_delete(codec);
       throw StateError('AMediaCodec_configure (decoder, $mime) failed: $cfg');
     }
-    if (!_ok(mediaCodecLib.AMediaCodec_start(codec))) {
+    if (!mediaCodecOk(mediaCodecLib.AMediaCodec_start(codec))) {
       mediaCodecLib.AMediaCodec_delete(codec);
       throw StateError('AMediaCodec_start (decoder, $mime) failed');
     }
@@ -366,7 +349,7 @@ final class MediaCodecVideoDecoder {
 
   /// Decodes one compressed access unit, returning any frames now available.
   List<DecodedI420> decode(Uint8List frame, int ptsUs) {
-    final idx = mediaCodecLib.AMediaCodec_dequeueInputBuffer(_codec, _inputTimeoutUs);
+    final idx = mediaCodecLib.AMediaCodec_dequeueInputBuffer(_codec, inputTimeoutUs);
     if (idx >= 0) {
       final buf = mediaCodecLib.AMediaCodec_getInputBuffer(_codec, idx, _sizePtr);
       if (buf != ffi.nullptr && _sizePtr.value >= frame.length) {
@@ -384,8 +367,8 @@ final class MediaCodecVideoDecoder {
     final out = <DecodedI420>[];
     while (true) {
       final idx =
-          mediaCodecLib.AMediaCodec_dequeueOutputBuffer(_codec, _info, _outputTimeoutUs);
-      if (idx == _infoTryAgainLater) break;
+          mediaCodecLib.AMediaCodec_dequeueOutputBuffer(_codec, _info, outputTimeoutUs);
+      if (idx == infoTryAgainLater) break;
       if (idx == _infoOutputFormatChanged) {
         _readOutputFormat();
         continue;

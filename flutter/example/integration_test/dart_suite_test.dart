@@ -50,6 +50,10 @@ import '../../../dart/test/codec/vp8_mediacodec_roundtrip_test.dart'
     as vp8_mediacodec_roundtrip;
 import '../../../dart/test/codec/vp8_mediacodec_multistream_test.dart'
     as vp8_mediacodec_multistream;
+import '../../../dart/test/codec/opus_mediacodec_roundtrip_test.dart'
+    as opus_mediacodec_roundtrip;
+import '../../../dart/test/codec/opus_mediacodec_multistream_test.dart'
+    as opus_mediacodec_multistream;
 import '../../../dart/test/codec/vp9_roundtrip_test.dart' as vp9_roundtrip;
 import '../../../dart/test/codec/vp9_version_test.dart' as vp9_version;
 import '../../../dart/test/codec/opus_test.dart' as opus;
@@ -98,6 +102,8 @@ void main() {
   group('codec/h264_mediacodec_roundtrip', h264_mediacodec_roundtrip.main);
   group('codec/vp8_mediacodec_roundtrip', vp8_mediacodec_roundtrip.main);
   group('codec/vp8_mediacodec_multistream', vp8_mediacodec_multistream.main);
+  group('codec/opus_mediacodec_roundtrip', opus_mediacodec_roundtrip.main);
+  group('codec/opus_mediacodec_multistream', opus_mediacodec_multistream.main);
   group('codec/vp9_roundtrip', vp9_roundtrip.main);
   group('codec/vp9_version', vp9_version.main);
   group('codec/opus', opus.main);

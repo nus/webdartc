@@ -9,6 +9,7 @@ import 'package:ffi/ffi.dart' as pkgffi;
 import '../../media/audio_data.dart';
 import '../audio_codec.dart';
 import '_libopus.dart' as op;
+import 'opus_pcm_framer.dart';
 
 /// Maximum Opus packet size per RFC 6716 §3.
 const int _maxOpusPacketBytes = 1275;
@@ -35,14 +36,8 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
   ffi.Pointer<ffi.Int16> _pcmScratch = ffi.nullptr;
   ffi.Pointer<ffi.UnsignedChar> _outScratch = ffi.nullptr;
 
-  // Carry-over buffer for samples not yet aligned to a 20 ms frame.
-  Int16List _residue = Int16List(0);
-  int _residueFill = 0;
-
-  // Timestamp the next emitted frame should carry. Seeded from the first
-  // input chunk and then advanced in lockstep with frame emissions —
-  // including failed encodes (so the RTP timeline stays continuous).
-  int? _baseTimestampUs;
+  // Slices arbitrary PCM chunks into 20 ms frames with a continuous PTS.
+  OpusPcmFramer? _framer;
 
   @override
   set onOutput(void Function(EncodedAudioChunk, EncodedAudioChunkMetadata?) cb) =>
@@ -81,9 +76,10 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
     _encoder = enc;
     _pcmScratch = pkgffi.calloc<ffi.Int16>(_samplesPerFrameAllChannels);
     _outScratch = pkgffi.calloc<ffi.UnsignedChar>(_maxOpusPacketBytes);
-    _residue = Int16List(_samplesPerFrameAllChannels);
-    _residueFill = 0;
-    _baseTimestampUs = null;
+    _framer = OpusPcmFramer(
+      samplesPerFrameAllChannels: _samplesPerFrameAllChannels,
+      frameDurationUs: _frameDurationUs,
+    );
     _decoderConfig = AudioDecoderConfig(
       codec: AudioCodecName.opus,
       sampleRate: _sampleRate,
@@ -119,43 +115,10 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
     final view = Int16List.view(
         data.data.buffer, data.data.offsetInBytes, sampleCount);
 
-    _baseTimestampUs ??= data.timestamp;
-
-    var pos = 0;
-
-    // Top up the residue and emit one frame if we now have enough.
-    if (_residueFill > 0) {
-      final need = _samplesPerFrameAllChannels - _residueFill;
-      final available = view.length - pos;
-      if (available < need) {
-        _residue.setRange(_residueFill, _residueFill + available, view, pos);
-        _residueFill += available;
-        return;
-      }
-      _residue.setRange(_residueFill, _samplesPerFrameAllChannels, view, pos);
-      pos += need;
-      _residueFill = 0;
-      _emitFrame(_residue, 0);
-    }
-
-    // Drain whole frames straight from the input view (zero-copy slicing).
-    while (view.length - pos >= _samplesPerFrameAllChannels) {
-      _emitFrame(view, pos);
-      pos += _samplesPerFrameAllChannels;
-    }
-
-    // Stash remainder for the next call.
-    final remaining = view.length - pos;
-    if (remaining > 0) {
-      _residue.setRange(0, remaining, view, pos);
-      _residueFill = remaining;
-    }
+    _framer!.add(view, data.timestamp, _emitFrame);
   }
 
-  void _emitFrame(Int16List src, int srcOffset) {
-    final ts = _baseTimestampUs!;
-    _baseTimestampUs = ts + _frameDurationUs;
-
+  void _emitFrame(Int16List src, int srcOffset, int ts) {
     final pcmList = _pcmScratch
         .cast<ffi.Int16>()
         .asTypedList(_samplesPerFrameAllChannels);
@@ -189,8 +152,7 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
   @override
   Future<void> flush() async {
     // libopus has no buffered output; sub-frame remainder is dropped.
-    _residueFill = 0;
-    _baseTimestampUs = null;
+    _framer?.reset();
   }
 
   @override
@@ -211,7 +173,6 @@ final class OpusEncoderBackend implements AudioEncoderBackend {
       pkgffi.calloc.free(_outScratch);
       _outScratch = ffi.nullptr;
     }
-    _residueFill = 0;
-    _baseTimestampUs = null;
+    _framer = null;
   }
 }

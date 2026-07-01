@@ -40,12 +40,10 @@ bool _compute(String codec) {
       return true;
     case 'vp8':
       return mediaCodecHasEncoder(vp8Mime) && mediaCodecHasDecoder(vp8Mime);
-    // Opus still uses the bundled libopus, so it is always available for now.
-    // When Opus moves to MediaCodec-only this becomes:
-    //   mediaCodecHasEncoder(_opusMime) && mediaCodecHasDecoder(_opusMime)
-    // (the Opus encoder only exists on API 29+, so older devices would drop it).
+    // The Opus encoder only exists on API 29+, so API 24–28 devices — which have
+    // the decoder but no encoder — drop Opus entirely (no libopus fallback).
     case 'opus':
-      return true;
+      return mediaCodecHasEncoder(opusMime) && mediaCodecHasDecoder(opusMime);
     // Unknown codecs (e.g. an app's custom MediaEngine entry) are not gated.
     default:
       return true;
