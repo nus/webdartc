@@ -14,9 +14,10 @@ import 'package:ffi/ffi.dart' as pkgffi;
 import '../../media/video_frame.dart';
 import '../codec_registry.dart';
 import '../video_codec.dart';
+import '../mediacodec/mediacodec_video_decoder_backend.dart';
+import '../mediacodec/mime_types.dart';
 import '_openh264.dart' as wels;
 import 'h264_decoder_backend.dart';
-import 'mediacodec_decoder_backend.dart';
 import 'mediacodec_encoder_backend.dart';
 import 'openh264_bindings.g.dart' as oh;
 import 'videotoolbox_decoder_backend.dart';
@@ -40,7 +41,7 @@ void registerH264Codec() {
     CodecRegistry.registerVideoEncoder(
         VideoCodecName.h264, MediaCodecEncoderBackend.new);
     CodecRegistry.registerVideoDecoder(
-        VideoCodecName.h264, MediaCodecDecoderBackend.new);
+        VideoCodecName.h264, () => MediaCodecVideoDecoderBackend(h264Mime));
   } else {
     CodecRegistry.registerVideoEncoder(
         VideoCodecName.h264, H264EncoderBackend.new);
