@@ -90,6 +90,7 @@ jobs:
             test/codec/vp9_multistream_test.dart \
             test/codec/vp9_roundtrip_test.dart \
             test/codec/vp9_version_test.dart \
+            test/codec/vp9_wire_format_test.dart \
             test/codec/opus_test.dart \
             test/codec/opus_libopus_update_test.dart \
             --timeout=120s

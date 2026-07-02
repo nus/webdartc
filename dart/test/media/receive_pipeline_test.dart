@@ -9,6 +9,7 @@ import 'package:webdartc/codec/audio_codec.dart';
 import 'package:webdartc/codec/opus/opus_codec.dart';
 import 'package:webdartc/codec/video_codec.dart';
 import 'package:webdartc/codec/vp8/vp8_codec.dart';
+import 'package:webdartc/codec/vp9/vp9_codec.dart';
 import 'package:webdartc/media/audio_data.dart';
 import 'package:webdartc/media/fake_audio_source.dart';
 import 'package:webdartc/media/fake_video_source.dart';
@@ -18,17 +19,17 @@ import 'package:webdartc/media/video_frame.dart';
 import 'package:webdartc/rtp/packetizer.dart';
 import 'package:webdartc/rtp/parser.dart';
 
-/// Encode [n] VP8 frames and return their packetized RTP payloads (with the
-/// marker flag) plus the source key/delta classification per frame.
-Future<List<(List<(Uint8List, bool)> parts, bool isKey)>> _encodeVp8(
-    int n) async {
+/// Encode [n] frames with [codec] and return their packetized RTP payloads
+/// (with the marker flag) plus the source key/delta classification per frame.
+Future<List<(List<(Uint8List, bool)> parts, bool isKey)>> _encodeVideo(
+    String codec, int n) async {
   final chunks = <EncodedVideoChunk>[];
   final encoder = VideoEncoder(
     output: (c, _) => chunks.add(c),
     error: (e) => fail('encoder error: $e'),
   );
-  encoder.configure(const VideoEncoderConfig(
-      codec: VideoCodecName.vp8, width: 160, height: 120, framerate: 30));
+  encoder.configure(VideoEncoderConfig(
+      codec: codec, width: 160, height: 120, framerate: 30));
   final src = FakeVideoSource(width: 160, height: 120, framerate: 30);
   for (var i = 0; i < n; i++) {
     encoder.encode(src.frameAt(1_700_000_000_000 + i * 33),
@@ -37,7 +38,7 @@ Future<List<(List<(Uint8List, bool)> parts, bool isKey)>> _encodeVp8(
   await encoder.flush();
   encoder.close();
 
-  final packetizer = Vp8Packetizer();
+  final packetizer = videoPacketizerFor(codec)!;
   return [
     for (final c in chunks)
       (
@@ -65,9 +66,9 @@ void main() {
   });
 
   test('tryCreate returns null when no decoder is registered', () {
-    // 'vp9' has a depacketizer gap (no VP9 depacketizer) — unsupported here.
+    // 'h264' has a depacketizer but no decoder registered in this test run.
     final p = ReceivePipeline.tryCreate(
-        kind: 'video', codecKey: 'vp9', clockRate: 90000, channels: 0);
+        kind: 'video', codecKey: 'h264', clockRate: 90000, channels: 0);
     expect(p, isNull);
   });
 
@@ -75,7 +76,7 @@ void main() {
     setUpAll(registerVp8Codec);
 
     test('decodes frames pushed as RTP and emits them on the track', () async {
-      final encoded = await _encodeVp8(5);
+      final encoded = await _encodeVideo('vp8', 5);
 
       final p = ReceivePipeline.tryCreate(
           kind: 'video', codecKey: 'vp8', clockRate: 90000, channels: 0)!;
@@ -107,7 +108,7 @@ void main() {
 
     test('keyframe gate drops delta packets until the first keyframe',
         () async {
-      final encoded = await _encodeVp8(4);
+      final encoded = await _encodeVideo('vp8', 4);
       // Frame 0 is the keyframe; frames 1..3 are deltas.
       final p = ReceivePipeline.tryCreate(
           kind: 'video', codecKey: 'vp8', clockRate: 90000, channels: 0)!;
@@ -156,6 +157,40 @@ void main() {
       }
       expect(pliCount, 5); // _pliMaxRetries
       sub.cancel();
+      p.close();
+    });
+  });
+
+  group('VP9 video pipeline', () {
+    setUpAll(registerVp9Codec);
+
+    test('decodes frames pushed as RTP and emits them on the track', () async {
+      final encoded = await _encodeVideo('vp9', 5);
+
+      final p = ReceivePipeline.tryCreate(
+          kind: 'video', codecKey: 'vp9', clockRate: 90000, channels: 0)!;
+      expect(p.track, isA<ReceiverVideoTrack>());
+
+      final frames = <VideoFrame>[];
+      final sub = p.track.onVideoFrame.listen(frames.add);
+      await Future<void>.delayed(Duration.zero); // let onActivate run
+      expect(p.isActive, isTrue);
+
+      var seq = 0;
+      var arrival = 0;
+      for (final (parts, _) in encoded) {
+        for (final (payload, marker) in parts) {
+          p.add(_rtp(payload, seq++, marker, 3000 * seq), arrival);
+        }
+        arrival += 1000;
+      }
+      p.tick(arrival + 1_000_000);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(frames, isNotEmpty);
+      expect(frames.first.codedWidth, 160);
+      expect(frames.first.codedHeight, 120);
+      await sub.cancel();
       p.close();
     });
   });

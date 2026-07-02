@@ -3,9 +3,10 @@ import 'package:webdartc/webdartc.dart';
 
 void main() {
   group('MediaEngine value semantics', () {
-    test('default constructor exposes VP8 + H.264 video and Opus audio', () {
+    test('default constructor exposes VP8 + VP9 + H.264 video and Opus audio',
+        () {
       const m = MediaEngine();
-      expect(m.videoCodecNames, equals(['VP8', 'H264']));
+      expect(m.videoCodecNames, equals(['VP8', 'VP9', 'H264']));
       expect(m.audioCodecNames, equals(['opus']));
     });
 
@@ -21,13 +22,13 @@ void main() {
       const m = MediaEngine(
         videoCodecs: [...MediaEngine.defaultVideoCodecs, av1],
       );
-      expect(m.videoCodecNames, equals(['VP8', 'H264', 'AV1']));
+      expect(m.videoCodecNames, equals(['VP8', 'VP9', 'H264', 'AV1']));
     });
 
     test('resolveVideoCodecs(null) returns the full list', () {
       const m = MediaEngine();
       expect(m.resolveVideoCodecs(null).map((c) => c.name).toList(),
-          equals(['VP8', 'H264']));
+          equals(['VP8', 'VP9', 'H264']));
     });
 
     test('resolveVideoCodecs filters and reorders by preference', () {
@@ -38,7 +39,7 @@ void main() {
 
     test('resolveVideoCodecs ignores unknown names silently', () {
       const m = MediaEngine();
-      final r = m.resolveVideoCodecs(['VP9', 'VP8']);
+      final r = m.resolveVideoCodecs(['AV1', 'VP8']);
       expect(r.map((c) => c.name).toList(), equals(['VP8']));
     });
 
@@ -54,7 +55,7 @@ void main() {
       final pc = PeerConnection(
         configuration: const PeerConnectionConfiguration(),
       );
-      expect(pc.mediaEngine.videoCodecNames, equals(['VP8', 'H264']));
+      expect(pc.mediaEngine.videoCodecNames, equals(['VP8', 'VP9', 'H264']));
       expect(pc.mediaEngine.audioCodecNames, equals(['opus']));
     });
 
@@ -68,7 +69,7 @@ void main() {
   });
 
   group('SDP reflects MediaEngine', () {
-    test('default offer SDP advertises VP8, H.264, and Opus', () async {
+    test('default offer SDP advertises VP8, VP9, H.264, and Opus', () async {
       final pc = PeerConnection(
         configuration: const PeerConnectionConfiguration(),
       );
@@ -77,6 +78,8 @@ void main() {
       final offer = await pc.createOffer();
       expect(offer.sdp, contains('a=rtpmap:111 opus/48000/2'));
       expect(offer.sdp, contains('a=rtpmap:96 VP8/90000'));
+      expect(offer.sdp, contains('a=rtpmap:98 VP9/90000'));
+      expect(offer.sdp, contains('a=fmtp:98 profile-id=0'));
       expect(offer.sdp, contains('a=rtpmap:102 H264/90000'));
       await pc.close();
     });
@@ -107,6 +110,7 @@ void main() {
       final offer = await pc.createOffer();
       expect(offer.sdp, contains('a=rtpmap:102 H264/90000'));
       expect(offer.sdp, isNot(contains('VP8')));
+      expect(offer.sdp, isNot(contains('VP9')));
       await pc.close();
     });
 
@@ -142,6 +146,7 @@ void main() {
       final answer = await answerer.createAnswer();
       expect(answer.sdp, contains('H264/90000'));
       expect(answer.sdp, isNot(contains('VP8')));
+      expect(answer.sdp, isNot(contains('VP9')));
 
       await offerer.close();
       await answerer.close();
@@ -152,7 +157,8 @@ void main() {
       final offerer = PeerConnection(
         configuration: const PeerConnectionConfiguration(),
       );
-      offerer.addTransceiver('video'); // default: VP8 + H.264 (96, 102)
+      // default: VP8, VP9, H.264 (96, 98, 102)
+      offerer.addTransceiver('video');
       final offer = await offerer.createOffer();
       await offerer.setLocalDescription(offer);
 

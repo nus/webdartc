@@ -7,16 +7,9 @@ library;
 import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart';
 
-const _vp9 = RtpCodec(payloadType: 98, name: 'VP9', clockRate: 90000);
-
-/// Canonical video catalog: `MediaEngine.defaultVideoCodecs` (VP8, H264)
-/// with VP9 spliced between them to match the canonical
-/// [VP8, VP9, H264] order.
-final _videoCatalog = <RtpCodec>[
-  MediaEngine.defaultVideoCodecs[0], // VP8
-  _vp9,
-  MediaEngine.defaultVideoCodecs[1], // H264
-];
+/// Canonical video catalog: `MediaEngine.defaultVideoCodecs` is already
+/// the canonical [VP8, VP9, H264] order.
+const _videoCatalog = MediaEngine.defaultVideoCodecs;
 const _audioCatalog = MediaEngine.defaultAudioCodecs;
 final _allCodecs = [..._videoCatalog, ..._audioCatalog];
 

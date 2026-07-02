@@ -14,8 +14,9 @@ import '../sdp/parser.dart' show RtpCodec;
 /// registering an encoder or decoder backend.
 ///
 /// Construct with `const` for shared engines, or `const MediaEngine()` to
-/// pick up the WebRTC-typical defaults (VP8, H.264 Constrained Baseline 3.1,
-/// Opus 48 kHz stereo). Pass `[]` for either field to opt out completely.
+/// pick up the WebRTC-typical defaults (VP8, VP9 profile 0, H.264 Constrained
+/// Baseline 3.1, Opus 48 kHz stereo). Pass `[]` for either field to opt out
+/// completely.
 ///
 /// ```dart
 /// const rtc = Webdartc(
@@ -66,6 +67,13 @@ final class MediaEngine {
       payloadType: 96,
       name: 'VP8',
       clockRate: 90000,
+      rtcpFb: ['nack', 'nack pli', 'ccm fir', 'goog-remb'],
+    ),
+    RtpCodec(
+      payloadType: 98,
+      name: 'VP9',
+      clockRate: 90000,
+      fmtpParams: 'profile-id=0',
       rtcpFb: ['nack', 'nack pli', 'ccm fir', 'goog-remb'],
     ),
     RtpCodec(
