@@ -1,6 +1,6 @@
 /// webdartc video-sender example — streams a FakeVideoSource (rolling
-/// millisecond timestamps on a grey background) to a browser over VP8 or
-/// H.264 / SRTP / DTLS / ICE.
+/// millisecond timestamps on a grey background) to a browser over VP8,
+/// VP9 or H.264 / SRTP / DTLS / ICE.
 ///
 /// HTTP + WebSocket + Dart peer in one binary. The browser is the
 /// offerer: it opens the WebSocket, declares a `recvonly` video
@@ -9,7 +9,7 @@
 ///
 /// Usage:
 ///   dart run example/video_sender/server.dart \
-///     [--port=8080] [--codec=vp8|h264]
+///     [--port=8080] [--codec=vp8|vp9|h264]
 ///
 /// Then open `http://127.0.0.1:<port>` in Chrome.
 library;
@@ -31,13 +31,15 @@ Future<void> main(List<String> args) async {
     if (a.startsWith('--port=')) _port = int.parse(a.substring(7));
     if (a.startsWith('--codec=')) _codec = a.substring(8).toLowerCase();
   }
-  if (_codec != 'vp8' && _codec != 'h264') {
-    stderr.writeln('Unsupported codec: $_codec (expected vp8 or h264)');
+  if (_codec != 'vp8' && _codec != 'vp9' && _codec != 'h264') {
+    stderr.writeln('Unsupported codec: $_codec (expected vp8, vp9 or h264)');
     exit(2);
   }
   switch (_codec) {
     case 'vp8':
       registerVp8Codec();
+    case 'vp9':
+      registerVp9Codec();
     case 'h264':
       registerH264Codec();
   }
@@ -138,8 +140,7 @@ Future<void> _handleWs(WebSocket ws) async {
 ({VideoEncoder encoder, StreamSubscription<VideoFrame> sub}) _startVideoStream(
     RtpSender sender) {
   const width = 320, height = 240, framerate = 30;
-  final PayloadPacketizer packetizer =
-      _codec == 'h264' ? H264Packetizer() : Vp8Packetizer();
+  final packetizer = videoPacketizerFor(_codec)!;
   final encoder = VideoEncoder(
     output: (chunk, _) {
       final rtpTs = (chunk.timestamp * 90) ~/ 1000;

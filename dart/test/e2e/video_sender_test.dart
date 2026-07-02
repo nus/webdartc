@@ -32,7 +32,7 @@ void main() {
     cft = await ChromeForTesting.ensureAvailable();
   });
 
-  for (final codec in ['vp8', 'h264']) {
+  for (final codec in ['vp8', 'vp9', 'h264']) {
     test('browser decodes $codec video frames from Dart sender', () async {
       final port = await _findFreePort();
 
@@ -75,7 +75,7 @@ void main() {
         'return c.map(x => x.mimeType).join(",");',
       );
       final codecList = (codecsRaw as String? ?? '').toLowerCase();
-      final wanted = codec == 'h264' ? 'video/h264' : 'video/vp8';
+      final wanted = 'video/$codec';
       if (!codecList.contains(wanted)) {
         markTestSkipped('browser lacks $wanted decoder (codecs=$codecList)');
         await cdp.quit();

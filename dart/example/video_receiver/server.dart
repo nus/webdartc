@@ -1,9 +1,9 @@
 /// webdartc video-receiver example — receives a browser camera stream
-/// (VP8 or H.264 / SRTP / DTLS / ICE) using the W3C receive path:
+/// (VP8, VP9 or H.264 / SRTP / DTLS / ICE) using the W3C receive path:
 /// `onTrack` → `track.onVideoFrame` yields decoded frames. The jitter
-/// buffer, depacketiser (RFC 7741 / RFC 6184) and decoder (libvpx for
-/// VP8, VideoToolbox or OpenH264 for H.264) all live inside the track —
-/// no manual RTP plumbing required.
+/// buffer, depacketiser (RFC 7741 / draft-ietf-payload-vp9 / RFC 6184) and
+/// decoder (libvpx for VP8/VP9, VideoToolbox or OpenH264 for H.264) all
+/// live inside the track — no manual RTP plumbing required.
 ///
 /// HTTP + WebSocket + Dart peer in one binary. The browser is the
 /// offerer: it captures `getUserMedia({video:true})`, adds the track,
@@ -12,7 +12,7 @@
 ///
 /// Usage:
 ///   dart run example/video_receiver/server.dart \
-///     [--port=8080] [--codec=vp8|h264]
+///     [--port=8080] [--codec=vp8|vp9|h264]
 ///
 /// Then open `http://127.0.0.1:<port>` in Chrome and grant camera
 /// permission. On macOS the H.264 path uses VideoToolbox.
@@ -34,8 +34,8 @@ Future<void> main(List<String> args) async {
     if (a.startsWith('--port=')) _port = int.parse(a.substring(7));
     if (a.startsWith('--codec=')) _codec = a.substring(8).toLowerCase();
   }
-  if (_codec != 'vp8' && _codec != 'h264') {
-    stderr.writeln('Unsupported codec: $_codec (expected vp8 or h264)');
+  if (_codec != 'vp8' && _codec != 'vp9' && _codec != 'h264') {
+    stderr.writeln('Unsupported codec: $_codec (expected vp8, vp9 or h264)');
     exit(2);
   }
   // Codec backends are auto-registered by PeerConnection, so the W3C receive
