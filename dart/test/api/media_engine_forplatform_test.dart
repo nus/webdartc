@@ -40,4 +40,13 @@ void main() {
     expect(e.videoCodecNames, contains('H264'));
     expect(e.audioCodecNames, contains('opus'));
   });
+
+  test('a device without a VP9 MediaCodec drops only VP9', () {
+    debugSetPlatformCodecAvailability('vp9', false);
+
+    final e = MediaEngine.forPlatform();
+    expect(e.videoCodecNames, isNot(contains('VP9')));
+    expect(e.videoCodecNames, containsAll(['VP8', 'H264']));
+    expect(e.audioCodecNames, contains('opus'));
+  });
 }

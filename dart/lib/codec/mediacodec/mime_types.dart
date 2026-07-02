@@ -5,4 +5,5 @@ library;
 
 const String h264Mime = 'video/avc';
 const String vp8Mime = 'video/x-vnd.on2.vp8';
+const String vp9Mime = 'video/x-vnd.on2.vp9';
 const String opusMime = 'audio/opus';
