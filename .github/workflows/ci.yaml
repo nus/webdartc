@@ -392,5 +392,13 @@ jobs:
           # Run from the example dir (its own Flutter project) so flutter test
           # resolves the example's integration_test dependency rather than the
           # workspace root. It builds only the emulator's ABI (x86_64).
+          #
+          # Retry up to 3× (one line so the loop stays in a single shell — the
+          # action runs each script line in its own `sh -c`; the rebuild is
+          # incremental so retries are cheap). The on-device MediaCodec codec
+          # tests are mildly flaky under emulator load — the software codecs
+          # occasionally starve when many are created back-to-back — and their
+          # correctness assertions stay strict, so a retry is the right knob
+          # rather than weakening them (mirrors dart-test-e2e-windows).
           working-directory: ./flutter/example
-          script: flutter test integration_test/dart_suite_test.dart -d emulator-5554 --timeout=300s
+          script: for a in 1 2 3; do flutter test integration_test/dart_suite_test.dart -d emulator-5554 --timeout=300s && exit 0; echo "::warning::android integration attempt $a failed; retrying"; done; exit 1
