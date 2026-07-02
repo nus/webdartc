@@ -7,6 +7,7 @@ import 'dart:typed_data';
 
 import '../codec/video_codec.dart';
 import '../codec/audio_codec.dart';
+import '../crypto/csprng.dart';
 
 // ── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -134,6 +135,152 @@ final class Vp8Depacketizer implements VideoPayloadDepacketizer {
 
     // VP8 keyframe detection: first byte bit 0 = 0 means keyframe
     final isKey = frameData.isNotEmpty && (frameData[0] & 0x01) == 0;
+
+    return EncodedVideoChunk(
+      type: isKey ? EncodedVideoChunkType.key : EncodedVideoChunkType.delta,
+      timestamp: timestamp,
+      data: frameData,
+    );
+  }
+}
+
+// ── VP9 Packetizer (draft-ietf-payload-vp9) ─────────────────────────────────
+
+/// VP9 RTP payload format packetizer (draft-ietf-payload-vp9).
+///
+/// Emits flexible-mode (F=1) payload descriptors with a 15-bit picture ID:
+///
+///     byte 0: I=1 |  P  | L=0 | F=1 |  B  |  E  | V=0 | Z=0
+///     byte 1: M=1 | picture ID high 7 bits
+///     byte 2: picture ID low 8 bits
+///     [P=1]:  one P_DIFF byte (0x02 — references the previous picture)
+///
+/// P=0 marks keyframes, B/E mark the first/last fragment of a frame. No
+/// scalability structure is sent — decoders read the resolution from the
+/// VP9 bitstream itself. The picture ID is stateful: all fragments of one
+/// frame share it and it increments once per frame (mod 2^15) — receivers
+/// use gaps to detect loss.
+final class Vp9Packetizer implements PayloadPacketizer {
+  final int maxPayloadSize;
+
+  int _pictureId = Csprng.randomUint32() & 0x7FFF;
+
+  Vp9Packetizer({this.maxPayloadSize = 1200});
+
+  @override
+  List<(Uint8List payload, bool marker)> packetize(
+    Uint8List encodedData, {
+    required bool isKeyFrame,
+  }) {
+    if (encodedData.isEmpty) return const [];
+
+    final pictureId = _pictureId;
+    _pictureId = (_pictureId + 1) & 0x7FFF;
+
+    // 3 descriptor bytes + 1 P_DIFF on delta frames.
+    final headerSize = 3 + (isKeyFrame ? 0 : 1);
+    final maxChunk = maxPayloadSize - headerSize;
+    final results = <(Uint8List, bool)>[];
+    var offset = 0;
+    var isFirst = true;
+
+    while (offset < encodedData.length) {
+      final remaining = encodedData.length - offset;
+      final chunkSize = remaining > maxChunk ? maxChunk : remaining;
+      final isLast = (offset + chunkSize) >= encodedData.length;
+
+      final payload = Uint8List(headerSize + chunkSize);
+      payload[0] = 0x80 | // I: picture ID present
+          (isKeyFrame ? 0 : 0x40) | // P: inter-picture predicted
+          0x10 | // F: flexible mode
+          (isFirst ? 0x08 : 0) | // B: beginning of frame
+          (isLast ? 0x04 : 0); // E: end of frame
+      payload[1] = 0x80 | (pictureId >> 8); // M=1: 15-bit picture ID
+      payload[2] = pictureId & 0xFF;
+      if (!isKeyFrame) payload[3] = 0x02; // P_DIFF=1, N=0
+      payload.setRange(headerSize, headerSize + chunkSize, encodedData, offset);
+
+      results.add((payload, isLast));
+      offset += chunkSize;
+      isFirst = false;
+    }
+
+    return results;
+  }
+}
+
+/// VP9 RTP payload format depacketizer (draft-ietf-payload-vp9).
+///
+/// Parses both flexible-mode (F=1, P_DIFF) and non-flexible-mode (F=0,
+/// TL0PICIDX; what Chrome sends) descriptors, including the scalability
+/// structure carried on keyframes.
+final class Vp9Depacketizer implements VideoPayloadDepacketizer {
+  final _fragments = <int>[];
+  bool _frameIsKey = false;
+
+  @override
+  EncodedVideoChunk? depacketize(Uint8List rtpPayload, {
+    required bool marker,
+    required int timestamp,
+  }) {
+    if (rtpPayload.isEmpty) return null;
+
+    final firstByte = rtpPayload[0];
+    final hasPictureId = (firstByte & 0x80) != 0; // I
+    final interPredicted = (firstByte & 0x40) != 0; // P
+    final hasLayerIndices = (firstByte & 0x20) != 0; // L
+    final flexibleMode = (firstByte & 0x10) != 0; // F
+    final hasSs = (firstByte & 0x02) != 0; // V
+    var offset = 1;
+
+    if (hasPictureId) {
+      if (offset >= rtpPayload.length) return null;
+      final extended = (rtpPayload[offset] & 0x80) != 0; // M: 15-bit
+      offset += extended ? 2 : 1;
+    }
+    if (hasLayerIndices) {
+      offset++; // TID/U/SID/D
+      if (!flexibleMode) offset++; // TL0PICIDX
+    }
+    if (flexibleMode && interPredicted) {
+      // Up to 3 P_DIFF bytes, chained via the N bit.
+      for (var i = 0; i < 3; i++) {
+        if (offset >= rtpPayload.length) return null;
+        final continues = (rtpPayload[offset++] & 0x01) != 0;
+        if (!continues) break;
+      }
+    }
+    if (hasSs) {
+      if (offset >= rtpPayload.length) return null;
+      final header = rtpPayload[offset++];
+      final numSpatialLayers = (header >> 5) + 1; // N_S+1
+      if ((header & 0x10) != 0) offset += numSpatialLayers * 4; // Y: dims
+      if ((header & 0x08) != 0) {
+        // G: picture group descriptions.
+        if (offset >= rtpPayload.length) return null;
+        final numGroups = rtpPayload[offset++];
+        for (var i = 0; i < numGroups; i++) {
+          if (offset >= rtpPayload.length) return null;
+          final refCount = (rtpPayload[offset++] >> 2) & 0x03; // R
+          offset += refCount; // P_DIFFs
+        }
+      }
+    }
+
+    // Empty payload after the descriptor: a padding / bandwidth-probe packet.
+    // Chrome sends these with the media SSRC+PT; they must not disturb an
+    // in-progress frame.
+    if (offset >= rtpPayload.length) return null;
+
+    if (_fragments.isEmpty) _frameIsKey = !interPredicted;
+    _fragments.addAll(Uint8List.sublistView(rtpPayload, offset));
+
+    if (!marker) return null; // more fragments coming
+
+    final frameData = Uint8List.fromList(_fragments);
+    _fragments.clear();
+    final isKey = _frameIsKey;
+    _frameIsKey = false;
 
     return EncodedVideoChunk(
       type: isKey ? EncodedVideoChunkType.key : EncodedVideoChunkType.delta,
@@ -365,7 +512,19 @@ final class OpusDepacketizer implements AudioPayloadDepacketizer {
 VideoPayloadDepacketizer? videoDepacketizerFor(String codecKey) =>
     switch (codecKey) {
       'vp8' => Vp8Depacketizer(),
+      'vp9' => Vp9Depacketizer(),
       'h264' => H264Depacketizer(),
+      _ => null,
+    };
+
+/// A fresh [PayloadPacketizer] for [codecKey], or null if the codec has no
+/// RTP packetizer. Send-side counterpart of [videoDepacketizerFor].
+PayloadPacketizer? videoPacketizerFor(String codecKey,
+        {int maxPayloadSize = 1200}) =>
+    switch (codecKey) {
+      'vp8' => Vp8Packetizer(maxPayloadSize: maxPayloadSize),
+      'vp9' => Vp9Packetizer(maxPayloadSize: maxPayloadSize),
+      'h264' => H264Packetizer(maxPayloadSize: maxPayloadSize),
       _ => null,
     };
 
