@@ -6,7 +6,7 @@
 ///
 /// Usage:
 ///   dart run example/getusermedia_call/server.dart \
-///       [--port=8080] [--codec=vp8|h264]
+///       [--port=8080] [--codec=vp8|vp9|h264]
 ///
 /// Open http://127.0.0.1:<port> in Chrome and click Start. The first
 /// run triggers the macOS TCC prompts for camera + microphone.
@@ -29,8 +29,8 @@ Future<void> main(List<String> args) async {
     if (a.startsWith('--port=')) _port = int.parse(a.substring(7));
     if (a.startsWith('--codec=')) _codec = a.substring(8).toLowerCase();
   }
-  if (_codec != 'vp8' && _codec != 'h264') {
-    stderr.writeln('Unsupported --codec=$_codec (expected vp8 or h264)');
+  if (_codec != 'vp8' && _codec != 'vp9' && _codec != 'h264') {
+    stderr.writeln('Unsupported --codec=$_codec (expected vp8, vp9 or h264)');
     exit(2);
   }
   if (!Platform.isMacOS) {
@@ -41,6 +41,8 @@ Future<void> main(List<String> args) async {
   switch (_codec) {
     case 'vp8':
       registerVp8Codec();
+    case 'vp9':
+      registerVp9Codec();
     case 'h264':
       registerH264Codec();
   }
@@ -220,7 +222,7 @@ Future<void> _startCapture({
   ));
   onStream(stream);
 
-  final packetizer = _codec == 'h264' ? H264Packetizer() : Vp8Packetizer();
+  final packetizer = videoPacketizerFor(_codec)!;
   var videoFrames = 0;
   final videoEncoder = VideoEncoder(
     output: (chunk, _) {
