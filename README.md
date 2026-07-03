@@ -86,7 +86,7 @@ offers it).
 | Codec | macOS | Linux | Windows | Android |
 |-------|-------|-------|---------|---------|
 | H.264 | VideoToolbox (HW) | OpenH264 (Cisco prebuilt) | OpenH264 (Cisco prebuilt) | MediaCodec (NDK `AMediaCodec` via FFI) |
-| VP8 / VP9 | libvpx (vcpkg, source-built) | libvpx (submodule, source-built) | libvpx (vcpkg, source-built) | libvpx (submodule, source-built via NDK) |
+| VP8 / VP9 | libvpx (vcpkg, source-built) | libvpx (submodule, source-built) | libvpx (vcpkg, source-built) | MediaCodec (NDK `AMediaCodec` via FFI) |
 | Opus | libopus (vcpkg, source-built) | libopus (submodule, source-built) | libopus (vcpkg, source-built) | libopus (submodule, source-built via NDK) |
 
 `registerH264Codec()` / `registerVp8Codec()` / `registerVp9Codec()` /

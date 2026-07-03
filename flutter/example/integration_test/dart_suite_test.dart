@@ -32,14 +32,14 @@ import '../../../dart/test/crypto/sha_test.dart' as sha;
 import '../../../dart/test/crypto/tls_prf_test.dart' as tls_prf;
 import '../../../dart/test/crypto/x25519_test.dart' as x25519;
 
-// VP8 encode/decode is Android MediaCodec (see registerVp8Codec), not libvpx, so
-// the libvpx VP8 behaviour tests (roundtrip / multistream / encoder / decoder /
-// wire-format) are host-only — they assume libvpx's synchronous 1:1 emit, which
-// MediaCodec's buffered pipeline doesn't match. On-device VP8 is covered by
-// vp8_mediacodec_roundtrip below. vp8_version still applies: it loads the bundled
-// libvpx directly (still built for VP9).
+// VP8/VP9 encode/decode is Android MediaCodec (see registerVp8Codec /
+// registerVp9Codec), not libvpx, so the libvpx behaviour tests (roundtrip /
+// multistream / encoder / decoder / wire-format) are host-only — they assume
+// libvpx's synchronous 1:1 emit, which MediaCodec's buffered pipeline doesn't
+// match. On-device VP8/VP9 are covered by the *_mediacodec_* tests below.
+// vp8_version/vp9_version still apply: they load the bundled libvpx directly
+// (kept as the off-Android backend and as an Android load-check).
 import '../../../dart/test/codec/vp8_version_test.dart' as vp8_version;
-import '../../../dart/test/codec/vp9_multistream_test.dart' as vp9_multistream;
 import '../../../dart/test/codec/mediacodec_color_test.dart'
     as mediacodec_color;
 import '../../../dart/test/codec/h264_mediacodec_multistream_test.dart'
@@ -50,11 +50,14 @@ import '../../../dart/test/codec/vp8_mediacodec_roundtrip_test.dart'
     as vp8_mediacodec_roundtrip;
 import '../../../dart/test/codec/vp8_mediacodec_multistream_test.dart'
     as vp8_mediacodec_multistream;
+import '../../../dart/test/codec/vp9_mediacodec_roundtrip_test.dart'
+    as vp9_mediacodec_roundtrip;
+import '../../../dart/test/codec/vp9_mediacodec_multistream_test.dart'
+    as vp9_mediacodec_multistream;
 import '../../../dart/test/codec/opus_mediacodec_roundtrip_test.dart'
     as opus_mediacodec_roundtrip;
 import '../../../dart/test/codec/opus_mediacodec_multistream_test.dart'
     as opus_mediacodec_multistream;
-import '../../../dart/test/codec/vp9_roundtrip_test.dart' as vp9_roundtrip;
 import '../../../dart/test/codec/vp9_version_test.dart' as vp9_version;
 // Opus encode/decode is Android MediaCodec (see registerOpusCodec), not libopus,
 // so the libopus Opus tests (opus_test / opus_libopus_update — round-trip,
@@ -95,19 +98,19 @@ void main() {
   group('crypto/tls_prf', tls_prf.main);
   group('crypto/x25519', x25519.main);
 
-  // codec — VP8/H.264/Opus go through Android MediaCodec here; VP9 still
-  // exercises the NDK cross-compiled libvpx.
+  // codec — VP8/VP9/H.264/Opus all go through Android MediaCodec here; the
+  // *_version tests load the bundled libvpx directly as a load-check.
   group('codec/vp8_version', vp8_version.main);
-  group('codec/vp9_multistream', vp9_multistream.main);
-  // H.264 via Android MediaCodec (Android-only; host `dart test` skips these).
+  // MediaCodec codecs (Android-only; host `dart test` skips these).
   group('codec/mediacodec_color', mediacodec_color.main);
   group('codec/h264_mediacodec_multistream', h264_mediacodec_multistream.main);
   group('codec/h264_mediacodec_roundtrip', h264_mediacodec_roundtrip.main);
   group('codec/vp8_mediacodec_roundtrip', vp8_mediacodec_roundtrip.main);
   group('codec/vp8_mediacodec_multistream', vp8_mediacodec_multistream.main);
+  group('codec/vp9_mediacodec_roundtrip', vp9_mediacodec_roundtrip.main);
+  group('codec/vp9_mediacodec_multistream', vp9_mediacodec_multistream.main);
   group('codec/opus_mediacodec_roundtrip', opus_mediacodec_roundtrip.main);
   group('codec/opus_mediacodec_multistream', opus_mediacodec_multistream.main);
-  group('codec/vp9_roundtrip', vp9_roundtrip.main);
   group('codec/vp9_version', vp9_version.main);
 
   // peer_connection — full ICE → DTLS → SCTP over dart:io UDP (loopback),

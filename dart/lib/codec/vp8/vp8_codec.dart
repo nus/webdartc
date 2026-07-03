@@ -7,11 +7,11 @@ import 'package:ffi/ffi.dart' as pkgffi;
 
 import '../codec_registry.dart';
 import '../mediacodec/mediacodec_video_decoder_backend.dart';
+import '../mediacodec/mediacodec_video_encoder_backend.dart';
 import '../mediacodec/mime_types.dart';
 import '../platform_codecs.dart';
 import '../video_codec.dart';
 import '_libvpx.dart' as libvpx;
-import 'mediacodec_vp8_encoder_backend.dart';
 import 'vp8_decoder_backend.dart';
 import 'vp8_encoder_backend.dart';
 
@@ -25,8 +25,8 @@ import 'vp8_encoder_backend.dart';
 void registerVp8Codec() {
   if (Platform.isAndroid) {
     if (platformCodecAvailable(VideoCodecName.vp8)) {
-      CodecRegistry.registerVideoEncoder(
-          VideoCodecName.vp8, MediaCodecVp8EncoderBackend.new);
+      CodecRegistry.registerVideoEncoder(VideoCodecName.vp8,
+          () => MediaCodecVideoEncoderBackend(vp8Mime, VideoCodecName.vp8));
       CodecRegistry.registerVideoDecoder(
           VideoCodecName.vp8, () => MediaCodecVideoDecoderBackend(vp8Mime));
     }

@@ -27,10 +27,11 @@ Data channels and media (audio + video, send + receive) are both supported.
   macOS, CNG (`bcrypt.dll`) on Windows, and BoringSSL (built via vcpkg,
   statically linked into the bundled `webdartc_crypto` wrapper) on Linux +
   Android.
-- **Codecs** — VP8 / VP9 via libvpx, H.264 via Apple VideoToolbox
-  (hardware-accelerated on macOS), Android MediaCodec (`AMediaCodec` via FFI), or
-  Cisco-prebuilt OpenH264 (Linux + Windows), Opus via libopus. On Android, libvpx
-  + libopus are cross-compiled with the NDK (VP8 / VP9 / Opus). See
+- **Codecs** — VP8 / VP9 via libvpx (Android: MediaCodec), H.264 via Apple
+  VideoToolbox (hardware-accelerated on macOS), Android MediaCodec
+  (`AMediaCodec` via FFI), or Cisco-prebuilt OpenH264 (Linux + Windows), Opus
+  via libopus (Android: MediaCodec). The libvpx + libopus submodules are still
+  cross-compiled with the NDK for Android (bundled load-check). See
   [Codec backends](#codec-backends) for the per-OS codec source split (vcpkg on
   macOS / Windows, submodules elsewhere).
 

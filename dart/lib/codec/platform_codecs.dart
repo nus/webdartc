@@ -34,12 +34,10 @@ bool _compute(String codec) {
     // to be available via MediaCodec.
     case 'h264':
       return true;
-    // VP9 still uses the bundled libvpx (not MediaCodec here) and is not in the
-    // default offer; don't gate it.
-    case 'vp9':
-      return true;
     case 'vp8':
       return mediaCodecHasEncoder(vp8Mime) && mediaCodecHasDecoder(vp8Mime);
+    case 'vp9':
+      return mediaCodecHasEncoder(vp9Mime) && mediaCodecHasDecoder(vp9Mime);
     // The Opus encoder only exists on API 29+, so API 24–28 devices — which have
     // the decoder but no encoder — drop Opus entirely (no libopus fallback).
     case 'opus':
