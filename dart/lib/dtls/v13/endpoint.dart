@@ -28,6 +28,7 @@ import '../../crypto/sha256.dart';
 import '../../crypto/x25519.dart';
 import '../../crypto/x509_der.dart';
 import '../record.dart';
+import '../srtp_profiles.dart';
 import 'cipher_suite.dart';
 import 'cookie.dart';
 import 'handshake.dart';
@@ -694,30 +695,11 @@ abstract base class DtlsV13Endpoint implements core.ProtocolStateMachine {
     final cb = onConnected;
     if (cb == null) return;
     final exportLen = _selectedSrtpProfile != null
-        ? _srtpExportLengthForProfile(_selectedSrtpProfile!)
+        ? SrtpProfileNegotiation.exportLength(_selectedSrtpProfile!)
         : DtlsV13SrtpExport.srtpAes128CmHmacSha180Length;
     cb(DtlsV13SrtpExport.export(
       exporterMasterSecret: _exporterMasterSecret!,
       length: exportLen,
     ));
-  }
-
-  /// Bytes of TLS-exported keying material the negotiated SRTP profile
-  /// expects. Layout is per RFC 5764 §4.2 / RFC 7714 §12.
-  static int _srtpExportLengthForProfile(int profileId) {
-    switch (profileId) {
-      case 0x0001: // SRTP_AES128_CM_HMAC_SHA1_80
-      case 0x0002: // SRTP_AES128_CM_HMAC_SHA1_32
-        return 60; // 16 + 16 + 14 + 14
-      case 0x0007: // SRTP_AEAD_AES_128_GCM
-        return 56; // 16 + 16 + 12 + 12
-      case 0x0008: // SRTP_AEAD_AES_256_GCM
-        return 88; // 32 + 32 + 12 + 12
-      default:
-        // Unknown profile — fall back to the legacy 60-byte default; a
-        // mis-sized export will surface as a key-derivation mismatch
-        // rather than a silent truncation.
-        return 60;
-    }
   }
 }

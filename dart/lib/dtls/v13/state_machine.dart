@@ -486,25 +486,11 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
     );
   }
 
-  /// SRTP profiles webdartc supports, in server-preference order. Matches
-  /// the DTLS 1.2 path's `_parseSrtpExtension` ordering: AEAD-GCM is
-  /// preferred because it provides authenticated encryption in a single
-  /// pass and is what current browsers prefer; AES-CM-HMAC-SHA1 is kept
-  /// as an interop fallback (RFC 5764 §4.1.2 leaves profile choice to the
-  /// server).
-  static const List<int> _supportedSrtpProfiles = <int>[
-    0x0007, // SRTP_AEAD_AES_128_GCM
-    0x0008, // SRTP_AEAD_AES_256_GCM
-    0x0001, // SRTP_AES128_CM_HMAC_SHA1_80
-    0x0002, // SRTP_AES128_CM_HMAC_SHA1_32
-  ];
-
-  static int? _pickSrtpProfile(List<int> offered) {
-    for (final id in _supportedSrtpProfiles) {
-      if (offered.contains(id)) return id;
-    }
-    return null;
-  }
+  static int? _pickSrtpProfile(List<int> offered) =>
+      SrtpProfileNegotiation.pick(
+        offered,
+        preference: SrtpProfileNegotiation.v13Preference,
+      );
 
   core.Result<ProcessResult, core.ProtocolError> _sendServerFlight() {
     final suite = _suite!;

@@ -272,7 +272,12 @@ Each item:
   [dart/lib/srtp/context.dart](dart/lib/srtp/context.dart).
 - **Why deferred:** The 80-bit profile is the common case and works.
 - **Acceptance:** Advertise the full set the SRTP layer supports; an SRTP-GCM
-  interop path is exercised by a test.
+  interop path is exercised by a test. While here, settle the server-side
+  preference-order divergence now centralized (2026-07-04) as
+  `SrtpProfileNegotiation.v12Preference` (AES-CM first) vs `v13Preference`
+  (GCM first) in [dart/lib/dtls/srtp_profiles.dart](dart/lib/dtls/srtp_profiles.dart)
+  — unifying the order changes negotiation results, so it was deliberately
+  left as-is by the profile-table dedup.
 
 ---
 
@@ -606,20 +611,6 @@ Each item:
   env-flag + sink, and state machines lose their `dart:io` imports;
   (b) `ip_address.dart` parses/normalizes IPv4/IPv6 itself. The CLAUDE.md
   grep check extended to these dirs passes.
-
-### SRTP profile tables defined thrice, preference order diverges
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** The SRTP key-export-length table (0x0001→60, 0x0007→56, …)
-  exists in DTLS v1.2 (`_srtpExportLengthForSelectedProfile`), v13 server, and
-  v13 client. Worse, profile *selection* disagrees: v1.2's
-  `_parseSrtpExtension` prefers AES-CM first, v13's `_pickSrtpProfile` prefers
-  GCM — an interop-consistency risk, not just duplication. (Related but
-  distinct from the existing "use_srtp offers only one SRTP profile" entry.)
-- **Why deferred:** Needs a decision on the canonical preference order.
-- **Acceptance:** One `SrtpProfileNegotiation` module (supported set,
-  `pick(offered)`, `exportLength(id)`) used by v1.2 and v13; one documented
-  preference order.
 
 ### Media layer: track-class duplication
 

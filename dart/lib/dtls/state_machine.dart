@@ -11,6 +11,7 @@ import 'cipher_suite.dart';
 import 'handshake.dart';
 import 'key_material.dart';
 import 'record.dart';
+import 'srtp_profiles.dart';
 import 'version_detect.dart';
 import 'v13/endpoint.dart' as v13;
 
@@ -787,18 +788,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   int _srtpExportLengthForSelectedProfile() {
     final p = _selectedSrtpProfile;
     if (p == null || p.length < 2) return 60;
-    final id = (p[0] << 8) | p[1];
-    switch (id) {
-      case 0x0001: // SRTP_AES128_CM_HMAC_SHA1_80
-      case 0x0002: // SRTP_AES128_CM_HMAC_SHA1_32
-        return 60;
-      case 0x0007: // SRTP_AEAD_AES_128_GCM
-        return 56;
-      case 0x0008: // SRTP_AEAD_AES_256_GCM
-        return 88;
-      default:
-        return 60;
-    }
+    return SrtpProfileNegotiation.exportLength((p[0] << 8) | p[1]);
   }
 
   // ── Server-side handlers ─────────────────────────────────────────────────
@@ -956,39 +946,22 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       if (extType == 0x000E &&
           extDataLen >= 4 &&
           off + extDataLen <= body.length) {
-        // use_srtp: pick first supported profile
+        // use_srtp: pick per the DTLS 1.2 preference order (see
+        // SrtpProfileNegotiation.v12Preference for the rationale).
         final profilesLen = (body[off] << 8) | body[off + 1];
+        final offered = <int>[];
+        for (var i = 0; i < profilesLen; i += 2) {
+          offered.add((body[off + 2 + i] << 8) | body[off + 2 + i + 1]);
+        }
         if (_debug) {
-          final profiles = <int>[];
-          for (var j = 0; j < profilesLen; j += 2) {
-            profiles.add((body[off + 2 + j] << 8) | body[off + 2 + j + 1]);
-          }
           stderr.writeln(
-            '[dtls] use_srtp profiles offered: ${profiles.map((p) => "0x${p.toRadixString(16).padLeft(4, "0")}").join(", ")}',
+            '[dtls] use_srtp profiles offered: ${offered.map((p) => "0x${p.toRadixString(16).padLeft(4, "0")}").join(", ")}',
           );
         }
-        // Prefer SRTP_AES128_CM_HMAC_SHA1_80 (0x0001) when the client offers
-        // it, falling back to AEAD_AES_128_GCM (0x0007). Both Chrome and
-        // Firefox advertise 0x0001, so this picks the common-denominator
-        // profile and avoids known webdartc AES-GCM key-derivation issues
-        // (RFC 7714 §11 — 12-byte master salt, not 14).
-        int? picked;
-        for (var i = 0; i < profilesLen; i += 2) {
-          final profileId = (body[off + 2 + i] << 8) | body[off + 2 + i + 1];
-          if (profileId == 0x0001) {
-            picked = 0x0001;
-            break;
-          }
-        }
-        if (picked == null) {
-          for (var i = 0; i < profilesLen; i += 2) {
-            final profileId = (body[off + 2 + i] << 8) | body[off + 2 + i + 1];
-            if (profileId == 0x0007) {
-              picked = 0x0007;
-              break;
-            }
-          }
-        }
+        final picked = SrtpProfileNegotiation.pick(
+          offered,
+          preference: SrtpProfileNegotiation.v12Preference,
+        );
         if (picked != null) {
           _selectedSrtpProfile = [(picked >> 8) & 0xFF, picked & 0xFF];
           if (_debug) {
