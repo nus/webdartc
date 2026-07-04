@@ -584,20 +584,6 @@ Each item:
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
 
-### TransportController mixed responsibilities (1143 lines)
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [transport_controller.dart](dart/lib/transport/transport_controller.dart)
-  mixes socket bind/recovery/pending-send queueing, packet demux
-  (`_dispatch`/`_processIce`/`_processDtls`/`_processSrtp`), timer scheduling
-  (`_dispatchTimeout` is a giant `token is X || token is Y` chain), TURN relay
-  routing/channel promotion, TURN-TCP control connections, and a DNS cache.
-- **Why deferred:** It is the only I/O module — regressions here break
-  everything; split needs care.
-- **Acceptance:** Extracted `SocketPool`, `PacketDemuxer`, `TimerScheduler`
-  (TimerToken→owning-SM registry instead of type chains), and
-  `TurnRelayRouter`; TransportController composes them.
-
 ### Crypto per-platform dispatch copy-pasted six times
 
 - **Found:** 2026-07-03, refactoring audit
