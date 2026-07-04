@@ -630,24 +630,6 @@ Each item:
   (TimerToken→owning-SM registry instead of type chains), and
   `TurnRelayRouter`; TransportController composes them.
 
-### Shared ByteReader/ByteWriter in lib/core
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** Big-endian u16/u32(/u64) read/write helpers are copy-pasted with
-  inconsistent names across at least 6 files:
-  [rtp/parser.dart](dart/lib/rtp/parser.dart) (~L236),
-  [rtp/packet.dart](dart/lib/rtp/packet.dart),
-  [srtp/context.dart](dart/lib/srtp/context.dart) (~L621),
-  [sctp/chunk.dart](dart/lib/sctp/chunk.dart) (~L610),
-  [stun/parser.dart](dart/lib/stun/parser.dart) (~L203), and the DTLS
-  record/handshake files. On top of that, hand-rolled shift-and-mask byte
-  packing bypasses even the local helpers (e.g. `RtcpTransportCc.build`,
-  SCTP `_buildPacket`, DTLS fragment views).
-- **Why deferred:** Touches every parser/serializer; mechanical but broad.
-- **Acceptance:** `lib/core/` gains an offset-advancing `ByteReader` /
-  `ByteWriter`; the six-plus local helper sets are deleted. Unlocks the SRTP
-  IV, SCTP chunk, and DTLS cleanups below.
-
 ### Crypto per-platform dispatch copy-pasted six times
 
 - **Found:** 2026-07-03, refactoring audit
@@ -842,8 +824,7 @@ Each item:
   `_sendServerFlight` (~170 lines), v13 client `_handleServerFinished`
   (~113), v1.2 `_handleClientHello` (~95) / `_sendServerFlight` /
   `_sendClientFlight`, ICE `_handleIceTimer` / `_handleBindingRequest`,
-  `RtcpTransportCc.build` (~100, classify→chunk→serialize in one; pairs with
-  the ByteReader/ByteWriter entry),
+  `RtcpTransportCc.build` (~100, classify→chunk→serialize in one),
   [rtp/packet.dart:368-465](dart/lib/rtp/packet.dart#L368-L465).
 - **Why deferred:** Pure readability; fold into whichever branch touches each
   file next rather than a dedicated pass.

@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import '../../core/byte_io.dart';
+
 /// TLS 1.3 / DTLS 1.3 handshake message format helpers (RFC 8446 §4 +
 /// RFC 9147 §5). This module knows how to *describe* messages on the
 /// wire — building outbound bytes, parsing inbound bytes — but leaves
@@ -581,16 +583,13 @@ Uint8List buildAckRecord(List<DtlsAckRecordNumber> records) {
   if (entryBytes > 0xFFFF) {
     throw ArgumentError('too many ACK record numbers (${records.length})');
   }
-  final out = Uint8List(2 + entryBytes);
-  out[0] = (entryBytes >> 8) & 0xFF;
-  out[1] = entryBytes & 0xFF;
-  var off = 2;
+  final out = ByteWriter();
+  out.writeU16(entryBytes);
   for (final r in records) {
-    _writeUint64BE(out, off, r.epoch);
-    _writeUint64BE(out, off + 8, r.sequenceNumber);
-    off += 16;
+    out.writeU64(r.epoch);
+    out.writeU64(r.sequenceNumber);
   }
-  return out;
+  return out.takeBytes();
 }
 
 /// Parse the body of an `ACK` record. Returns null on malformed input
@@ -599,34 +598,18 @@ Uint8List buildAckRecord(List<DtlsAckRecordNumber> records) {
 /// empty per RFC 9147 §7.1, though the receiver "MUST send an ACK that
 /// acknowledges at least one record" — that's the sender's contract).
 List<DtlsAckRecordNumber>? parseAckRecord(Uint8List body) {
-  if (body.length < 2) return null;
-  final entryBytes = (body[0] << 8) | body[1];
+  final r = ByteReader(body);
+  if (!r.canRead(2)) return null;
+  final entryBytes = r.readU16();
   if (entryBytes % 16 != 0) return null;
-  if (body.length < 2 + entryBytes) return null;
+  if (r.remaining < entryBytes) return null;
   final out = <DtlsAckRecordNumber>[];
-  var off = 2;
   for (var i = 0; i < entryBytes ~/ 16; i++) {
-    final epoch = _readUint64BE(body, off);
-    final seq = _readUint64BE(body, off + 8);
+    final epoch = r.readU64();
+    final seq = r.readU64();
     out.add(DtlsAckRecordNumber(epoch, seq));
-    off += 16;
   }
   return out;
-}
-
-void _writeUint64BE(Uint8List dst, int off, int v) {
-  for (var i = 7; i >= 0; i--) {
-    dst[off + i] = v & 0xFF;
-    v >>>= 8;
-  }
-}
-
-int _readUint64BE(Uint8List src, int off) {
-  var v = 0;
-  for (var i = 0; i < 8; i++) {
-    v = (v << 8) | src[off + i];
-  }
-  return v;
 }
 
 // ─── Extension data builders / parsers ────────────────────────────────────

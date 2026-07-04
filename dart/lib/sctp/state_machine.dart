@@ -1,6 +1,7 @@
 import 'dart:io' show Platform, stderr;
 import 'dart:typed_data';
 
+import '../core/byte_io.dart';
 import '../core/state_machine.dart';
 import '../crypto/csprng.dart';
 import 'crc32c.dart';
@@ -935,15 +936,11 @@ final class SctpStateMachine implements ProtocolStateMachine {
     }
 
     final packet = Uint8List(12 + chunkBytes.length);
-    packet[0] = (_sctpPort >> 8) & 0xFF;
-    packet[1] = _sctpPort & 0xFF;
-    packet[2] = (_sctpPort >> 8) & 0xFF;
-    packet[3] = _sctpPort & 0xFF;
-    packet[4] = (vtag >> 24) & 0xFF;
-    packet[5] = (vtag >> 16) & 0xFF;
-    packet[6] = (vtag >>  8) & 0xFF;
-    packet[7] = vtag & 0xFF;
-    // Checksum (bytes 8-11): set to 0 first, then compute CRC-32c
+    writeU16(packet, 0, _sctpPort); // src port
+    writeU16(packet, 2, _sctpPort); // dst port
+    writeU32(packet, 4, vtag);
+    // Checksum (bytes 8-11): set to 0 first, then compute CRC-32c.
+    // Note: the CRC is stored little-endian (RFC 4960 appendix B).
     packet.setRange(12, packet.length, chunkBytes);
     final crc = SctpCrc32c.compute(packet);
     packet[8]  = crc & 0xFF;

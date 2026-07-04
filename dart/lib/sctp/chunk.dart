@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import '../core/byte_io.dart';
+
 /// SCTP chunk types (RFC 4960).
 abstract final class SctpChunkType {
   SctpChunkType._();
@@ -36,15 +38,11 @@ final class SctpCommonHeader {
   static SctpCommonHeader? parse(Uint8List data) {
     if (data.length < 12) return null;
     return SctpCommonHeader(
-      srcPort: _u16(data, 0),
-      dstPort: _u16(data, 2),
-      verificationTag: _u32(data, 4),
+      srcPort: readU16(data, 0),
+      dstPort: readU16(data, 2),
+      verificationTag: readU32(data, 4),
     );
   }
-
-  static int _u16(Uint8List d, int o) => (d[o] << 8) | d[o + 1];
-  static int _u32(Uint8List d, int o) =>
-      ((d[o] << 24) | (d[o+1] << 16) | (d[o+2] << 8) | d[o+3]) >>> 0;
 }
 
 /// A single SCTP chunk.
@@ -77,11 +75,11 @@ final class SctpInitChunk extends SctpChunk {
   Uint8List encode() {
     final params = _encodeParams(parameters);
     final body = Uint8List(16 + params.length);
-    _writeU32(body, 0, initiateTag);
-    _writeU32(body, 4, advertisedRecvWindowCredit);
-    _writeU16(body, 8, numOutboundStreams);
-    _writeU16(body, 10, numInboundStreams);
-    _writeU32(body, 12, initialTsn);
+    writeU32(body, 0, initiateTag);
+    writeU32(body, 4, advertisedRecvWindowCredit);
+    writeU16(body, 8, numOutboundStreams);
+    writeU16(body, 10, numInboundStreams);
+    writeU32(body, 12, initialTsn);
     body.setRange(16, body.length, params);
     return _wrapChunk(type, flags, body);
   }
@@ -112,11 +110,11 @@ final class SctpInitAckChunk extends SctpChunk {
     final cookieParam = SctpStateCookieParameter(cookie);
     final params = _encodeParams([cookieParam, ...parameters]);
     final body = Uint8List(16 + params.length);
-    _writeU32(body, 0, initiateTag);
-    _writeU32(body, 4, advertisedRecvWindowCredit);
-    _writeU16(body, 8, numOutboundStreams);
-    _writeU16(body, 10, numInboundStreams);
-    _writeU32(body, 12, initialTsn);
+    writeU32(body, 0, initiateTag);
+    writeU32(body, 4, advertisedRecvWindowCredit);
+    writeU16(body, 8, numOutboundStreams);
+    writeU16(body, 10, numInboundStreams);
+    writeU32(body, 12, initialTsn);
     body.setRange(16, body.length, params);
     return _wrapChunk(type, flags, body);
   }
@@ -164,10 +162,10 @@ final class SctpDataChunk extends SctpChunk {
   @override
   Uint8List encode() {
     final body = Uint8List(12 + userData.length);
-    _writeU32(body, 0, tsn);
-    _writeU16(body, 4, streamId);
-    _writeU16(body, 6, streamSeqNum);
-    _writeU32(body, 8, ppid);
+    writeU32(body, 0, tsn);
+    writeU16(body, 4, streamId);
+    writeU16(body, 6, streamSeqNum);
+    writeU32(body, 8, ppid);
     body.setRange(12, body.length, userData);
     return _wrapChunk(type, flags, body);
   }
@@ -189,18 +187,18 @@ final class SctpSackChunk extends SctpChunk {
   @override
   Uint8List encode() {
     final body = Uint8List(12 + gapAckBlocks.length * 4 + duplicateTsns.length * 4);
-    _writeU32(body, 0, cumulativeTsnAck);
-    _writeU32(body, 4, advertisedRecvWindowCredit);
-    _writeU16(body, 8, gapAckBlocks.length);
-    _writeU16(body, 10, duplicateTsns.length);
+    writeU32(body, 0, cumulativeTsnAck);
+    writeU32(body, 4, advertisedRecvWindowCredit);
+    writeU16(body, 8, gapAckBlocks.length);
+    writeU16(body, 10, duplicateTsns.length);
     var offset = 12;
     for (final (start, end) in gapAckBlocks) {
-      _writeU16(body, offset, start);
-      _writeU16(body, offset + 2, end);
+      writeU16(body, offset, start);
+      writeU16(body, offset + 2, end);
       offset += 4;
     }
     for (final tsn in duplicateTsns) {
-      _writeU32(body, offset, tsn);
+      writeU32(body, offset, tsn);
       offset += 4;
     }
     return _wrapChunk(type, flags, body);
@@ -247,7 +245,7 @@ final class SctpShutdownChunk extends SctpChunk {
   @override
   Uint8List encode() {
     final body = Uint8List(4);
-    _writeU32(body, 0, cumulativeTsnAck);
+    writeU32(body, 0, cumulativeTsnAck);
     return _wrapChunk(type, flags, body);
   }
 }
@@ -318,12 +316,12 @@ final class SctpOutgoingSsnResetRequest extends SctpReconfigParameter {
   @override
   Uint8List encodeValue() {
     final out = Uint8List(12 + streams.length * 2);
-    _writeU32(out, 0, requestSeq);
-    _writeU32(out, 4, responseSeq);
-    _writeU32(out, 8, lastAssignedTsn);
+    writeU32(out, 0, requestSeq);
+    writeU32(out, 4, responseSeq);
+    writeU32(out, 8, lastAssignedTsn);
     var offset = 12;
     for (final s in streams) {
-      _writeU16(out, offset, s);
+      writeU16(out, offset, s);
       offset += 2;
     }
     return out;
@@ -344,10 +342,10 @@ final class SctpIncomingSsnResetRequest extends SctpReconfigParameter {
   @override
   Uint8List encodeValue() {
     final out = Uint8List(4 + streams.length * 2);
-    _writeU32(out, 0, requestSeq);
+    writeU32(out, 0, requestSeq);
     var offset = 4;
     for (final s in streams) {
-      _writeU16(out, offset, s);
+      writeU16(out, offset, s);
       offset += 2;
     }
     return out;
@@ -373,8 +371,8 @@ final class SctpReconfigResponse extends SctpReconfigParameter {
   @override
   Uint8List encodeValue() {
     final out = Uint8List(8);
-    _writeU32(out, 0, responseSeq);
-    _writeU32(out, 4, result);
+    writeU32(out, 0, responseSeq);
+    writeU32(out, 4, result);
     return out;
   }
 }
@@ -431,21 +429,21 @@ SctpChunk? _parseChunk(int type, int flags, Uint8List body) {
     case SctpChunkType.init:
       if (body.length < 16) return null;
       return SctpInitChunk(
-        initiateTag: _u32(body, 0),
-        advertisedRecvWindowCredit: _u32(body, 4),
-        numOutboundStreams: _u16(body, 8),
-        numInboundStreams: _u16(body, 10),
-        initialTsn: _u32(body, 12),
+        initiateTag: readU32(body, 0),
+        advertisedRecvWindowCredit: readU32(body, 4),
+        numOutboundStreams: readU16(body, 8),
+        numInboundStreams: readU16(body, 10),
+        initialTsn: readU32(body, 12),
       );
     case SctpChunkType.initAck:
       if (body.length < 16) return null;
       final cookie = _extractCookie(body.sublist(16));
       return SctpInitAckChunk(
-        initiateTag: _u32(body, 0),
-        advertisedRecvWindowCredit: _u32(body, 4),
-        numOutboundStreams: _u16(body, 8),
-        numInboundStreams: _u16(body, 10),
-        initialTsn: _u32(body, 12),
+        initiateTag: readU32(body, 0),
+        advertisedRecvWindowCredit: readU32(body, 4),
+        numOutboundStreams: readU16(body, 8),
+        numInboundStreams: readU16(body, 10),
+        initialTsn: readU32(body, 12),
         cookie: cookie,
       );
     case SctpChunkType.cookieEcho:
@@ -456,30 +454,30 @@ SctpChunk? _parseChunk(int type, int flags, Uint8List body) {
       if (body.length < 12) return null;
       return SctpDataChunk(
         flags: flags,
-        tsn: _u32(body, 0),
-        streamId: _u16(body, 4),
-        streamSeqNum: _u16(body, 6),
-        ppid: _u32(body, 8),
+        tsn: readU32(body, 0),
+        streamId: readU16(body, 4),
+        streamSeqNum: readU16(body, 6),
+        ppid: readU32(body, 8),
         userData: body.sublist(12),
       );
     case SctpChunkType.sack:
       if (body.length < 12) return null;
-      final numGap = _u16(body, 8);
-      final numDup = _u16(body, 10);
+      final numGap = readU16(body, 8);
+      final numDup = readU16(body, 10);
       final gaps = <(int, int)>[];
       var offset = 12;
       for (var i = 0; i < numGap && offset + 4 <= body.length; i++) {
-        gaps.add((_u16(body, offset), _u16(body, offset + 2)));
+        gaps.add((readU16(body, offset), readU16(body, offset + 2)));
         offset += 4;
       }
       final dups = <int>[];
       for (var i = 0; i < numDup && offset + 4 <= body.length; i++) {
-        dups.add(_u32(body, offset));
+        dups.add(readU32(body, offset));
         offset += 4;
       }
       return SctpSackChunk(
-        cumulativeTsnAck: _u32(body, 0),
-        advertisedRecvWindowCredit: _u32(body, 4),
+        cumulativeTsnAck: readU32(body, 0),
+        advertisedRecvWindowCredit: readU32(body, 4),
         gapAckBlocks: gaps,
         duplicateTsns: dups,
       );
@@ -491,7 +489,7 @@ SctpChunk? _parseChunk(int type, int flags, Uint8List body) {
       return SctpAbortChunk(tcb: (flags & 0x01) != 0);
     case SctpChunkType.shutdown:
       if (body.length < 4) return null;
-      return SctpShutdownChunk(_u32(body, 0));
+      return SctpShutdownChunk(readU32(body, 0));
     case SctpChunkType.shutdownAck:
       return const SctpShutdownAckChunk();
     case SctpChunkType.shutdownComplete:
@@ -507,8 +505,8 @@ List<SctpReconfigParameter> _parseReconfigParams(Uint8List body) {
   final params = <SctpReconfigParameter>[];
   var offset = 0;
   while (offset + 4 <= body.length) {
-    final type = _u16(body, offset);
-    final len = _u16(body, offset + 2);
+    final type = readU16(body, offset);
+    final len = readU16(body, offset + 2);
     if (len < 4 || offset + len > body.length) break; // malformed
     final end = offset + len;
     switch (type) {
@@ -516,12 +514,12 @@ List<SctpReconfigParameter> _parseReconfigParams(Uint8List body) {
         if (len >= 16) {
           final streams = <int>[];
           for (var o = offset + 16; o + 2 <= end; o += 2) {
-            streams.add(_u16(body, o));
+            streams.add(readU16(body, o));
           }
           params.add(SctpOutgoingSsnResetRequest(
-            requestSeq: _u32(body, offset + 4),
-            responseSeq: _u32(body, offset + 8),
-            lastAssignedTsn: _u32(body, offset + 12),
+            requestSeq: readU32(body, offset + 4),
+            responseSeq: readU32(body, offset + 8),
+            lastAssignedTsn: readU32(body, offset + 12),
             streams: streams,
           ));
         }
@@ -529,18 +527,18 @@ List<SctpReconfigParameter> _parseReconfigParams(Uint8List body) {
         if (len >= 8) {
           final streams = <int>[];
           for (var o = offset + 8; o + 2 <= end; o += 2) {
-            streams.add(_u16(body, o));
+            streams.add(readU16(body, o));
           }
           params.add(SctpIncomingSsnResetRequest(
-            requestSeq: _u32(body, offset + 4),
+            requestSeq: readU32(body, offset + 4),
             streams: streams,
           ));
         }
       case SctpReconfigParamType.reconfigResponse:
         if (len >= 12) {
           params.add(SctpReconfigResponse(
-            responseSeq: _u32(body, offset + 4),
-            result: _u32(body, offset + 8),
+            responseSeq: readU32(body, offset + 4),
+            result: readU32(body, offset + 8),
           ));
         }
       default:
@@ -554,8 +552,8 @@ List<SctpReconfigParameter> _parseReconfigParams(Uint8List body) {
 Uint8List _extractCookie(Uint8List params) {
   var offset = 0;
   while (offset + 4 <= params.length) {
-    final type = _u16(params, offset);
-    final len  = _u16(params, offset + 2);
+    final type = readU16(params, offset);
+    final len  = readU16(params, offset + 2);
     if (len < 4) break; // malformed parameter
     final end = offset + len;
     if (type == 0x0007 && end <= params.length) {
@@ -576,8 +574,7 @@ Uint8List _wrapChunk(int type, int flags, Uint8List body) {
   final out = Uint8List(paddedLen); // zero-filled by default
   out[0] = type;
   out[1] = flags;
-  out[2] = (len >> 8) & 0xFF;
-  out[3] = len & 0xFF;
+  writeU16(out, 2, len);
   out.setRange(4, 4 + body.length, body);
   return out;
 }
@@ -590,8 +587,8 @@ Uint8List _encodeParams(List<SctpParameter> params) =>
 Uint8List _encodeTlv(int type, Uint8List value) {
   final len = 4 + value.length;
   final out = Uint8List((len + 3) & ~3);
-  _writeU16(out, 0, type);
-  _writeU16(out, 2, len);
+  writeU16(out, 0, type);
+  writeU16(out, 2, len);
   out.setRange(4, 4 + value.length, value);
   return out;
 }
@@ -606,19 +603,3 @@ Uint8List _concatBytes(List<Uint8List> parts) {
   }
   return out;
 }
-
-void _writeU16(Uint8List d, int o, int v) {
-  d[o] = (v >> 8) & 0xFF;
-  d[o + 1] = v & 0xFF;
-}
-
-void _writeU32(Uint8List d, int o, int v) {
-  d[o] = (v >> 24) & 0xFF;
-  d[o + 1] = (v >> 16) & 0xFF;
-  d[o + 2] = (v >>  8) & 0xFF;
-  d[o + 3] = v & 0xFF;
-}
-
-int _u16(Uint8List d, int o) => (d[o] << 8) | d[o + 1];
-int _u32(Uint8List d, int o) =>
-    ((d[o] << 24) | (d[o+1] << 16) | (d[o+2] << 8) | d[o+3]) >>> 0;

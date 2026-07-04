@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../core/byte_io.dart';
 import '../core/ip_address.dart';
 import '../core/result.dart';
 import '../core/state_machine.dart' show ParseError;
@@ -15,7 +16,7 @@ abstract final class StunParser {
   static bool isStun(Uint8List raw) {
     if (raw.length < 20) return false;
     if ((raw[0] & 0xC0) != 0) return false;
-    final cookie = _readUint32(raw, 4);
+    final cookie = readU32(raw, 4);
     return cookie == stunMagicCookie;
   }
 
@@ -27,13 +28,13 @@ abstract final class StunParser {
     if ((raw[0] & 0xC0) != 0) {
       return Err(const ParseError('STUN: first two bits must be zero'));
     }
-    final cookie = _readUint32(raw, 4);
+    final cookie = readU32(raw, 4);
     if (cookie != stunMagicCookie) {
       return Err(const ParseError('STUN: invalid magic cookie'));
     }
 
-    final messageType = _readUint16(raw, 0);
-    final messageLength = _readUint16(raw, 2);
+    final messageType = readU16(raw, 0);
+    final messageLength = readU16(raw, 2);
     if (raw.length < 20 + messageLength) {
       return Err(const ParseError('STUN: truncated packet'));
     }
@@ -65,8 +66,8 @@ abstract final class StunParser {
       if (offset + 4 > data.length) {
         return Err(const ParseError('STUN: truncated attribute header'));
       }
-      final attrType = _readUint16(data, offset);
-      final attrLength = _readUint16(data, offset + 2);
+      final attrType = readU16(data, offset);
+      final attrLength = readU16(data, offset + 2);
       offset += 4;
 
       if (offset + attrLength > data.length) {
@@ -102,18 +103,18 @@ abstract final class StunParser {
         return MessageIntegrityAttr(Uint8List.fromList(value));
       case StunAttributeType.fingerprint:
         if (value.length != 4) return null;
-        return FingerprintAttr(_readUint32(value, 0));
+        return FingerprintAttr(readU32(value, 0));
       case StunAttributeType.priority:
         if (value.length != 4) return null;
-        return PriorityAttr(_readUint32(value, 0));
+        return PriorityAttr(readU32(value, 0));
       case StunAttributeType.useCandidate:
         return const UseCandidateAttr();
       case StunAttributeType.iceControlled:
         if (value.length != 8) return null;
-        return IceControlledAttr(_readUint64(value, 0));
+        return IceControlledAttr(readU64(value, 0));
       case StunAttributeType.iceControlling:
         if (value.length != 8) return null;
-        return IceControllingAttr(_readUint64(value, 0));
+        return IceControllingAttr(readU64(value, 0));
       case StunAttributeType.errorCode:
         return _parseErrorCode(value);
       case StunAttributeType.software:
@@ -135,13 +136,13 @@ abstract final class StunParser {
         return DataAttr(value);
       case StunAttributeType.lifetime:
         if (value.length != 4) return null;
-        return LifetimeAttr(_readUint32(value, 0));
+        return LifetimeAttr(readU32(value, 0));
       case StunAttributeType.requestedTransport:
         if (value.length != 4) return null;
         return RequestedTransportAttr(value[0]);
       case StunAttributeType.channelNumber:
         if (value.length != 4) return null;
-        return ChannelNumberAttr(_readUint16(value, 0));
+        return ChannelNumberAttr(readU16(value, 0));
       case StunAttributeType.dontFragment:
         return const DontFragmentAttr();
       default:
@@ -174,7 +175,7 @@ abstract final class StunParser {
     final addrLen = family == 0x01 ? 4 : (family == 0x02 ? 16 : 0);
     if (addrLen == 0) return null;
     if (value.length < 4 + addrLen) return null;
-    final rawPort = _readUint16(value, 2);
+    final rawPort = readU16(value, 2);
     final port = xorTxId == null ? rawPort : rawPort ^ (stunMagicCookie >> 16);
     final bytes = Uint8List(addrLen);
     if (xorTxId == null) {
@@ -198,21 +199,5 @@ abstract final class StunParser {
     final code = clazz * 100 + number;
     final reason = String.fromCharCodes(value.sublist(4));
     return ErrorCodeAttr(code: code, reason: reason);
-  }
-
-  static int _readUint16(Uint8List data, int offset) =>
-      (data[offset] << 8) | data[offset + 1];
-
-  static int _readUint32(Uint8List data, int offset) =>
-      ((data[offset] << 24) |
-       (data[offset + 1] << 16) |
-       (data[offset + 2] << 8) |
-        data[offset + 3]) >>>
-      0;
-
-  static int _readUint64(Uint8List data, int offset) {
-    final hi = _readUint32(data, offset);
-    final lo = _readUint32(data, offset + 4);
-    return (hi << 32) | lo;
   }
 }
