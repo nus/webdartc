@@ -592,26 +592,6 @@ Each item:
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
 
-### dart:io isolation violations + injectable debug logger
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** 14 files outside `lib/transport/` import `dart:io`, against the
-  stated convention. Two independently shippable work items: (a) `stderr.writeln`
-  debug logging (~36 call sites) with a per-module
-  `Platform.environment['WEBDARTC_DEBUG']` flag re-invented in
-  [dtls/state_machine.dart](dart/lib/dtls/state_machine.dart),
-  [sctp/state_machine.dart](dart/lib/sctp/state_machine.dart),
-  [transport_controller.dart](dart/lib/transport/transport_controller.dart),
-  and [peer_connection.dart](dart/lib/peer_connection/peer_connection.dart);
-  (b) [core/ip_address.dart](dart/lib/core/ip_address.dart) using
-  `InternetAddress` for parsing/normalization. The DTLS 1.3 SMs are already
-  `dart:io`-free and show the target shape.
-- **Why deferred:** Broad but mechanical; logging behavior must not change.
-- **Acceptance:** (a) A `lib/core/log.dart` injectable logger owns the
-  env-flag + sink, and state machines lose their `dart:io` imports;
-  (b) `ip_address.dart` parses/normalizes IPv4/IPv6 itself. The CLAUDE.md
-  grep check extended to these dirs passes.
-
 ### Media layer: track-class duplication
 
 - **Found:** 2026-07-03, refactoring audit
