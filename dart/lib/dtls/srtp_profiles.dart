@@ -49,7 +49,9 @@ abstract final class SrtpProfileNegotiation {
 
   /// Bytes of TLS-exported keying material the negotiated profile expects
   /// (RFC 5764 §4.2 / RFC 7714 §12): 2×master key + 2×master salt.
-  static int exportLength(int profileId) {
+  /// A null [profileId] (use_srtp not negotiated) falls back to the legacy
+  /// 60-byte AES-CM length so non-SRTP code paths keep working.
+  static int exportLength(int? profileId) {
     switch (profileId) {
       case aes128CmHmacSha180:
       case aes128CmHmacSha132:

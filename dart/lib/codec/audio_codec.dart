@@ -109,14 +109,14 @@ final class AudioEncoder {
 
   void configure(AudioEncoderConfig config) => _core.configure(
         config.codec,
-        () => CodecRegistry.createAudioEncoder(config.codec),
+        CodecRegistry.createAudioEncoder,
         (backend) => backend
           ..onOutput = _output
           ..onError = _error
           ..configure(config),
       );
 
-  void encode(AudioData data) => _core.submit((backend) => backend.encode(data));
+  void encode(AudioData data) => _core.backend.encode(data);
 
   Future<void> flush() => _core.flush();
 
@@ -151,14 +151,14 @@ final class AudioDecoder {
 
   void configure(AudioDecoderConfig config) => _core.configure(
         config.codec,
-        () => CodecRegistry.createAudioDecoder(config.codec),
+        CodecRegistry.createAudioDecoder,
         (backend) => backend
           ..onOutput = _output
           ..onError = _error
           ..configure(config),
       );
 
-  void decode(EncodedAudioChunk chunk) => _core.submit((backend) => backend.decode(chunk));
+  void decode(EncodedAudioChunk chunk) => _core.backend.decode(chunk);
 
   Future<void> flush() => _core.flush();
 

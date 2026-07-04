@@ -1,7 +1,8 @@
 // Stand-alone DTLS 1.2 / DTLS 1.3 UDP echo server for ad-hoc interop
-// testing. Binds a UDP socket, routes datagrams through
-// [DtlsServerDispatcher], and echoes any decrypted application_data
-// records back to the peer.
+// testing. Binds a UDP socket, feeds datagrams to a server-role
+// [DtlsStateMachine] (which auto-delegates DTLS 1.3 ClientHellos to the
+// v1.3 state machine), and echoes any decrypted application_data records
+// back to the peer.
 //
 // Manual interop checks (run from a separate shell):
 //
@@ -20,9 +21,11 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:webdartc/core/ip_address.dart';
 import 'package:webdartc/core/state_machine.dart';
 import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/dtls/dispatcher.dart';
+import 'package:webdartc/dtls/state_machine.dart';
+import 'package:webdartc/dtls/version_detect.dart';
 
 void usage() {
   stderr.writeln('Usage: dart run tool/dtls13_echo_server.dart [--port PORT]');
@@ -56,9 +59,9 @@ Future<void> main(List<String> args) async {
   // Long-lived self-signed certificate reused across peers.
   final cert = EcdsaCertificate.selfSigned();
 
-  // One dispatcher per peer (keyed by ip:port). DTLS doesn't multiplex
-  // sessions on a single 4-tuple, so each new peer gets a fresh inner
-  // state machine via a brand-new dispatcher.
+  // One state machine per peer (keyed by ip:port). DTLS doesn't multiplex
+  // sessions on a single 4-tuple, so each new peer gets a fresh state
+  // machine.
   final sessions = <String, _Session>{};
 
   socket.listen((event) {
@@ -100,28 +103,29 @@ class _Session {
   final RawDatagramSocket socket;
   final String remoteIp;
   final int remotePort;
-  final DtlsServerDispatcher dispatcher;
+  final DtlsStateMachine dtls;
+  DtlsVersion? version;
 
   _Session({
     required this.socket,
     required EcdsaCertificate cert,
     required this.remoteIp,
     required this.remotePort,
-  }) : dispatcher = DtlsServerDispatcher(localCert: cert) {
-    dispatcher.onConnected = (km) {
-      final ver = dispatcher.isV13 == true ? 'DTLS 1.3' : 'DTLS 1.2';
+  }) : dtls = DtlsStateMachine(role: DtlsRole.server, localCert: cert) {
+    dtls.onConnected = (km) {
+      final ver = version == DtlsVersion.v13 ? 'DTLS 1.3' : 'DTLS 1.2';
       stderr.writeln(
         '[server] $remoteIp:$remotePort connected ($ver, '
         'SRTP keying material ${km.length} bytes)',
       );
     };
-    dispatcher.onApplicationData = (data) {
+    dtls.onApplicationData = (data) {
       stderr.writeln(
         '[server] $remoteIp:$remotePort recv ${data.length}B: '
         '${_summarize(data)}',
       );
       // Echo back.
-      final sent = dispatcher.sendApplicationData(data);
+      final sent = dtls.sendApplicationData(data);
       sent.fold(
         ok: (result) {
           for (final pkt in result.outputPackets) {
@@ -139,9 +143,10 @@ class _Session {
       '[server] $remoteIp:$remotePort recv ${packet.length}B: '
       '${_hex(packet, max: 1500)}',
     );
-    final r = dispatcher.processInput(
+    version ??= detectDtlsVersion(packet);
+    final r = dtls.processInput(
       packet,
-      remoteIp: remoteIp,
+      remoteIp: IpAddress.parse(remoteIp),
       remotePort: remotePort,
     );
     r.fold(
@@ -156,8 +161,7 @@ class _Session {
         }
         if (result.outputPackets.isEmpty) {
           stderr.writeln(
-            '[server] $remoteIp:$remotePort no output (state: '
-            'isV13=${dispatcher.isV13})',
+            '[server] $remoteIp:$remotePort no output (version: $version)',
           );
         }
       },

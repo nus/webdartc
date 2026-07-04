@@ -7,21 +7,20 @@ import 'codec_descriptor.dart';
 import 'codec_registry.dart';
 import 'default_codecs.dart';
 
-VideoCodecDescriptor? _video(String codecKey) {
-  final key = codecKey.toLowerCase();
-  for (final d in bundledCodecDescriptors) {
-    if (d is VideoCodecDescriptor && d.key == key) return d;
-  }
-  return null;
-}
+// Keyed by the descriptors' lower-case CodecRegistry keys (exact match,
+// like the switch lookups these replaced).
+final Map<String, VideoCodecDescriptor> _videoByKey = {
+  for (final d in bundledCodecDescriptors)
+    if (d is VideoCodecDescriptor) d.key: d,
+};
+final Map<String, AudioCodecDescriptor> _audioByKey = {
+  for (final d in bundledCodecDescriptors)
+    if (d is AudioCodecDescriptor) d.key: d,
+};
 
-AudioCodecDescriptor? _audio(String codecKey) {
-  final key = codecKey.toLowerCase();
-  for (final d in bundledCodecDescriptors) {
-    if (d is AudioCodecDescriptor && d.key == key) return d;
-  }
-  return null;
-}
+VideoCodecDescriptor? _video(String codecKey) => _videoByKey[codecKey];
+
+AudioCodecDescriptor? _audio(String codecKey) => _audioByKey[codecKey];
 
 /// A fresh [VideoPayloadDepacketizer] for [codecKey] (a lower-case
 /// CodecRegistry key, e.g. `vp8` / `h264`), or null if the codec has no RTP

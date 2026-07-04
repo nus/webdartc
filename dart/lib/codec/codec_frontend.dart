@@ -34,21 +34,22 @@ final class CodecFrontendCore<Backend extends CodecBackend> {
 
   CodecState get state => _state;
 
-  /// Creates the backend via [create] (throwing [UnsupportedError] naming
-  /// [codec] when the registry has none), wires it up via [initialize], and
-  /// enters [CodecState.configured].
-  void configure(String codec, Backend? Function() create, void Function(Backend backend) initialize) {
+  /// Creates the backend via [create] (called with [codec]; throws
+  /// [UnsupportedError] naming [codec] when it returns null), wires it up
+  /// via [initialize], and enters [CodecState.configured].
+  void configure(String codec, Backend? Function(String codec) create,
+      void Function(Backend backend) initialize) {
     if (_state == CodecState.closed) throw StateError('$_label is closed');
-    _backend = create();
+    _backend = create(codec);
     if (_backend == null) throw UnsupportedError('No backend for codec: $codec');
     initialize(_backend!);
     _state = CodecState.configured;
   }
 
-  /// Runs [op] (an encode/decode call) against the configured backend.
-  void submit(void Function(Backend backend) op) {
+  /// The configured backend — the encode/decode entry point.
+  Backend get backend {
     if (_state != CodecState.configured) throw StateError('$_label not configured');
-    op(_backend!);
+    return _backend!;
   }
 
   Future<void> flush() async {

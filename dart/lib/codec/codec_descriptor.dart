@@ -48,8 +48,9 @@ final class VideoCodecDescriptor extends CodecDescriptor {
   /// Android MediaCodec backends. Registered only when the device actually
   /// provides the codec ([platformCodecAvailable]) — there is no bundled
   /// fallback on Android, and `MediaEngine.forPlatform` drops an unavailable
-  /// codec from the SDP so it is never negotiated.
-  final VideoBackendPair android;
+  /// codec from the SDP so it is never negotiated. Null = the codec has no
+  /// Android backend at all.
+  final VideoBackendPair? android;
 
   /// RTP payload-format factories (packetizers are stateful, hence factories).
   final PayloadPacketizer Function({int maxPayloadSize}) packetizer;
@@ -70,7 +71,7 @@ final class AudioCodecDescriptor extends CodecDescriptor {
   final AudioBackendPair bundled;
 
   /// Android MediaCodec backends, gated like [VideoCodecDescriptor.android].
-  final AudioBackendPair android;
+  final AudioBackendPair? android;
 
   /// RTP depacketizer factory (audio payloads need no packetizer class).
   final AudioPayloadDepacketizer Function() depacketizer;
@@ -89,29 +90,39 @@ final class AudioCodecDescriptor extends CodecDescriptor {
 void registerCodec(CodecDescriptor descriptor) {
   switch (descriptor) {
     case VideoCodecDescriptor():
-      final pair = _selectVideo(descriptor);
+      final pair = _selectTier(
+        key: descriptor.key,
+        bundled: descriptor.bundled,
+        apple: descriptor.apple,
+        android: descriptor.android,
+      );
       if (pair == null) return;
       CodecRegistry.registerVideoEncoder(descriptor.key, pair.encoder);
       CodecRegistry.registerVideoDecoder(descriptor.key, pair.decoder);
     case AudioCodecDescriptor():
-      final pair = _selectAudio(descriptor);
+      final pair = _selectTier(
+        key: descriptor.key,
+        bundled: descriptor.bundled,
+        apple: null,
+        android: descriptor.android,
+      );
       if (pair == null) return;
       CodecRegistry.registerAudioEncoder(descriptor.key, pair.encoder);
       CodecRegistry.registerAudioDecoder(descriptor.key, pair.decoder);
   }
 }
 
-VideoBackendPair? _selectVideo(VideoCodecDescriptor d) {
+/// The backend pair to register on this platform, or null to register
+/// nothing (Android without a usable MediaCodec).
+P? _selectTier<P>({
+  required String key,
+  required P bundled,
+  required P? apple,
+  required P? android,
+}) {
   if (Platform.isAndroid) {
-    return platformCodecAvailable(d.key) ? d.android : null;
+    return android != null && platformCodecAvailable(key) ? android : null;
   }
-  if (Platform.isMacOS || Platform.isIOS) return d.apple ?? d.bundled;
-  return d.bundled;
-}
-
-AudioBackendPair? _selectAudio(AudioCodecDescriptor d) {
-  if (Platform.isAndroid) {
-    return platformCodecAvailable(d.key) ? d.android : null;
-  }
-  return d.bundled;
+  if ((Platform.isMacOS || Platform.isIOS) && apple != null) return apple;
+  return bundled;
 }

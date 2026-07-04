@@ -19,10 +19,8 @@ final bool webdartcDebug = (() {
   }
 })();
 
-/// Where [webdartcLog] writes. Defaults to stderr; tests or embedders can
-/// inject their own sink.
-void Function(String message) webdartcLogSink = stderr.writeln;
-
-/// Writes [message] to [webdartcLogSink]. Callers on hot paths guard with
-/// [webdartcDebug] themselves so message interpolation stays lazy.
-void webdartcLog(String message) => webdartcLogSink(message);
+/// Debug log sink, invoked as `webdartcLog(message)`. Defaults to stderr;
+/// tests or embedders can reassign it to inject their own sink. Callers on
+/// hot paths guard with [webdartcDebug] themselves so message interpolation
+/// stays lazy.
+void Function(String message) webdartcLog = stderr.writeln;

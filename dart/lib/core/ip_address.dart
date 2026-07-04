@@ -114,7 +114,7 @@ final class IpAddress {
   /// zero run covering exactly the first six groups, `::ffff:a.b.c.d` for
   /// IPv4-mapped). Cached on first call — hot paths (DTLS / SCTP / ICE
   /// OutputPacket builders) call this on every emitted record.
-  String toCanonical() => _canonical ??= isV4 ? _formatV4() : _formatV6();
+  String toCanonical() => _canonical ??= isV4 ? _dotted(0) : _formatV6();
 
   @override
   String toString() => toCanonical();
@@ -149,7 +149,7 @@ final class IpAddress {
     final out = Uint8List(4);
     for (var i = 0; i < 4; i++) {
       final part = parts[i];
-      if (part.isEmpty || part.length > 10) return null;
+      if (part.isEmpty) return null;
       var value = 0;
       for (var j = 0; j < part.length; j++) {
         final c = part.codeUnitAt(j);
@@ -175,7 +175,6 @@ final class IpAddress {
       if (tail == null) return null;
       final normalized = '${host.substring(0, lastColon + 1)}'
           '${tail[0]}.${tail[1]}.${tail[2]}.${tail[3]}';
-      if (normalized == host) return null; // avoid infinite retry
       try {
         return Uint8List.fromList(Uri.parseIPv6Address(normalized));
       } on FormatException {
@@ -186,7 +185,10 @@ final class IpAddress {
 
   // ── Formatting ────────────────────────────────────────────────────────────
 
-  String _formatV4() => '${_bytes[0]}.${_bytes[1]}.${_bytes[2]}.${_bytes[3]}';
+  /// Dotted-quad rendering of four bytes starting at [offset] (0 for an
+  /// IPv4 address, 12 for an embedded IPv4 tail).
+  String _dotted(int offset) => '${_bytes[offset]}.${_bytes[offset + 1]}.'
+      '${_bytes[offset + 2]}.${_bytes[offset + 3]}';
 
   String _formatV6() {
     final words = List<int>.generate(
@@ -232,7 +234,7 @@ final class IpAddress {
       }
       if (i != 0 && i != bestBase + bestLen) out.write(':');
       if (i == 6 && dottedTail) {
-        out.write(_formatV4Tail());
+        out.write(_dotted(12));
         break;
       }
       out.write(words[i].toRadixString(16));
@@ -240,7 +242,4 @@ final class IpAddress {
     }
     return out.toString();
   }
-
-  String _formatV4Tail() =>
-      '${_bytes[12]}.${_bytes[13]}.${_bytes[14]}.${_bytes[15]}';
 }

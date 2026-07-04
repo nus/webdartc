@@ -122,7 +122,7 @@ final class VideoEncoder {
 
   void configure(VideoEncoderConfig config) => _core.configure(
         config.codec,
-        () => CodecRegistry.createVideoEncoder(config.codec),
+        CodecRegistry.createVideoEncoder,
         (backend) => backend
           ..onOutput = _output
           ..onError = _error
@@ -130,7 +130,7 @@ final class VideoEncoder {
       );
 
   void encode(VideoFrame frame, [VideoEncoderEncodeOptions? options]) =>
-      _core.submit((backend) => backend.encode(frame, keyFrame: options?.keyFrame ?? false));
+      _core.backend.encode(frame, keyFrame: options?.keyFrame ?? false);
 
   Future<void> flush() => _core.flush();
 
@@ -165,14 +165,14 @@ final class VideoDecoder {
 
   void configure(VideoDecoderConfig config) => _core.configure(
         config.codec,
-        () => CodecRegistry.createVideoDecoder(config.codec),
+        CodecRegistry.createVideoDecoder,
         (backend) => backend
           ..onOutput = _output
           ..onError = _error
           ..configure(config),
       );
 
-  void decode(EncodedVideoChunk chunk) => _core.submit((backend) => backend.decode(chunk));
+  void decode(EncodedVideoChunk chunk) => _core.backend.decode(chunk);
 
   Future<void> flush() => _core.flush();
 

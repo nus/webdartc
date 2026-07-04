@@ -694,12 +694,9 @@ abstract base class DtlsV13Endpoint implements core.ProtocolStateMachine {
   void _fireOnConnected() {
     final cb = onConnected;
     if (cb == null) return;
-    final exportLen = _selectedSrtpProfile != null
-        ? SrtpProfileNegotiation.exportLength(_selectedSrtpProfile!)
-        : DtlsV13SrtpExport.srtpAes128CmHmacSha180Length;
     cb(DtlsV13SrtpExport.export(
       exporterMasterSecret: _exporterMasterSecret!,
-      length: exportLen,
+      length: SrtpProfileNegotiation.exportLength(_selectedSrtpProfile),
     ));
   }
 }

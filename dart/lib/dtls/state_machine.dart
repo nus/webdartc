@@ -787,8 +787,8 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   /// keeps non-SRTP code paths and unit tests working unchanged.
   int _srtpExportLengthForSelectedProfile() {
     final p = _selectedSrtpProfile;
-    if (p == null || p.length < 2) return 60;
-    return SrtpProfileNegotiation.exportLength((p[0] << 8) | p[1]);
+    return SrtpProfileNegotiation.exportLength(
+        (p == null || p.length < 2) ? null : (p[0] << 8) | p[1]);
   }
 
   // ── Server-side handlers ─────────────────────────────────────────────────

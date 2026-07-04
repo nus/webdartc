@@ -350,7 +350,7 @@ final class SdpNegotiator {
           if (id != null) {
             _pc._rtcp._twccExtId = id;
             if (PeerConnection._debug) {
-              PeerConnection._log('[pc] transport-cc extension ID: $id');
+              webdartcLog('[pc] transport-cc extension ID: $id');
             }
           }
         }
@@ -369,7 +369,7 @@ final class SdpNegotiator {
           if (ssrc != null) {
             _pc._rtcp._rtpRecvStats.putIfAbsent(ssrc, () => _RtpRecvStats(ssrc));
             if (PeerConnection._debug) {
-              PeerConnection._log('[pc] pre-populated remote SSRC from SDP: $ssrc');
+              webdartcLog('[pc] pre-populated remote SSRC from SDP: $ssrc');
             }
           }
         }
@@ -418,7 +418,7 @@ final class SdpNegotiator {
             if (negotiatedPt != null) sender.payloadType = negotiatedPt;
           }
           if (PeerConnection._debug) {
-            PeerConnection._log(
+            webdartcLog(
                 '[pc] sender ${t.kind} mid=$mid extId=$midExtId pt=${sender.payloadType}');
           }
         }

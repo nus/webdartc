@@ -319,7 +319,10 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
     if (useSrtp != null) {
       final offered = parseUseSrtpExtData(useSrtp.data);
       if (offered != null) {
-        _selectedSrtpProfile = _pickSrtpProfile(offered);
+        _selectedSrtpProfile = SrtpProfileNegotiation.pick(
+          offered,
+          preference: SrtpProfileNegotiation.v13Preference,
+        );
       }
     }
   }
@@ -485,12 +488,6 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
       fullDtls: fullDtls,
     );
   }
-
-  static int? _pickSrtpProfile(List<int> offered) =>
-      SrtpProfileNegotiation.pick(
-        offered,
-        preference: SrtpProfileNegotiation.v13Preference,
-      );
 
   core.Result<ProcessResult, core.ProtocolError> _sendServerFlight() {
     final suite = _suite!;
