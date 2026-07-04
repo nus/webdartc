@@ -35,7 +35,10 @@ Each item:
   shared util) exposing `openNativeLibrary({macos, linux, windows, label})`.
   All four callers reduce to one-liners. Apple-framework absolute-path loaders
   in `crypto/macos_backend.dart` and `crypto/security_framework.dart` stay as
-  they are.
+  they are. The platform-dispatch half of this shape already exists as
+  `forPlatform` in [dart/lib/core/platform_dispatch.dart](dart/lib/core/platform_dispatch.dart)
+  (landed with the 2026-07-04 crypto-factory dedup) — build the loader on top
+  of or alongside it rather than adding a second dispatch helper.
 
 ### Android H.264 codec (MediaCodec via NDK FFI) — DONE (2026-06-27)
 
@@ -583,19 +586,6 @@ Each item:
 > classes, and convention drift. Suggested order: ByteReader/ByteWriter
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
-
-### Crypto per-platform dispatch copy-pasted six times
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [crypto_backend.dart:66-108](dart/lib/crypto/crypto_backend.dart#L66-L108) —
-  ECDH/ECDSA/verify/AES-CM/AES-GCM/ChaCha20 factories each repeat the same
-  `if (Platform.isMacOS)… isLinux||isAndroid… isWindows… throw` chain.
-- **Why deferred:** Cosmetic; safe any time.
-- **Acceptance:** One `_forPlatform<T>({macos, posix, windows})` helper; each
-  factory becomes a one-liner. New-backend additions can't miss a branch.
-  Same shape as the "Shared dynamic-library loader helper" entry (Codec / FFI
-  section) — consider one shared platform-dispatch helper serving both, rather
-  than landing two same-shaped helpers.
 
 ### Video/Audio codec frontends are type-parameter twins
 
