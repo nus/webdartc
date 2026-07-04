@@ -80,14 +80,14 @@ final class PacketDemuxer {
       if (decResult.isOk) {
         _tc.onRtcp?.call(decResult.value);
       } else if (TransportController._debug) {
-        stderr.writeln('[transport] SRTCP decrypt failed: ${decResult.error} len=${data.length}');
+        webdartcLog('[transport] SRTCP decrypt failed: ${decResult.error} len=${data.length}');
       }
     } else {
       final decResult = srtp.decryptRtp(data);
       if (decResult.isOk) {
         _tc.onRtp?.call(decResult.value, arrivalUs);
       } else if (TransportController._debug) {
-        stderr.writeln('[transport] SRTP decrypt failed: ${decResult.error} len=${data.length}'
+        webdartcLog('[transport] SRTP decrypt failed: ${decResult.error} len=${data.length}'
             ' b0=0x${data[0].toRadixString(16)}');
       }
     }

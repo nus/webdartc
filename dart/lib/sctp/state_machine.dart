@@ -1,7 +1,7 @@
-import 'dart:io' show Platform, stderr;
 import 'dart:typed_data';
 
 import '../core/byte_io.dart';
+import '../core/log.dart';
 import '../core/state_machine.dart';
 import '../crypto/csprng.dart';
 import 'crc32c.dart';
@@ -95,10 +95,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
 
   // Local SCTP port (fixed for WebRTC: 5000)
   static const int _sctpPort = 5000;
-  static final bool _debug = (() {
-    try { return Platform.environment['WEBDARTC_DEBUG'] == '1'; }
-    catch (_) { return false; }
-  })();
+  static final bool _debug = webdartcDebug;
 
   /// Called when the SCTP association is established.
   void Function()? onEstablished;
@@ -257,14 +254,14 @@ final class SctpStateMachine implements ProtocolStateMachine {
     if (chunks.first is! SctpInitChunk &&
         hdr.verificationTag != _localVerificationTag) {
       if (_debug) {
-        stderr.writeln('[sctp] VTag mismatch: got=0x${hdr.verificationTag.toRadixString(16)} '
+        webdartcLog('[sctp] VTag mismatch: got=0x${hdr.verificationTag.toRadixString(16)} '
             'expected=0x${_localVerificationTag.toRadixString(16)} '
             'chunkType=${chunks.first.runtimeType} state=$_state');
       }
       return const Ok(ProcessResult.empty); // silently discard
     }
     if (_debug && chunks.isNotEmpty) {
-      stderr.writeln('[sctp] processing ${chunks.length} chunks, first=${chunks.first.runtimeType} state=$_state');
+      webdartcLog('[sctp] processing ${chunks.length} chunks, first=${chunks.first.runtimeType} state=$_state');
     }
 
     final results = <OutputPacket>[];
@@ -331,7 +328,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
     // INIT tag ≠ INIT-ACK tag on two parallel handshake tracks.
     if (_state == SctpState.cookieWait || _state == SctpState.cookieEchoed) {
       if (_debug) {
-        stderr.writeln('[sctp] simultaneous open: INIT in state=$_state '
+        webdartcLog('[sctp] simultaneous open: INIT in state=$_state '
             '→ yield to peer, becoming server');
       }
       _yieldedToRemoteInit = true;
@@ -344,12 +341,12 @@ final class SctpStateMachine implements ProtocolStateMachine {
         _state != SctpState.closed &&
         _state != SctpState.established) {
       if (_debug) {
-        stderr.writeln('[sctp] ignoring INIT in state=$_state');
+        webdartcLog('[sctp] ignoring INIT in state=$_state');
       }
       return const Ok(ProcessResult.empty);
     }
     if (_debug) {
-      stderr.writeln('[sctp] INIT: tag=0x${init.initiateTag.toRadixString(16)} '
+      webdartcLog('[sctp] INIT: tag=0x${init.initiateTag.toRadixString(16)} '
           'rwnd=${init.advertisedRecvWindowCredit} '
           'os=${init.numOutboundStreams} is=${init.numInboundStreams} '
           'tsn=0x${init.initialTsn.toRadixString(16)} '
@@ -564,7 +561,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
 
   void _processPayload(int streamId, int ppid, Uint8List data) {
     if (_debug) {
-      stderr.writeln('[sctp] payload streamId=$streamId ppid=$ppid dataLen=${data.length}'
+      webdartcLog('[sctp] payload streamId=$streamId ppid=$ppid dataLen=${data.length}'
           ' data[0]=${data.isNotEmpty ? data[0] : -1}');
     }
     if (ppid == SctpPpid.webrtcDcep) {

@@ -87,7 +87,7 @@ final class RtpReceiver {
                 clockRate: clockRate,
                 channels: channels,
                 requestKeyframe: requestKeyframe,
-                onError: (Object e) => stderr.writeln(
+                onError: (Object e) => webdartcLog(
                     '[webdartc] receive pipeline error (ssrc=$ssrc): $e'),
               );
 

@@ -152,7 +152,7 @@ final class SocketPool {
       _sockets[key] = fresh;
       _listenWithRecovery(fresh, key, bindAddr);
       if (TransportController._debug) {
-        stderr.writeln('[transport] rebound $key:$boundPort after the '
+        webdartcLog('[transport] rebound $key:$boundPort after the '
             'runtime closed the socket on a send error');
       }
     } catch (e) {
@@ -160,7 +160,7 @@ final class SocketPool {
       // binding; sends fall back to the remaining sockets.
       _sockets.remove(key);
       if (TransportController._debug) {
-        stderr.writeln('[transport] rebind of $key:$boundPort failed: $e');
+        webdartcLog('[transport] rebind of $key:$boundPort failed: $e');
       }
     }
   }
@@ -232,7 +232,7 @@ final class SocketPool {
   /// swallow them rather than letting them tear down the isolate.
   void _onSocketError(Object error, StackTrace stack) {
     if (TransportController._debug) {
-      stderr.writeln('[transport] socket error: $error');
+      webdartcLog('[transport] socket error: $error');
     }
   }
 
@@ -263,12 +263,12 @@ final class SocketPool {
       packetsReceived++;
 
       if (TransportController._debug) {
-        stderr.writeln('[transport] RX ${data.length}b from $remoteIp:$remotePort'
+        webdartcLog('[transport] RX ${data.length}b from $remoteIp:$remotePort'
             ' on local=$bindIp'
             ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
         if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
           final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-          stderr.writeln('[transport] RX hex: $hex');
+          webdartcLog('[transport] RX hex: $hex');
         }
       }
 
@@ -323,12 +323,12 @@ final class SocketPool {
       // Skip IPv6 destinations on IPv4-only sockets.
       if (addr.type == InternetAddressType.IPv6) return;
       if (TransportController._debug) {
-        stderr.writeln('[transport] TX ${data.length}b to $ip:$port'
+        webdartcLog('[transport] TX ${data.length}b to $ip:$port'
             ' from local=${localIp ?? "?"}'
             ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
         if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
           final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-          stderr.writeln('[transport] TX hex: $hex');
+          webdartcLog('[transport] TX hex: $hex');
         }
       }
       final socket = _selectSocket(localIp);

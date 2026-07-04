@@ -1,6 +1,6 @@
-import 'dart:io' show Platform, stderr;
 import 'dart:typed_data';
 
+import '../core/log.dart';
 import '../core/state_machine.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdh.dart';
@@ -71,7 +71,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   int _msgSeqCounter = 0;
 
   // Debug logging
-  static final bool _debug = Platform.environment['WEBDARTC_DEBUG'] == '1';
+  static final bool _debug = webdartcDebug;
 
   // Selected cipher suite
   CipherSuite _negotiatedSuite = CipherSuite.ecdhEcdsaAes128GcmSha256;
@@ -196,7 +196,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         final result = _processRecord(record);
         if (result.isErr) {
           if (_debug) {
-            stderr.writeln('[dtls] processRecord ERROR: ${result.error}');
+            webdartcLog('[dtls] processRecord ERROR: ${result.error}');
           }
           return Err(result.error);
         }
@@ -204,8 +204,8 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         nextTimeout = result.value.nextTimeout ?? nextTimeout;
       } catch (e, st) {
         if (_debug) {
-          stderr.writeln('[dtls] processRecord EXCEPTION: $e');
-          stderr.writeln('[dtls] $st');
+          webdartcLog('[dtls] processRecord EXCEPTION: $e');
+          webdartcLog('[dtls] $st');
         }
         return Err(CryptoError('DTLS exception: $e'));
       }
@@ -228,7 +228,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> _processRecord(DtlsRecord record) {
     if (_debug) {
-      stderr.writeln(
+      webdartcLog(
         '[dtls] record type=${record.contentType} '
         'epoch=${record.epoch} seq=${record.sequenceNumber} '
         'fragLen=${record.fragment.length}',
@@ -238,7 +238,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     // Validate epoch: only 0 (plaintext) and 1 (encrypted) are valid in DTLS 1.2
     if (record.epoch > 1) {
       if (_debug) {
-        stderr.writeln(
+        webdartcLog(
           '[dtls] dropping record with invalid epoch=${record.epoch}',
         );
       }
@@ -253,7 +253,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         // arrived before CKE was processed due to reordering). Silently drop
         // and wait for retransmission after keys are established.
         if (_debug) {
-          stderr.writeln(
+          webdartcLog(
             '[dtls] dropping epoch=${record.epoch} record — no keys yet',
           );
         }
@@ -262,7 +262,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       final decrypted = _decryptRecord(record);
       if (decrypted == null) {
         if (_debug) {
-          stderr.writeln(
+          webdartcLog(
             '[dtls] decryption failed for epoch=${record.epoch} '
             'seq=${record.sequenceNumber} fragLen=${record.fragment.length}',
           );
@@ -304,7 +304,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     if (hs.msgType != DtlsHandshakeType.clientHello &&
         _processedHandshake.contains(dupKey)) {
       if (_debug) {
-        stderr.writeln(
+        webdartcLog(
           '[dtls] dropping duplicate handshake msgType=${hs.msgType} '
           'msgSeq=${hs.messageSeq}',
         );
@@ -316,7 +316,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
           _state == DtlsHandshakeState.connected &&
           _lastFlight != null) {
         if (_debug) {
-          stderr.writeln('[dtls] resending last flight for dropped Finished');
+          webdartcLog('[dtls] resending last flight for dropped Finished');
         }
         final packets = _lastFlight!
             .map((f) => OutputPacket(
@@ -373,7 +373,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     } else if (hs.messageSeq > _nextExpectedMsgSeq) {
       // Ahead of order — buffer for later.
       if (_debug) {
-        stderr.writeln(
+        webdartcLog(
           '[dtls] buffering out-of-order msgType=${hs.msgType} '
           'msgSeq=${hs.messageSeq} (expected=$_nextExpectedMsgSeq)',
         );
@@ -433,7 +433,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     Uint8List fullFragment,
   ) {
     if (_debug) {
-      stderr.writeln(
+      webdartcLog(
         '[dtls] handshake msgType=$msgType bodyLen=${body.length}',
       );
     }
@@ -535,7 +535,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
           final profileId = (body[offset + 2] << 8) | body[offset + 3];
           _selectedSrtpProfile = [(profileId >> 8) & 0xFF, profileId & 0xFF];
           if (_debug) {
-            stderr.writeln(
+            webdartcLog(
               '[dtls] ServerHello use_srtp profile: '
               '0x${profileId.toRadixString(16).padLeft(4, "0")}',
             );
@@ -847,7 +847,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     // keys (which would desynchronize the master secret).
     if (_serverRandom != null && _lastFlight != null) {
       if (_debug) {
-        stderr.writeln(
+        webdartcLog(
           '[dtls] ClientHello retransmission — resending last flight',
         );
       }
@@ -915,11 +915,11 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         );
       }
     }
-    stderr.writeln(
+    webdartcLog(
       '[dtls] ClientHello cipher suites (${suites.length}): ${suites.join(", ")}',
     );
     // Also log the msgSeq we'll use for server flight
-    stderr.writeln(
+    webdartcLog(
       '[dtls] Server flight will use msgSeqCounter=$_msgSeqCounter',
     );
   }
@@ -954,7 +954,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
           offered.add((body[off + 2 + i] << 8) | body[off + 2 + i + 1]);
         }
         if (_debug) {
-          stderr.writeln(
+          webdartcLog(
             '[dtls] use_srtp profiles offered: ${offered.map((p) => "0x${p.toRadixString(16).padLeft(4, "0")}").join(", ")}',
           );
         }
@@ -965,7 +965,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         if (picked != null) {
           _selectedSrtpProfile = [(picked >> 8) & 0xFF, picked & 0xFF];
           if (_debug) {
-            stderr.writeln(
+            webdartcLog(
               '[dtls] selected SRTP profile: 0x${picked.toRadixString(16).padLeft(4, "0")}',
             );
           }
@@ -1406,7 +1406,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       final level = body[0]; // 1=warning, 2=fatal
       final desc = body[1];
       if (_debug) {
-        stderr.writeln(
+        webdartcLog(
           '[dtls] ALERT level=$level desc=$desc'
           ' (${_alertName(desc)})',
         );

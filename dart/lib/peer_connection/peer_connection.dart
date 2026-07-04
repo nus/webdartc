@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, stderr;
 import 'dart:typed_data';
 
 import '../api/media_engine.dart';
@@ -8,6 +7,7 @@ import '../api/setting_engine.dart';
 import '../api/stats.dart';
 import '../codec/default_codecs.dart';
 import '../core/byte_io.dart';
+import '../core/log.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
 import '../dtls/state_machine.dart';
@@ -645,8 +645,8 @@ final class PeerConnection {
     }
   }
 
-  static final bool _debug = Platform.environment['WEBDARTC_DEBUG'] == '1';
-  static void _log(String msg) => stderr.writeln(msg);
+  static final bool _debug = webdartcDebug;
+  static void _log(String msg) => webdartcLog(msg);
 
   void _onDtlsConnected(Uint8List keyMaterial) {
     // W3C: connectionState = "connected" when BOTH ICE and DTLS are up.
