@@ -307,7 +307,9 @@ Each item:
   [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart).
 - **Why deferred:** Keyframe-on-demand mostly relies on PLI today.
 - **Acceptance:** Per-SSRC FIR counter incremented mod 256; a second FIR
-  triggers a fresh keyframe.
+  triggers a fresh keyframe. While here, extract the inline raw-byte FIR
+  builder in `_sendRtcpRR` (~L1714) into an `RtcpFir` class with the same
+  `build()` contract as `RtcpPli` (2026-07-03 refactoring audit).
 
 ### RTCP RR sent on a fixed 100 ms timer
 
@@ -570,3 +572,316 @@ Each item:
   backend work is large and platform-specific.
 - **Acceptance:** `getUserMedia`-equivalent camera + mic capture and speaker
   playback on Android, wired through the Flutter plugin's native side.
+
+---
+
+## Refactoring
+
+> Entries below come from the 2026-07-03 refactoring audit (parallel
+> sub-agents over pc/media, transport/ice/dtls, rtp/srtp/sctp/sdp, and
+> crypto/codec). These are **code smells, not bugs** — duplication, god
+> classes, and convention drift. Suggested order: ByteReader/ByteWriter
+> first (it unlocks several others), then the DTLS v13 merge, then the god
+> class splits.
+
+### DTLS 1.3 client/server state machines are near-total copies
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** [client_state_machine.dart](dart/lib/dtls/v13/client_state_machine.dart)
+  (1355 lines) and [state_machine.dart](dart/lib/dtls/v13/state_machine.dart)
+  (server, 1455 lines) duplicate the record layer wholesale: `_Reassembly`
+  (identical), fragment accumulation/`_buildSingleFragmentView` (byte-for-byte),
+  `_processHandshakeFragments`, ACK/KeyUpdate emit+handle, retransmit
+  timers/counters, plaintext/ciphertext record dispatch, and
+  `sendApplicationData`. Roughly 40–50 % of the combined ~2800 lines.
+- **Why deferred:** Large structural change; needs the full DTLS test suite
+  (and Chrome interop e2e) as a safety net, not a drive-by.
+- **Acceptance:** A shared `DtlsV13RecordLayer` (epoch/seq, emit, reassembly,
+  ACK/KeyUpdate) + common endpoint base; client/server keep only role-specific
+  handshake transitions. All DTLS unit + e2e tests stay green.
+
+### PeerConnection god class (1920 lines)
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** [peer_connection.dart](dart/lib/peer_connection/peer_connection.dart)
+  holds SDP negotiation, RTCP send/receive, stats, track/transceiver management,
+  and ICE/DTLS/SCTP wiring in one class. Cohesive extractable chunks:
+  **RtcpSession** (`_sendRtcpRR` ~1625–1747, TWCC feedback, PLI, RTCP timer +
+  its field cluster), **StatsCollector** (`getStats` alone is 206 lines,
+  ~L796), **SdpNegotiator** (create/set-description, `_assignMidToTransceivers`,
+  the PT→kind/clock/codec/channels maps). `setRemoteDescription` (137 lines)
+  also splits into ingest/fingerprint/twcc/ssrc helpers.
+- **Why deferred:** Wide blast radius; best done as its own branch with no
+  behavior change.
+- **Acceptance:** PeerConnection reduced to a facade delegating to the three
+  new collaborators; no public-API change; existing tests pass unchanged.
+
+### TransportController mixed responsibilities (1143 lines)
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** [transport_controller.dart](dart/lib/transport/transport_controller.dart)
+  mixes socket bind/recovery/pending-send queueing, packet demux
+  (`_dispatch`/`_processIce`/`_processDtls`/`_processSrtp`), timer scheduling
+  (`_dispatchTimeout` is a giant `token is X || token is Y` chain), TURN relay
+  routing/channel promotion, TURN-TCP control connections, and a DNS cache.
+- **Why deferred:** It is the only I/O module — regressions here break
+  everything; split needs care.
+- **Acceptance:** Extracted `SocketPool`, `PacketDemuxer`, `TimerScheduler`
+  (TimerToken→owning-SM registry instead of type chains), and
+  `TurnRelayRouter`; TransportController composes them.
+
+### Shared ByteReader/ByteWriter in lib/core
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** Big-endian u16/u32(/u64) read/write helpers are copy-pasted with
+  inconsistent names across at least 6 files:
+  [rtp/parser.dart](dart/lib/rtp/parser.dart) (~L236),
+  [rtp/packet.dart](dart/lib/rtp/packet.dart),
+  [srtp/context.dart](dart/lib/srtp/context.dart) (~L621),
+  [sctp/chunk.dart](dart/lib/sctp/chunk.dart) (~L610),
+  [stun/parser.dart](dart/lib/stun/parser.dart) (~L203), and the DTLS
+  record/handshake files. On top of that, hand-rolled shift-and-mask byte
+  packing bypasses even the local helpers (e.g. `RtcpTransportCc.build`,
+  SCTP `_buildPacket`, DTLS fragment views).
+- **Why deferred:** Touches every parser/serializer; mechanical but broad.
+- **Acceptance:** `lib/core/` gains an offset-advancing `ByteReader` /
+  `ByteWriter`; the six-plus local helper sets are deleted. Unlocks the SRTP
+  IV, SCTP chunk, and DTLS cleanups below.
+
+### Crypto per-platform dispatch copy-pasted six times
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** [crypto_backend.dart:66-108](dart/lib/crypto/crypto_backend.dart#L66-L108) —
+  ECDH/ECDSA/verify/AES-CM/AES-GCM/ChaCha20 factories each repeat the same
+  `if (Platform.isMacOS)… isLinux||isAndroid… isWindows… throw` chain.
+- **Why deferred:** Cosmetic; safe any time.
+- **Acceptance:** One `_forPlatform<T>({macos, posix, windows})` helper; each
+  factory becomes a one-liner. New-backend additions can't miss a branch.
+  Same shape as the "Shared dynamic-library loader helper" entry (Codec / FFI
+  section) — consider one shared platform-dispatch helper serving both, rather
+  than landing two same-shaped helpers.
+
+### Video/Audio codec frontends are type-parameter twins
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** [video_codec.dart:110-221](dart/lib/codec/video_codec.dart#L110-L221)
+  and [audio_codec.dart:96-207](dart/lib/codec/audio_codec.dart#L96-L207):
+  Encoder/Decoder `configure`/`encode`/`flush`/`reset`/`close` +
+  `CodecState` transitions are identical except for the frame/chunk types
+  (~200 lines duplicated twice).
+- **Why deferred:** Needs a generic base without disturbing the W3C-named
+  public classes.
+- **Acceptance:** A generic `_CodecFrontend<Input, Chunk, Config, Backend>`
+  base (or mixin); the four public classes shrink to thin typed wrappers.
+
+### Codec capability + registration: single source of truth
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** "Which codec can we send/receive" is answered in several places:
+  three parallel `switch(codecKey)` factories in
+  [packetizer.dart](dart/lib/rtp/packetizer.dart) (`videoDepacketizerFor` /
+  `videoPacketizerFor` / `audioDepacketizerFor`, ~L512–537), the
+  decoder+depacketizer probe in
+  [receive_pipeline.dart](dart/lib/media/receive_pipeline.dart) (~L72), and
+  each `registerXxxCodec()` hand-rolling its own platform branch (VP8/Opus
+  near-identical, H.264 three-way, VP9 none).
+- **Why deferred:** Registration-shape change; ties into `autoRegisterCodecs`.
+- **Acceptance:** A declarative `CodecDescriptor` table drives registration,
+  and a `CodecSupport.canSend/canReceive(kind, codecKey)` helper is the one
+  probe the receive pipeline calls.
+
+### dart:io isolation violations + injectable debug logger
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** 14 files outside `lib/transport/` import `dart:io`, against the
+  stated convention. Two independently shippable work items: (a) `stderr.writeln`
+  debug logging (~36 call sites) with a per-module
+  `Platform.environment['WEBDARTC_DEBUG']` flag re-invented in
+  [dtls/state_machine.dart](dart/lib/dtls/state_machine.dart),
+  [sctp/state_machine.dart](dart/lib/sctp/state_machine.dart),
+  [transport_controller.dart](dart/lib/transport/transport_controller.dart),
+  and [peer_connection.dart](dart/lib/peer_connection/peer_connection.dart);
+  (b) [core/ip_address.dart](dart/lib/core/ip_address.dart) using
+  `InternetAddress` for parsing/normalization. The DTLS 1.3 SMs are already
+  `dart:io`-free and show the target shape.
+- **Why deferred:** Broad but mechanical; logging behavior must not change.
+- **Acceptance:** (a) A `lib/core/log.dart` injectable logger owns the
+  env-flag + sink, and state machines lose their `dart:io` imports;
+  (b) `ip_address.dart` parses/normalizes IPv4/IPv6 itself. The CLAUDE.md
+  grep check extended to these dirs passes.
+
+### SRTP profile tables defined thrice, preference order diverges
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** The SRTP key-export-length table (0x0001→60, 0x0007→56, …)
+  exists in DTLS v1.2 (`_srtpExportLengthForSelectedProfile`), v13 server, and
+  v13 client. Worse, profile *selection* disagrees: v1.2's
+  `_parseSrtpExtension` prefers AES-CM first, v13's `_pickSrtpProfile` prefers
+  GCM — an interop-consistency risk, not just duplication. (Related but
+  distinct from the existing "use_srtp offers only one SRTP profile" entry.)
+- **Why deferred:** Needs a decision on the canonical preference order.
+- **Acceptance:** One `SrtpProfileNegotiation` module (supported set,
+  `pick(offered)`, `exportLength(id)`) used by v1.2 and v13; one documented
+  preference order.
+
+### DTLS 1.2/1.3 version dispatch duplicated
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** [dispatcher.dart](dart/lib/dtls/dispatcher.dart) `_selectVariant`
+  (~L102) and [state_machine.dart](dart/lib/dtls/state_machine.dart)'s embedded
+  `_isDtls13ClientHello` + `_v13Inner` forwarding both sniff the ClientHello
+  `supported_versions` and delegate to the v13 SM — the v1.2 SM re-implements
+  the dispatcher's job internally.
+- **Why deferred:** Requires confirming all v13 entry paths go through the
+  dispatcher before deleting the embedded fallback.
+- **Acceptance:** Version detection lives in one `detectDtlsVersion(packet)`
+  near `record.dart`; `DtlsStateMachine` loses `_v13Inner` and its forwards.
+
+### Media layer: track-class duplication
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** `ReceiverTrack` and `_AvfCaptureTrack` duplicate the
+  id/enabled/broadcast-controller/`stop()` base and the "same-shape silence
+  when disabled" audio logic
+  ([receiver_track.dart](dart/lib/media/receiver_track.dart#L138),
+  [avf_capture_track.dart](dart/lib/media/macos/avf_capture_track.dart#L207)).
+  A future W3C send path will need a third, source-side track class — extract
+  the common base first so it lands on top instead of as another copy.
+- **Why deferred:** Small today (two copies); becomes three the moment a send
+  path lands, so fix it before or with that work.
+- **Acceptance:** A common stream-backed track base class;
+  `AudioData.silenceLike(src)` replaces the inline silence builders.
+
+### Duplicate small utilities → lib/core
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** Three utilities are re-implemented across modules:
+  - **Exponential backoff** (`base * 2^n`, clamped): ICE, DTLS 1.2, v13
+    client, v13 server, SCTP (T3-rtx) — 5 sites.
+  - **hex encoding** (`toRadixString(16).padLeft(2,'0')` join, with
+    case/separator variants): 10+ sites across crypto/ice/pc/transport.
+  - **Constant-time byte compare:** srtp/context (×2 identical),
+    macos_backend, windows_backend, vt_helper `_bytesEqual`.
+- **Why deferred:** Trivial individually; batched here so they land as one
+  sweep.
+- **Acceptance:** `ExponentialBackoff`, `hex()`, and `constantTimeEquals()`
+  defined once (core / crypto) and all call sites converted.
+
+### SRTP context: cipher-path duplication
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** [srtp/context.dart](dart/lib/srtp/context.dart): four IV
+  builders (`_computeIv`/`_computeRtcpIv`/`_computeGcmRtpIv`/`_computeGcmRtcpIv`)
+  share one skeleton (copy salt → XOR SSRC → XOR index, offsets differ);
+  GCM-vs-CM branching and the `authTagLen = …? 10 : 4` ternary repeat across
+  all four encrypt/decrypt methods.
+- **Why deferred:** Crypto code — wants the fuzz/vector tests run per step.
+- **Acceptance:** `_isGcm`/tag-length as profile-derived getters, one
+  XOR-salt IV helper (or a per-profile cipher strategy object); adding a new
+  profile touches one place.
+
+### SDP parser/builder cleanups
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** [sdp/parser.dart](dart/lib/sdp/parser.dart):
+  (a) the transport-attrs map + session-header block is copy-pasted across
+  `buildDataChannelSdp` / `buildMediaSdp` / `buildAnswerFromOffer` (×2);
+  (b) `buildAnswerFromOffer` is ~160 lines; (c) session/media attribute
+  dispatch is duplicated in the parse loop (~L51–86); (d) `SdpParser.parse`
+  returns `Result` but has no `Err` path — broken input parses as `Ok`
+  (a decision-shaped contract fix, shippable separately from the dedup items).
+- **Why deferred:** Builder output must stay byte-compatible for e2e interop.
+- **Acceptance:** Shared `_baseTransportAttrs`/`_wrapSession` helpers; answer
+  builder split by media kind; `parse` either validates (missing `v=`/`m=` →
+  `Err`) or drops the `Result` wrapper.
+
+### DTLS v13 client re-implements handshake.dart builders privately
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** `_buildSignatureAlgorithmsExtData`, `_buildSupportedGroupsExtData`,
+  `_buildClientHelloSupportedVersionsExtData`, key-share and use_srtp builders
+  in [client_state_machine.dart](dart/lib/dtls/v13/client_state_machine.dart)
+  (~L520–702) duplicate or shadow public builders/parsers in
+  [v13/handshake.dart](dart/lib/dtls/v13/handshake.dart). The v1.2 SM likewise
+  hand-parses extension blocks that `parseTlsExtensionsBlock` /
+  `parseUseSrtpExtData` already cover.
+- **Why deferred:** Pairs naturally with the v13 client/server merge above.
+- **Acceptance:** ClientHello builders move to `handshake.dart` as public
+  functions paired with their parsers; v1.2 reuses the shared extension parser
+  at least for use_srtp.
+
+### STUN transaction bookkeeping duplicated between ICE and TURN
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** ICE keys txIds as hex (`_txIdString`,
+  [ice/state_machine.dart](dart/lib/ice/state_machine.dart) ~L1200) while TURN
+  uses `String.fromCharCodes` (`_txIdKey`); both keep the same
+  "pending request with sentAt + retransmit budget/TTL pruning" table shape
+  (`_PendingCheck`/`_StunServerRequest` vs `_PendingRequest`).
+- **Why deferred:** Behavior-neutral consolidation, but touches two FSMs.
+- **Acceptance:** A `StunTransactionTable` in `lib/stun/` (txId normalization,
+  sentAt, pruning) used by both. (`StunMessageBuilder` is already shared —
+  only the pending-table is missing.)
+
+### ECDSA self-signed cert sequence duplicated across 3 crypto backends
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** `buildTbsCertificate → sign → buildCertificate → fingerprint`
+  appears in [macos_backend.dart](dart/lib/crypto/macos_backend.dart) (~L351),
+  [windows_backend.dart](dart/lib/crypto/windows_backend.dart) (~L434),
+  [boringssl_backend.dart](dart/lib/crypto/boringssl_backend.dart) (~L342);
+  only the TBS-signing step differs.
+- **Why deferred:** Small; batch with other crypto cleanups.
+- **Acceptance:** `X509Der.buildSelfSignedCert(pub, signTbs)` takes a signing
+  closure; backends shrink to one call each.
+
+### Over-long methods (>80 lines) to split
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** Worst offenders beyond those covered above: v13 server
+  `_sendServerFlight` (~170 lines), v13 client `_handleServerFinished`
+  (~113), v1.2 `_handleClientHello` (~95) / `_sendServerFlight` /
+  `_sendClientFlight`, ICE `_handleIceTimer` / `_handleBindingRequest`,
+  `RtcpTransportCc.build` (~100, classify→chunk→serialize in one; pairs with
+  the ByteReader/ByteWriter entry),
+  [rtp/packet.dart:368-465](dart/lib/rtp/packet.dart#L368-L465).
+- **Why deferred:** Pure readability; fold into whichever branch touches each
+  file next rather than a dedicated pass.
+- **Acceptance:** Opportunistic, method-by-method — split into phase-named
+  private helpers (no behavior change) when a branch touches the file; strike
+  through as they land. Not a single-PR item.
+
+### Small consistency items (batch)
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** Cheap, independent fixes:
+  - `sendRtp` doc comment has a pasted-in duplicate summary line mid-comment
+    ([events.dart:371-376](dart/lib/peer_connection/events.dart#L371-L376)).
+  - `core`'s `StateError` shadows Dart's built-in — rename to
+    `ProtocolStateError` (also update the sealed-error list in CLAUDE.md,
+    which documents `StateError` by name).
+  - `IceStateMachine.processInput` adds a `localIp` param not in the
+    `ProtocolStateMachine` signature it `@override`s.
+  - RTCP packet types 200–206 as bare literals in both `packet.dart` and
+    `parser.dart`; VP8/H264 descriptor bit masks; `payloadType <= 34` static
+    ranges in `_resolveTrackKind` — name the constants.
+  - `openh264_bindings.g.dart` sits beside hand-written code while other
+    codecs keep generated bindings in subdirectories — move under
+    `h264/openh264/`.
+  - (The inline raw-byte FIR builder moved to the "FIR command sequence
+    number hard-coded to 1" entry in RTP / RTCP / SDP, where it ships with
+    the seq-number fix.)
+- **Why deferred:** Each is minutes of work; recorded so they aren't lost.
+- **Acceptance:** Item-by-item; strike through as they land.
+
+### Public barrel exports internal protocol types
+
+- **Found:** 2026-07-03, refactoring audit
+- **Detail:** [webdartc.dart](dart/lib/webdartc.dart) (~L41–66) exports
+  crypto/stun/srtp/rtp internals ("for testing / advanced use") alongside the
+  W3C surface, so protocol internals are part of the public contract.
+- **Why deferred:** Needs an API-surface decision, and is breaking for any
+  caller importing internals through the main barrel.
+- **Acceptance:** Internals move to a separate `webdartc_internal.dart` barrel
+  (or under `src/` with tests importing relatively); `webdartc.dart` keeps
+  only the W3C-facing surface.
