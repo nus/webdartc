@@ -587,19 +587,6 @@ Each item:
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
 
-### Video/Audio codec frontends are type-parameter twins
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [video_codec.dart:110-221](dart/lib/codec/video_codec.dart#L110-L221)
-  and [audio_codec.dart:96-207](dart/lib/codec/audio_codec.dart#L96-L207):
-  Encoder/Decoder `configure`/`encode`/`flush`/`reset`/`close` +
-  `CodecState` transitions are identical except for the frame/chunk types
-  (~200 lines duplicated twice).
-- **Why deferred:** Needs a generic base without disturbing the W3C-named
-  public classes.
-- **Acceptance:** A generic `_CodecFrontend<Input, Chunk, Config, Backend>`
-  base (or mixin); the four public classes shrink to thin typed wrappers.
-
 ### Codec capability + registration: single source of truth
 
 - **Found:** 2026-07-03, refactoring audit

@@ -6,8 +6,8 @@ library;
 import 'dart:typed_data';
 
 import '../media/audio_data.dart';
+import 'codec_frontend.dart';
 import 'codec_registry.dart';
-import 'video_codec.dart' show CodecState;
 
 // ── Codec identifiers ───────────────────────────────────────────────────────
 
@@ -97,8 +97,7 @@ final class AudioEncoder {
   final void Function(EncodedAudioChunk chunk, EncodedAudioChunkMetadata? metadata) _output;
   final void Function(Object error) _error;
 
-  AudioEncoderBackend? _backend;
-  CodecState _state = CodecState.unconfigured;
+  final CodecFrontendCore<AudioEncoderBackend> _core = CodecFrontendCore('Encoder');
 
   AudioEncoder({
     required void Function(EncodedAudioChunk, EncodedAudioChunkMetadata?) output,
@@ -106,39 +105,24 @@ final class AudioEncoder {
   })  : _output = output,
         _error = error;
 
-  CodecState get state => _state;
+  CodecState get state => _core.state;
 
-  void configure(AudioEncoderConfig config) {
-    if (_state == CodecState.closed) throw StateError('Encoder is closed');
-    _backend = CodecRegistry.createAudioEncoder(config.codec);
-    if (_backend == null) throw UnsupportedError('No backend for codec: ${config.codec}');
-    _backend!.onOutput = _output;
-    _backend!.onError = _error;
-    _backend!.configure(config);
-    _state = CodecState.configured;
-  }
+  void configure(AudioEncoderConfig config) => _core.configure(
+        config.codec,
+        () => CodecRegistry.createAudioEncoder(config.codec),
+        (backend) => backend
+          ..onOutput = _output
+          ..onError = _error
+          ..configure(config),
+      );
 
-  void encode(AudioData data) {
-    if (_state != CodecState.configured) throw StateError('Encoder not configured');
-    _backend!.encode(data);
-  }
+  void encode(AudioData data) => _core.submit((backend) => backend.encode(data));
 
-  Future<void> flush() async {
-    if (_state != CodecState.configured) return;
-    await _backend!.flush();
-  }
+  Future<void> flush() => _core.flush();
 
-  void reset() {
-    if (_state == CodecState.closed) return;
-    _backend?.reset();
-    _state = CodecState.unconfigured;
-  }
+  void reset() => _core.reset();
 
-  void close() {
-    if (_state == CodecState.closed) return;
-    _backend?.close();
-    _state = CodecState.closed;
-  }
+  void close() => _core.close();
 
   static Future<AudioEncoderSupport> isConfigSupported(AudioEncoderConfig config) async {
     return AudioEncoderSupport(
@@ -155,8 +139,7 @@ final class AudioDecoder {
   final void Function(AudioData data) _output;
   final void Function(Object error) _error;
 
-  AudioDecoderBackend? _backend;
-  CodecState _state = CodecState.unconfigured;
+  final CodecFrontendCore<AudioDecoderBackend> _core = CodecFrontendCore('Decoder');
 
   AudioDecoder({
     required void Function(AudioData) output,
@@ -164,39 +147,24 @@ final class AudioDecoder {
   })  : _output = output,
         _error = error;
 
-  CodecState get state => _state;
+  CodecState get state => _core.state;
 
-  void configure(AudioDecoderConfig config) {
-    if (_state == CodecState.closed) throw StateError('Decoder is closed');
-    _backend = CodecRegistry.createAudioDecoder(config.codec);
-    if (_backend == null) throw UnsupportedError('No backend for codec: ${config.codec}');
-    _backend!.onOutput = _output;
-    _backend!.onError = _error;
-    _backend!.configure(config);
-    _state = CodecState.configured;
-  }
+  void configure(AudioDecoderConfig config) => _core.configure(
+        config.codec,
+        () => CodecRegistry.createAudioDecoder(config.codec),
+        (backend) => backend
+          ..onOutput = _output
+          ..onError = _error
+          ..configure(config),
+      );
 
-  void decode(EncodedAudioChunk chunk) {
-    if (_state != CodecState.configured) throw StateError('Decoder not configured');
-    _backend!.decode(chunk);
-  }
+  void decode(EncodedAudioChunk chunk) => _core.submit((backend) => backend.decode(chunk));
 
-  Future<void> flush() async {
-    if (_state != CodecState.configured) return;
-    await _backend!.flush();
-  }
+  Future<void> flush() => _core.flush();
 
-  void reset() {
-    if (_state == CodecState.closed) return;
-    _backend?.reset();
-    _state = CodecState.unconfigured;
-  }
+  void reset() => _core.reset();
 
-  void close() {
-    if (_state == CodecState.closed) return;
-    _backend?.close();
-    _state = CodecState.closed;
-  }
+  void close() => _core.close();
 
   static Future<AudioDecoderSupport> isConfigSupported(AudioDecoderConfig config) async {
     return AudioDecoderSupport(
@@ -208,22 +176,16 @@ final class AudioDecoder {
 
 // ── Backend interfaces (for codec implementors) ─────────────────────────────
 
-abstract interface class AudioEncoderBackend {
+abstract interface class AudioEncoderBackend implements CodecBackend {
   void configure(AudioEncoderConfig config);
   void encode(AudioData data);
-  Future<void> flush();
-  void reset();
-  void close();
   set onOutput(void Function(EncodedAudioChunk, EncodedAudioChunkMetadata?) cb);
   set onError(void Function(Object) cb);
 }
 
-abstract interface class AudioDecoderBackend {
+abstract interface class AudioDecoderBackend implements CodecBackend {
   void configure(AudioDecoderConfig config);
   void decode(EncodedAudioChunk chunk);
-  Future<void> flush();
-  void reset();
-  void close();
   set onOutput(void Function(AudioData) cb);
   set onError(void Function(Object) cb);
 }

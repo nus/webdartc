@@ -6,7 +6,10 @@ library;
 import 'dart:typed_data';
 
 import '../media/video_frame.dart';
+import 'codec_frontend.dart';
 import 'codec_registry.dart';
+
+export 'codec_frontend.dart' show CodecState;
 
 // ── Codec identifiers ───────────────────────────────────────────────────────
 
@@ -100,10 +103,6 @@ final class VideoDecoderSupport {
   const VideoDecoderSupport({required this.supported, required this.config});
 }
 
-// ── Codec state ─────────────────────────────────────────────────────────────
-
-enum CodecState { unconfigured, configured, closed }
-
 // ── VideoEncoder (W3C public API) ───────────────────────────────────────────
 
 /// W3C VideoEncoder — output callback receives encoded chunks.
@@ -111,8 +110,7 @@ final class VideoEncoder {
   final void Function(EncodedVideoChunk chunk, EncodedVideoChunkMetadata? metadata) _output;
   final void Function(Object error) _error;
 
-  VideoEncoderBackend? _backend;
-  CodecState _state = CodecState.unconfigured;
+  final CodecFrontendCore<VideoEncoderBackend> _core = CodecFrontendCore('Encoder');
 
   VideoEncoder({
     required void Function(EncodedVideoChunk, EncodedVideoChunkMetadata?) output,
@@ -120,39 +118,25 @@ final class VideoEncoder {
   })  : _output = output,
         _error = error;
 
-  CodecState get state => _state;
+  CodecState get state => _core.state;
 
-  void configure(VideoEncoderConfig config) {
-    if (_state == CodecState.closed) throw StateError('Encoder is closed');
-    _backend = CodecRegistry.createVideoEncoder(config.codec);
-    if (_backend == null) throw UnsupportedError('No backend for codec: ${config.codec}');
-    _backend!.onOutput = _output;
-    _backend!.onError = _error;
-    _backend!.configure(config);
-    _state = CodecState.configured;
-  }
+  void configure(VideoEncoderConfig config) => _core.configure(
+        config.codec,
+        () => CodecRegistry.createVideoEncoder(config.codec),
+        (backend) => backend
+          ..onOutput = _output
+          ..onError = _error
+          ..configure(config),
+      );
 
-  void encode(VideoFrame frame, [VideoEncoderEncodeOptions? options]) {
-    if (_state != CodecState.configured) throw StateError('Encoder not configured');
-    _backend!.encode(frame, keyFrame: options?.keyFrame ?? false);
-  }
+  void encode(VideoFrame frame, [VideoEncoderEncodeOptions? options]) =>
+      _core.submit((backend) => backend.encode(frame, keyFrame: options?.keyFrame ?? false));
 
-  Future<void> flush() async {
-    if (_state != CodecState.configured) return;
-    await _backend!.flush();
-  }
+  Future<void> flush() => _core.flush();
 
-  void reset() {
-    if (_state == CodecState.closed) return;
-    _backend?.reset();
-    _state = CodecState.unconfigured;
-  }
+  void reset() => _core.reset();
 
-  void close() {
-    if (_state == CodecState.closed) return;
-    _backend?.close();
-    _state = CodecState.closed;
-  }
+  void close() => _core.close();
 
   static Future<VideoEncoderSupport> isConfigSupported(VideoEncoderConfig config) async {
     return VideoEncoderSupport(
@@ -169,8 +153,7 @@ final class VideoDecoder {
   final void Function(VideoFrame frame) _output;
   final void Function(Object error) _error;
 
-  VideoDecoderBackend? _backend;
-  CodecState _state = CodecState.unconfigured;
+  final CodecFrontendCore<VideoDecoderBackend> _core = CodecFrontendCore('Decoder');
 
   VideoDecoder({
     required void Function(VideoFrame) output,
@@ -178,39 +161,24 @@ final class VideoDecoder {
   })  : _output = output,
         _error = error;
 
-  CodecState get state => _state;
+  CodecState get state => _core.state;
 
-  void configure(VideoDecoderConfig config) {
-    if (_state == CodecState.closed) throw StateError('Decoder is closed');
-    _backend = CodecRegistry.createVideoDecoder(config.codec);
-    if (_backend == null) throw UnsupportedError('No backend for codec: ${config.codec}');
-    _backend!.onOutput = _output;
-    _backend!.onError = _error;
-    _backend!.configure(config);
-    _state = CodecState.configured;
-  }
+  void configure(VideoDecoderConfig config) => _core.configure(
+        config.codec,
+        () => CodecRegistry.createVideoDecoder(config.codec),
+        (backend) => backend
+          ..onOutput = _output
+          ..onError = _error
+          ..configure(config),
+      );
 
-  void decode(EncodedVideoChunk chunk) {
-    if (_state != CodecState.configured) throw StateError('Decoder not configured');
-    _backend!.decode(chunk);
-  }
+  void decode(EncodedVideoChunk chunk) => _core.submit((backend) => backend.decode(chunk));
 
-  Future<void> flush() async {
-    if (_state != CodecState.configured) return;
-    await _backend!.flush();
-  }
+  Future<void> flush() => _core.flush();
 
-  void reset() {
-    if (_state == CodecState.closed) return;
-    _backend?.reset();
-    _state = CodecState.unconfigured;
-  }
+  void reset() => _core.reset();
 
-  void close() {
-    if (_state == CodecState.closed) return;
-    _backend?.close();
-    _state = CodecState.closed;
-  }
+  void close() => _core.close();
 
   static Future<VideoDecoderSupport> isConfigSupported(VideoDecoderConfig config) async {
     return VideoDecoderSupport(
@@ -224,24 +192,18 @@ final class VideoDecoder {
 
 /// Codec implementors provide this interface.
 /// VideoEncoder delegates to it internally.
-abstract interface class VideoEncoderBackend {
+abstract interface class VideoEncoderBackend implements CodecBackend {
   void configure(VideoEncoderConfig config);
   void encode(VideoFrame frame, {bool keyFrame = false});
-  Future<void> flush();
-  void reset();
-  void close();
   set onOutput(void Function(EncodedVideoChunk, EncodedVideoChunkMetadata?) cb);
   set onError(void Function(Object) cb);
 }
 
 /// Codec implementors provide this interface.
 /// VideoDecoder delegates to it internally.
-abstract interface class VideoDecoderBackend {
+abstract interface class VideoDecoderBackend implements CodecBackend {
   void configure(VideoDecoderConfig config);
   void decode(EncodedVideoChunk chunk);
-  Future<void> flush();
-  void reset();
-  void close();
   set onOutput(void Function(VideoFrame) cb);
   set onError(void Function(Object) cb);
 }
