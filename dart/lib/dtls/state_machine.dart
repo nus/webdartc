@@ -12,7 +12,7 @@ import 'handshake.dart';
 import 'key_material.dart';
 import 'record.dart';
 import 'v13/handshake.dart' as v13;
-import 'v13/state_machine.dart' as v13;
+import 'v13/endpoint.dart' as v13;
 
 export 'cipher_suite.dart' show CipherSuite;
 

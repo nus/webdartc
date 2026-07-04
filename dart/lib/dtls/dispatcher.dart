@@ -5,7 +5,7 @@ import '../crypto/ecdsa.dart';
 import 'record.dart';
 import 'state_machine.dart' as v12;
 import 'v13/handshake.dart' as v13;
-import 'v13/state_machine.dart' as v13;
+import 'v13/endpoint.dart' as v13;
 
 /// Server-side DTLS version dispatcher.
 ///

@@ -195,6 +195,49 @@ final class ClientHelloMessage {
   }
 }
 
+/// Build a DTLS-style ClientHello body (RFC 8446 §4.1.2 + RFC 9147 §5.3).
+/// The DTLS-only `cookie` field sits between `legacy_session_id` and
+/// `cipher_suites`; for DTLS 1.3 it is always empty (the cookie travels
+/// in the cookie *extension* on retry). Mirror of [parseClientHello].
+Uint8List buildClientHelloBody({
+  required Uint8List random,
+  required Uint8List legacySessionId,
+  required Uint8List cookie,
+  required List<int> cipherSuites,
+  required List<TlsExtension> extensions,
+}) {
+  if (random.length != 32) {
+    throw ArgumentError('ClientHello.random must be 32 bytes');
+  }
+  final extBlock = buildTlsExtensionsBlock(extensions);
+  final csTotal = cipherSuites.length * 2;
+  final out = Uint8List(
+    2 + 32 + 1 + legacySessionId.length + 1 + cookie.length +
+        2 + csTotal + 1 + 1 + extBlock.length,
+  );
+  var off = 0;
+  writeU16(out, off, dtls12Version);
+  off += 2;
+  out.setRange(off, off + 32, random);
+  off += 32;
+  out[off++] = legacySessionId.length;
+  out.setRange(off, off + legacySessionId.length, legacySessionId);
+  off += legacySessionId.length;
+  out[off++] = cookie.length;
+  out.setRange(off, off + cookie.length, cookie);
+  off += cookie.length;
+  writeU16(out, off, csTotal);
+  off += 2;
+  for (final s in cipherSuites) {
+    writeU16(out, off, s);
+    off += 2;
+  }
+  out[off++] = 1; // legacy_compression_methods length
+  out[off++] = 0; // null compression
+  out.setRange(off, off + extBlock.length, extBlock);
+  return out;
+}
+
 /// Parse a ClientHello body (the bytes following the 12-byte DTLS handshake
 /// header). Returns null on any structural error.
 ClientHelloMessage? parseClientHello(Uint8List body) {
@@ -619,6 +662,17 @@ List<DtlsAckRecordNumber>? parseAckRecord(Uint8List body) {
 Uint8List buildServerHelloSupportedVersionsExtData(int version) =>
     Uint8List.fromList([(version >> 8) & 0xFF, version & 0xFF]);
 
+/// Build the `supported_versions` extension data for a ClientHello
+/// (RFC 8446 §4.2.1): `uint8 list_length || (uint16 version){list_length}`.
+Uint8List buildClientHelloSupportedVersionsExtData(List<int> versions) {
+  final out = Uint8List(1 + 2 * versions.length);
+  out[0] = 2 * versions.length;
+  for (var i = 0; i < versions.length; i++) {
+    writeU16(out, 1 + 2 * i, versions[i]);
+  }
+  return out;
+}
+
 /// `supported_versions` extension data for ClientHello (RFC 8446 §4.2.1):
 ///   uint8 list_length || (uint16 version){list_length}
 List<int>? parseClientHelloSupportedVersionsExtData(Uint8List data) {
@@ -653,6 +707,31 @@ Uint8List buildServerHelloKeyShareExtData({
   out[2] = (keyExchange.length >> 8) & 0xFF;
   out[3] =  keyExchange.length        & 0xFF;
   out.setRange(4, out.length, keyExchange);
+  return out;
+}
+
+/// Build the `key_share` extension data for a ClientHello (RFC 8446
+/// §4.2.8): a 2-byte total length followed by the wire-encoded
+/// KeyShareEntry list (`group(2) || keLen(2) || ke` each).
+Uint8List buildClientHelloKeyShareExtData(List<KeyShareEntry> entries) {
+  final encoded = <Uint8List>[
+    for (final e in entries)
+      buildServerHelloKeyShareExtData(
+        namedGroup: e.group,
+        keyExchange: e.keyExchange,
+      ),
+  ];
+  var listLen = 0;
+  for (final e in encoded) {
+    listLen += e.length;
+  }
+  final out = Uint8List(2 + listLen);
+  writeU16(out, 0, listLen);
+  var off = 2;
+  for (final e in encoded) {
+    out.setRange(off, off + e.length, e);
+    off += e.length;
+  }
   return out;
 }
 
@@ -746,6 +825,18 @@ Uint8List buildCookieExtData(Uint8List cookie) {
   return out;
 }
 
+/// Build the `supported_groups` extension data (RFC 8446 §4.2.7): a
+/// 2-byte total length followed by 2-byte NamedGroup values.
+Uint8List buildSupportedGroupsExtData(List<int> groups) {
+  final total = 2 * groups.length;
+  final out = Uint8List(2 + total);
+  writeU16(out, 0, total);
+  for (var i = 0; i < groups.length; i++) {
+    writeU16(out, 2 + 2 * i, groups[i]);
+  }
+  return out;
+}
+
 /// `supported_groups` extension data (RFC 8446 §4.2.7): a 2-byte total
 /// length followed by 2-byte NamedGroup values. Returns the list of
 /// group IDs the client claims to handle, or null on structural error.
@@ -757,6 +848,20 @@ List<int>? parseSupportedGroupsExtData(Uint8List data) {
   for (var i = 0; i < total; i += 2) {
     out.add((data[2 + i] << 8) | data[3 + i]);
   }
+  return out;
+}
+
+/// Build the `use_srtp` extension data offered in a ClientHello
+/// (RFC 5764 §4.1.1): the offered list of profile IDs followed by an
+/// empty MKI.
+Uint8List buildClientHelloUseSrtpExtData(List<int> profiles) {
+  final profilesLen = 2 * profiles.length;
+  final out = Uint8List(2 + profilesLen + 1);
+  writeU16(out, 0, profilesLen);
+  for (var i = 0; i < profiles.length; i++) {
+    writeU16(out, 2 + 2 * i, profiles[i]);
+  }
+  out[2 + profilesLen] = 0;
   return out;
 }
 

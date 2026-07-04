@@ -10,8 +10,7 @@ import 'package:test/test.dart';
 import 'package:webdartc/core/state_machine.dart';
 import 'package:webdartc/crypto/ecdsa.dart';
 import 'package:webdartc/dtls/v13/cipher_suite.dart';
-import 'package:webdartc/dtls/v13/client_state_machine.dart';
-import 'package:webdartc/dtls/v13/state_machine.dart';
+import 'package:webdartc/dtls/v13/endpoint.dart';
 
 void main() {
   void drainLoopback(

@@ -7,7 +7,7 @@ import 'package:webdartc/dtls/dispatcher.dart';
 import 'package:webdartc/dtls/record.dart';
 import 'package:webdartc/dtls/state_machine.dart' as v12;
 import 'package:webdartc/dtls/v13/handshake.dart';
-import 'package:webdartc/dtls/v13/state_machine.dart' as v13;
+import 'package:webdartc/dtls/v13/endpoint.dart' as v13;
 
 void main() {
   Uint8List bytes(List<int> v) => Uint8List.fromList(v);

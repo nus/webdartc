@@ -584,22 +584,6 @@ Each item:
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
 
-### DTLS 1.3 client/server state machines are near-total copies
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [client_state_machine.dart](dart/lib/dtls/v13/client_state_machine.dart)
-  (1355 lines) and [state_machine.dart](dart/lib/dtls/v13/state_machine.dart)
-  (server, 1455 lines) duplicate the record layer wholesale: `_Reassembly`
-  (identical), fragment accumulation/`_buildSingleFragmentView` (byte-for-byte),
-  `_processHandshakeFragments`, ACK/KeyUpdate emit+handle, retransmit
-  timers/counters, plaintext/ciphertext record dispatch, and
-  `sendApplicationData`. Roughly 40–50 % of the combined ~2800 lines.
-- **Why deferred:** Large structural change; needs the full DTLS test suite
-  (and Chrome interop e2e) as a safety net, not a drive-by.
-- **Acceptance:** A shared `DtlsV13RecordLayer` (epoch/seq, emit, reassembly,
-  ACK/KeyUpdate) + common endpoint base; client/server keep only role-specific
-  handshake transitions. All DTLS unit + e2e tests stay green.
-
 ### PeerConnection god class (1920 lines)
 
 - **Found:** 2026-07-03, refactoring audit
@@ -777,20 +761,18 @@ Each item:
   builder split by media kind; `parse` either validates (missing `v=`/`m=` →
   `Err`) or drops the `Result` wrapper.
 
-### DTLS v13 client re-implements handshake.dart builders privately
+### DTLS v1.2 SM hand-parses extension blocks v13/handshake.dart covers
 
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** `_buildSignatureAlgorithmsExtData`, `_buildSupportedGroupsExtData`,
-  `_buildClientHelloSupportedVersionsExtData`, key-share and use_srtp builders
-  in [client_state_machine.dart](dart/lib/dtls/v13/client_state_machine.dart)
-  (~L520–702) duplicate or shadow public builders/parsers in
-  [v13/handshake.dart](dart/lib/dtls/v13/handshake.dart). The v1.2 SM likewise
-  hand-parses extension blocks that `parseTlsExtensionsBlock` /
-  `parseUseSrtpExtData` already cover.
-- **Why deferred:** Pairs naturally with the v13 client/server merge above.
-- **Acceptance:** ClientHello builders move to `handshake.dart` as public
-  functions paired with their parsers; v1.2 reuses the shared extension parser
-  at least for use_srtp.
+- **Found:** 2026-07-03, refactoring audit (v13-client half shipped 2026-07-04
+  with the v13 client/server merge — ClientHello builders now live in
+  [v13/handshake.dart](dart/lib/dtls/v13/handshake.dart))
+- **Detail:** The v1.2 SM hand-parses extension blocks that
+  `parseTlsExtensionsBlock` / `parseUseSrtpExtData` already cover.
+- **Why deferred:** Touches v1.2 SRTP-profile selection code, which also has
+  the preference-order divergence tracked in "SRTP profile tables defined
+  thrice" — coordinate with that entry.
+- **Acceptance:** v1.2 reuses the shared extension parser at least for
+  use_srtp.
 
 ### STUN transaction bookkeeping duplicated between ICE and TURN
 
