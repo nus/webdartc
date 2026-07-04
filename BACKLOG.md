@@ -621,19 +621,6 @@ Each item:
   `pick(offered)`, `exportLength(id)`) used by v1.2 and v13; one documented
   preference order.
 
-### DTLS 1.2/1.3 version dispatch duplicated
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [dispatcher.dart](dart/lib/dtls/dispatcher.dart) `_selectVariant`
-  (~L102) and [state_machine.dart](dart/lib/dtls/state_machine.dart)'s embedded
-  `_isDtls13ClientHello` + `_v13Inner` forwarding both sniff the ClientHello
-  `supported_versions` and delegate to the v13 SM — the v1.2 SM re-implements
-  the dispatcher's job internally.
-- **Why deferred:** Requires confirming all v13 entry paths go through the
-  dispatcher before deleting the embedded fallback.
-- **Acceptance:** Version detection lives in one `detectDtlsVersion(packet)`
-  near `record.dart`; `DtlsStateMachine` loses `_v13Inner` and its forwards.
-
 ### Media layer: track-class duplication
 
 - **Found:** 2026-07-03, refactoring audit

@@ -11,7 +11,7 @@ import 'cipher_suite.dart';
 import 'handshake.dart';
 import 'key_material.dart';
 import 'record.dart';
-import 'v13/handshake.dart' as v13;
+import 'version_detect.dart';
 import 'v13/endpoint.dart' as v13;
 
 export 'cipher_suite.dart' show CipherSuite;
@@ -168,7 +168,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     // the rest of the session over to the v1.3 state machine.
     if (role == DtlsRole.server &&
         _state == DtlsHandshakeState.initial &&
-        _isDtls13ClientHello(packet)) {
+        detectDtlsVersion(packet) == DtlsVersion.v13) {
       final inner = v13.DtlsV13ServerStateMachine(
         localCert: localCert,
         requireClientAuth: requireClientAuth,
@@ -221,39 +221,6 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       return _retransmit(token.epoch);
     }
     return const Ok(ProcessResult.empty);
-  }
-
-  /// Peek into the very first server-side packet to decide whether the
-  /// rest of the session should be handled by the DTLS 1.3 server state
-  /// machine instead of the legacy 1.2 paths in this class.
-  ///
-  /// Returns true iff the packet is a server-bound ClientHello that either
-  /// (a) is fragmented — almost certainly DTLS 1.3 in practice, since v1.2
-  /// ClientHellos are small enough to fit a single record — or (b) has a
-  /// `supported_versions` extension listing `0xFEFC` (DTLS 1.3). The
-  /// fragmented heuristic is needed for WebRTC clients (Firefox, Chrome)
-  /// whose DTLS 1.3 ClientHellos exceed the path MTU and split across
-  /// multiple datagrams; we route them to the v1.3 path immediately so
-  /// that state machine can reassemble before parsing.
-  static bool _isDtls13ClientHello(Uint8List packet) {
-    final rec = DtlsRecord.parse(packet, 0);
-    if (rec == null) return false;
-    if (rec.epoch != 0) return false;
-    if (rec.contentType != DtlsContentType.handshake) return false;
-    final hs = DtlsHandshakeHeader.parse(rec.fragment);
-    if (hs == null) return false;
-    if (hs.msgType != v13.TlsV13HandshakeType.clientHello) return false;
-    if (hs.fragmentOffset != 0 || hs.fragmentLength != hs.length) {
-      // Fragmented ClientHello: assume DTLS 1.3.
-      return true;
-    }
-    final ch = v13.parseClientHello(hs.body);
-    if (ch == null) return false;
-    final sv = ch.extensionByType(v13.TlsV13ExtensionType.supportedVersions);
-    if (sv == null) return false;
-    final versions = v13.parseClientHelloSupportedVersionsExtData(sv.data);
-    if (versions == null) return false;
-    return versions.contains(v13.dtls13Version);
   }
 
   // ── Record processing ─────────────────────────────────────────────────────

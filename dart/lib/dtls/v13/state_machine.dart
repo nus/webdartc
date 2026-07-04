@@ -78,10 +78,10 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
 
   /// Persistent server secret used to MAC stateless HRR cookies (RFC 9147
   /// §5.1). Generated once per `DtlsV13ServerStateMachine` instance — the
-  /// DtlsServerDispatcher in front of us is process-scoped, so a single
-  /// key covers every connection it handles. Tests inject deterministic
-  /// keys via the [DtlsV13ServerStateMachine.cookieMacKey] constructor
-  /// parameter.
+  /// server-side v1.2 `DtlsStateMachine` that delegates to us spins up one
+  /// instance per connection, so the key covers that connection's whole
+  /// HRR exchange. Tests inject deterministic keys via the
+  /// [DtlsV13ServerStateMachine.cookieMacKey] constructor parameter.
   final Uint8List _cookieMacKey;
 
   DtlsV13ServerStateMachine({
