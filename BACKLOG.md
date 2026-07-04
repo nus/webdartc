@@ -584,22 +584,6 @@ Each item:
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
 
-### PeerConnection god class (1920 lines)
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [peer_connection.dart](dart/lib/peer_connection/peer_connection.dart)
-  holds SDP negotiation, RTCP send/receive, stats, track/transceiver management,
-  and ICE/DTLS/SCTP wiring in one class. Cohesive extractable chunks:
-  **RtcpSession** (`_sendRtcpRR` ~1625–1747, TWCC feedback, PLI, RTCP timer +
-  its field cluster), **StatsCollector** (`getStats` alone is 206 lines,
-  ~L796), **SdpNegotiator** (create/set-description, `_assignMidToTransceivers`,
-  the PT→kind/clock/codec/channels maps). `setRemoteDescription` (137 lines)
-  also splits into ingest/fingerprint/twcc/ssrc helpers.
-- **Why deferred:** Wide blast radius; best done as its own branch with no
-  behavior change.
-- **Acceptance:** PeerConnection reduced to a facade delegating to the three
-  new collaborators; no public-API change; existing tests pass unchanged.
-
 ### TransportController mixed responsibilities (1143 lines)
 
 - **Found:** 2026-07-03, refactoring audit
