@@ -14,9 +14,8 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:webdartc/core/state_machine.dart';
 import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/dtls/v13/client_state_machine.dart';
+import 'package:webdartc/dtls/v13/endpoint.dart';
 import 'package:webdartc/dtls/v13/handshake.dart';
-import 'package:webdartc/dtls/v13/state_machine.dart';
 
 void _drainHandshake(
   DtlsV13ClientStateMachine client,

@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import '../core/byte_io.dart';
+
 /// RTP packet (RFC 3550 §5.1).
 final class RtpPacket {
   final int version;   // always 2
@@ -42,23 +44,14 @@ final class RtpPacket {
         (extBytes != null ? 0x10 : 0) |
         (csrcs.length & 0x0F);
     out[1] = (marker ? 0x80 : 0) | (payloadType & 0x7F);
-    out[2] = (sequenceNumber >> 8) & 0xFF;
-    out[3] = sequenceNumber & 0xFF;
-    out[4] = (timestamp >> 24) & 0xFF;
-    out[5] = (timestamp >> 16) & 0xFF;
-    out[6] = (timestamp >>  8) & 0xFF;
-    out[7] = timestamp & 0xFF;
-    out[8]  = (ssrc >> 24) & 0xFF;
-    out[9]  = (ssrc >> 16) & 0xFF;
-    out[10] = (ssrc >>  8) & 0xFF;
-    out[11] = ssrc & 0xFF;
+    writeU16(out, 2, sequenceNumber);
+    writeU32(out, 4, timestamp);
+    writeU32(out, 8, ssrc);
 
     var offset = 12;
     for (final csrc in csrcs) {
-      out[offset++] = (csrc >> 24) & 0xFF;
-      out[offset++] = (csrc >> 16) & 0xFF;
-      out[offset++] = (csrc >>  8) & 0xFF;
-      out[offset++] = csrc & 0xFF;
+      writeU32(out, offset, csrc);
+      offset += 4;
     }
     if (extBytes != null) {
       out.setRange(offset, offset + extBytes.length, extBytes);
@@ -120,11 +113,8 @@ final class RtpExtension {
   Uint8List encode() {
     final padded = (data.length + 3) & ~3;
     final out = Uint8List(4 + padded);
-    out[0] = (profile >> 8) & 0xFF;
-    out[1] = profile & 0xFF;
-    final words = padded ~/ 4;
-    out[2] = (words >> 8) & 0xFF;
-    out[3] = words & 0xFF;
+    writeU16(out, 0, profile);
+    writeU16(out, 2, padded ~/ 4);
     out.setRange(4, 4 + data.length, data);
     return out;
   }
@@ -167,27 +157,23 @@ final class RtcpSenderReport extends RtcpPacket {
     final out = Uint8List(len);
     out[0] = 0x80 | (reportBlocks.length & 0x1F); // V=2, RC
     out[1] = 200; // PT=SR
-    final wordLen = (len ~/ 4) - 1;
-    out[2] = (wordLen >> 8) & 0xFF;
-    out[3] = wordLen & 0xFF;
-    _writeU32(out, 4, ssrc);
-    _writeU32(out, 8, ntpTimestampHigh);
-    _writeU32(out, 12, ntpTimestampLow);
-    _writeU32(out, 16, rtpTimestamp);
-    _writeU32(out, 20, packetCount);
-    _writeU32(out, 24, octetCount);
+    writeU16(out, 2, (len ~/ 4) - 1);
+    writeU32(out, 4, ssrc);
+    writeU32(out, 8, ntpTimestampHigh);
+    writeU32(out, 12, ntpTimestampLow);
+    writeU32(out, 16, rtpTimestamp);
+    writeU32(out, 20, packetCount);
+    writeU32(out, 24, octetCount);
     var off = 28;
     for (final b in reportBlocks) {
-      _writeU32(out, off, b.ssrc); off += 4;
+      writeU32(out, off, b.ssrc); off += 4;
       out[off] = b.fractionLost & 0xFF;
-      out[off + 1] = (b.cumulativeLost >> 16) & 0xFF;
-      out[off + 2] = (b.cumulativeLost >> 8) & 0xFF;
-      out[off + 3] = b.cumulativeLost & 0xFF;
+      writeU24(out, off + 1, b.cumulativeLost);
       off += 4;
-      _writeU32(out, off, b.extendedHighestSeq); off += 4;
-      _writeU32(out, off, b.jitter); off += 4;
-      _writeU32(out, off, b.lastSr); off += 4;
-      _writeU32(out, off, b.delaySinceLastSr); off += 4;
+      writeU32(out, off, b.extendedHighestSeq); off += 4;
+      writeU32(out, off, b.jitter); off += 4;
+      writeU32(out, off, b.lastSr); off += 4;
+      writeU32(out, off, b.delaySinceLastSr); off += 4;
     }
     return out;
   }
@@ -205,21 +191,18 @@ final class RtcpReceiverReport extends RtcpPacket {
     final out = Uint8List(len);
     out[0] = 0x80 | (reportBlocks.length & 0x1F); // V=2, RC
     out[1] = 201; // PT=RR
-    final wordLen = (len ~/ 4) - 1;
-    out[2] = (wordLen >> 8) & 0xFF;
-    out[3] = wordLen & 0xFF;
-    _writeU32(out, 4, ssrc);
+    writeU16(out, 2, (len ~/ 4) - 1);
+    writeU32(out, 4, ssrc);
     var off = 8;
     for (final rb in reportBlocks) {
-      _writeU32(out, off, rb.ssrc); off += 4;
-      out[off++] = rb.fractionLost & 0xFF;
-      out[off++] = (rb.cumulativeLost >> 16) & 0xFF;
-      out[off++] = (rb.cumulativeLost >>  8) & 0xFF;
-      out[off++] = rb.cumulativeLost & 0xFF;
-      _writeU32(out, off, rb.extendedHighestSeq); off += 4;
-      _writeU32(out, off, rb.jitter); off += 4;
-      _writeU32(out, off, rb.lastSr); off += 4;
-      _writeU32(out, off, rb.delaySinceLastSr); off += 4;
+      writeU32(out, off, rb.ssrc); off += 4;
+      out[off] = rb.fractionLost & 0xFF;
+      writeU24(out, off + 1, rb.cumulativeLost);
+      off += 4;
+      writeU32(out, off, rb.extendedHighestSeq); off += 4;
+      writeU32(out, off, rb.jitter); off += 4;
+      writeU32(out, off, rb.lastSr); off += 4;
+      writeU32(out, off, rb.delaySinceLastSr); off += 4;
     }
     return out;
   }
@@ -232,32 +215,27 @@ final class RtcpSdes extends RtcpPacket {
 
   /// Serialize to wire format (RFC 3550 §6.5).
   Uint8List build() {
-    final body = <int>[];
+    final body = ByteWriter();
     for (final chunk in chunks) {
-      // SSRC (4 bytes)
-      body.addAll([
-        (chunk.ssrc >> 24) & 0xFF, (chunk.ssrc >> 16) & 0xFF,
-        (chunk.ssrc >> 8) & 0xFF, chunk.ssrc & 0xFF,
-      ]);
+      body.writeU32(chunk.ssrc);
       // SDES items: type(1) + length(1) + value
       for (final entry in chunk.items.entries) {
         final val = entry.value.codeUnits;
-        body.add(entry.key);
-        body.add(val.length);
-        body.addAll(val);
+        body.writeU8(entry.key);
+        body.writeU8(val.length);
+        body.writeBytes(val);
       }
-      body.add(0); // end marker
+      body.writeU8(0); // end marker
       // Pad chunk to 4-byte boundary
-      while (body.length % 4 != 0) { body.add(0); }
+      while (body.length % 4 != 0) { body.writeU8(0); }
     }
-    final len = 4 + body.length;
+    final bodyBytes = body.takeBytes();
+    final len = 4 + bodyBytes.length;
     final out = Uint8List(len);
     out[0] = 0x80 | (chunks.length & 0x1F); // V=2, SC
     out[1] = 202; // PT=SDES
-    final wordLen = (len ~/ 4) - 1;
-    out[2] = (wordLen >> 8) & 0xFF;
-    out[3] = wordLen & 0xFF;
-    out.setRange(4, len, body);
+    writeU16(out, 2, (len ~/ 4) - 1);
+    out.setRange(4, len, bodyBytes);
     return out;
   }
 }
@@ -291,9 +269,9 @@ final class RtcpPli extends RtcpPacket {
     final out = Uint8List(12);
     out[0] = 0x80 | 1; // V=2, FMT=1
     out[1] = 206; // PT=PSFB
-    out[2] = 0; out[3] = 2; // length=2 (words)
-    _writeU32(out, 4, senderSsrc);
-    _writeU32(out, 8, mediaSourceSsrc);
+    writeU16(out, 2, 2); // length=2 (words)
+    writeU32(out, 4, senderSsrc);
+    writeU32(out, 8, mediaSourceSsrc);
     return out;
   }
 }
@@ -311,11 +289,9 @@ final class RtcpRemb extends RtcpPacket {
     final out = Uint8List(len);
     out[0] = 0x80 | 15; // V=2, FMT=15 (AFB)
     out[1] = 206; // PT=PSFB
-    final wordLen = (len ~/ 4) - 1;
-    out[2] = (wordLen >> 8) & 0xFF;
-    out[3] = wordLen & 0xFF;
-    _writeU32(out, 4, senderSsrc);
-    _writeU32(out, 8, 0); // media SSRC = 0 for REMB
+    writeU16(out, 2, (len ~/ 4) - 1);
+    writeU32(out, 4, senderSsrc);
+    writeU32(out, 8, 0); // media SSRC = 0 for REMB
     // "REMB" magic
     out[12] = 0x52; out[13] = 0x45; out[14] = 0x4D; out[15] = 0x42;
     // num SSRCs + mantissa/exponent
@@ -329,7 +305,7 @@ final class RtcpRemb extends RtcpPacket {
     out[19] = mantissa & 0xFF;
     var off = 20;
     for (final ssrc in mediaSsrcs) {
-      _writeU32(out, off, ssrc);
+      writeU32(out, off, ssrc);
       off += 4;
     }
     return out;
@@ -427,28 +403,21 @@ final class RtcpTransportCc extends RtcpPacket {
     // V=2, P=(1 if padded), FMT=15
     out[0] = (padBytes > 0 ? 0xA0 : 0x80) | 15;
     out[1] = 205; // PT=RTPFB
-    final wordLen = (paddedTotal ~/ 4) - 1;
-    out[2] = (wordLen >> 8) & 0xFF;
-    out[3] = wordLen & 0xFF;
-    _writeU32(out, 4, senderSsrc);
-    _writeU32(out, 8, mediaSsrc);
+    writeU16(out, 2, (paddedTotal ~/ 4) - 1);
+    writeU32(out, 4, senderSsrc);
+    writeU32(out, 8, mediaSsrc);
     // Base sequence number + packet status count
-    out[12] = (baseSeq >> 8) & 0xFF;
-    out[13] = baseSeq & 0xFF;
-    out[14] = (statusCount >> 8) & 0xFF;
-    out[15] = statusCount & 0xFF;
+    writeU16(out, 12, baseSeq);
+    writeU16(out, 14, statusCount);
     // Reference time (24 bits, 64ms resolution) + fb packet count (8 bits)
-    final refTime = referenceTimeMs ~/ 64;
-    out[16] = (refTime >> 16) & 0xFF;
-    out[17] = (refTime >> 8) & 0xFF;
-    out[18] = refTime & 0xFF;
+    writeU24(out, 16, referenceTimeMs ~/ 64);
     out[19] = fbPktCount & 0xFF;
 
     // Status chunks
     var off = 20;
     for (final chunk in statusChunks) {
-      out[off++] = (chunk >> 8) & 0xFF;
-      out[off++] = chunk & 0xFF;
+      writeU16(out, off, chunk);
+      off += 2;
     }
 
     // Recv deltas
@@ -496,11 +465,4 @@ final class RtcpNackEntry {
   final int blp; // bitmask of following lost packets
 
   const RtcpNackEntry({required this.pid, required this.blp});
-}
-
-void _writeU32(Uint8List buf, int offset, int value) {
-  buf[offset]     = (value >> 24) & 0xFF;
-  buf[offset + 1] = (value >> 16) & 0xFF;
-  buf[offset + 2] = (value >>  8) & 0xFF;
-  buf[offset + 3] = value & 0xFF;
 }

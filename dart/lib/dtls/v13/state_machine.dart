@@ -1,22 +1,4 @@
-import 'dart:typed_data';
-
-import '../../core/state_machine.dart' as core;
-import '../../core/types.dart';
-import '../../crypto/csprng.dart';
-import '../../crypto/ecdh.dart';
-import '../../crypto/ecdsa.dart';
-import '../../crypto/hmac_sha256.dart';
-import '../../crypto/sha256.dart';
-import '../../crypto/x25519.dart';
-import '../../crypto/x509_der.dart';
-import '../record.dart';
-import 'cipher_suite.dart';
-import 'cookie.dart';
-import 'handshake.dart';
-import 'key_schedule.dart';
-import 'record_crypto.dart';
-import 'srtp_export.dart';
-import 'transcript.dart';
+part of 'endpoint.dart';
 
 /// DTLS 1.3 server state machine state.
 enum DtlsV13ServerState {
@@ -67,12 +49,7 @@ enum DtlsV13ServerState {
 ///
 /// Each record is its own UDP datagram — fragmentation and packet packing
 /// are caller responsibilities for now.
-final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
-  /// Server-side X.509 certificate + signing key. The certificate's DER
-  /// bytes are sent in the Certificate message; its private key signs the
-  /// CertificateVerify content.
-  final EcdsaCertificate localCert;
-
+final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
   /// Whether the server demands a client Certificate / CertificateVerify
   /// before completing the handshake (RFC 8446 §4.3.2 mid-handshake mTLS).
   /// When true, the server's flight includes a CertificateRequest and the
@@ -81,21 +58,9 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   /// non-mTLS case — the server doesn't ask, the client doesn't sign.
   final bool requireClientAuth;
 
-  /// Expected SHA-256 fingerprint of the *peer's* certificate, formatted
-  /// as colon-separated uppercase hex (matching the SDP `a=fingerprint`
-  /// convention used by [EcdsaCertificate.sha256Fingerprint]). When
-  /// non-null, the server compares this to the client's actual cert
-  /// fingerprint after parsing the client Certificate; mismatch fails the
-  /// handshake with a `CryptoError`. When null, no check is performed.
-  /// Only meaningful with [requireClientAuth] true.
-  String? expectedRemoteFingerprint;
-
   // ─── Public state observables ────────────────────────────────────────
 
   DtlsV13ServerState get state => _state;
-
-  /// The cipher suite negotiated from ClientHello, or null until then.
-  TlsV13CipherSuite? get cipherSuite => _suite;
 
   /// Server's 32-byte ServerHello.random — generated at construction time.
   Uint8List get serverRandom => _serverRandom;
@@ -103,123 +68,13 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   /// Client's ClientHello.random, available after the first ClientHello.
   Uint8List? get clientRandom => _clientRandom;
 
-  /// `exporter_master_secret` available after handshake completes
-  /// (RFC 8446 §7.5). Phase 1 7-3 will plumb this into SRTP key export.
-  Uint8List? get exporterMasterSecret => _exporterMasterSecret;
-
-  /// SRTP protection profile (RFC 5764) negotiated via the use_srtp extension,
-  /// or null when the client did not offer one we recognise. Set during
-  /// ClientHello processing; valid from that point forward.
-  int? get selectedSrtpProfileId => _selectedSrtpProfile;
-
-  // ─── Callbacks ────────────────────────────────────────────────────────
-
-  /// Fired exactly once when the handshake transitions to CONNECTED.
-  /// The argument is the SRTP keying material exported from
-  /// `exporter_master_secret` per RFC 5764 §4.2. Its length and layout
-  /// depend on the negotiated SRTP profile (see [selectedSrtpProfileId]):
-  ///   * SRTP_AES128_CM_HMAC_SHA1_80 / _32 → 60 bytes
-  ///     (16+16 master keys, 14+14 master salts).
-  ///   * SRTP_AEAD_AES_128_GCM             → 56 bytes
-  ///     (16+16 master keys, 12+12 master salts) per RFC 7714 §12.
-  ///   * SRTP_AEAD_AES_256_GCM             → 88 bytes
-  ///     (32+32 master keys, 12+12 master salts) per RFC 7714 §12.
-  void Function(Uint8List srtpKeyingMaterial)? onConnected;
-
-  /// Fired for every successfully decrypted application_data record.
-  void Function(Uint8List data)? onApplicationData;
-
   // ─── Internal state ───────────────────────────────────────────────────
 
   DtlsV13ServerState _state = DtlsV13ServerState.initial;
 
-  IpAddress? _remoteIp;
-  int? _remotePort;
-
-  TlsV13CipherSuite? _suite;
   Uint8List? _clientRandom;
   final Uint8List _serverRandom = Csprng.randomBytes(32);
   Uint8List _legacySessionIdEcho = Uint8List(0);
-
-  /// Negotiated key-exchange group for this session — either
-  /// `secp256r1` (0x0017) or `x25519` (0x001D). Set during ClientHello
-  /// processing and used to pick the right public-key encoding for the
-  /// ServerHello key_share and the right scalar-multiplication routine
-  /// for the ECDHE shared secret.
-  int? _selectedGroup;
-
-  /// secp256r1 ephemeral private key, populated when [_selectedGroup] is
-  /// `secp256r1`. Null otherwise.
-  EcdhKeyPair? _ecdhKeyPair;
-
-  /// x25519 ephemeral private key, populated when [_selectedGroup] is
-  /// `x25519`. Null otherwise.
-  X25519KeyPair? _x25519KeyPair;
-  Uint8List? _peerKeyShare;
-
-  final DtlsV13Transcript _transcript = DtlsV13Transcript();
-
-  /// Selected SRTP profile from RFC 5764 use_srtp negotiation, e.g. 0x0001
-  /// for `SRTP_AES128_CM_HMAC_SHA1_80` or 0x0007 for `SRTP_AEAD_AES_128_GCM`.
-  /// `null` until the ClientHello has been parsed.
-  int? _selectedSrtpProfile;
-
-  Uint8List? _earlySecret;
-  Uint8List? _handshakeSecret;
-  Uint8List? _masterSecret;
-  TrafficKeys? _serverHsKeys;
-  TrafficKeys? _clientHsKeys;
-  TrafficKeys? _serverApKeys;
-  TrafficKeys? _clientApKeys;
-  Uint8List? _exporterMasterSecret;
-
-  int _sendSeqEpoch0 = 0;
-  int _sendSeqEpoch2 = 0;
-  int _sendSeqEpoch3 = 0;
-  int _outboundMsgSeq = 0;
-
-  /// Number of retransmissions performed for the current outbound flight
-  /// (RFC 9147 §5.7). Reset whenever a new flight is sent (HRR or main
-  /// server flight). Each handleTimeout fire bumps this and reschedules
-  /// the next timer with exponential backoff.
-  int _handshakeRetransmitCount = 0;
-
-  /// RFC 9147 §5.7 caps the total retransmission window at "implementation
-  /// defined". 6 retries with 1s base ⇒ 1+2+4+8+16+32 = 63s ceiling, which
-  /// matches the legacy v1.2 path and is well under WebRTC ICE-consent
-  /// freshness.
-  static const int _maxHandshakeRetransmits = 6;
-  static const int _initialHandshakeRetransmitMs = 1000;
-
-  /// Record number of the last successfully decrypted inbound record,
-  /// captured right before handshake dispatch so that handlers (Finished,
-  /// KeyUpdate) can build an ACK referencing it without re-plumbing the
-  /// decrypt result through every dispatch path (RFC 9147 §7.1).
-  DtlsAckRecordNumber? _lastRxRecordNumber;
-
-  /// Current application-data tx epoch (RFC 9147 §6.1). Starts at 3 once
-  /// the handshake completes and increments by one each time we emit a
-  /// KeyUpdate. The truncated value carried in record headers is
-  /// `_txAppEpoch & 0x03`.
-  int _txAppEpoch = 3;
-
-  /// Current application-data rx epoch. Starts at 3 and increments by one
-  /// each time we successfully process a peer KeyUpdate.
-  int _rxAppEpoch = 3;
-
-  /// True after we've received a KeyUpdate(update_requested) from the
-  /// peer; we owe them a reciprocal KeyUpdate before our next
-  /// application_data record (RFC 8446 §4.6.3). Cleared on emission.
-  bool _peerRequestedKeyUpdate = false;
-
-  /// The most recently emitted server flight, kept so we can re-send it on
-  /// receipt of a duplicate ClientHello (RFC 6347-style retransmit).
-  List<OutputPacket>? _lastServerFlight;
-
-  /// In-progress handshake message reassembly. Keyed by `messageSeq`. Each
-  /// entry buffers the full message body until every fragment has arrived
-  /// (RFC 9147 §5.5).
-  final Map<int, _Reassembly> _fragmentBuffer = <int, _Reassembly>{};
 
   /// Persistent server secret used to MAC stateless HRR cookies (RFC 9147
   /// §5.1). Generated once per `DtlsV13ServerStateMachine` instance — the
@@ -230,215 +85,45 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   final Uint8List _cookieMacKey;
 
   DtlsV13ServerStateMachine({
-    required this.localCert,
+    required super.localCert,
     this.requireClientAuth = false,
     Uint8List? cookieMacKey,
   }) : _cookieMacKey = cookieMacKey ?? Csprng.randomBytes(32);
 
-  /// 65-byte uncompressed P-256 pubkey extracted from the client's
-  /// Certificate message. Set during [_handleClientCertificate]; null
-  /// before that, and always null when [requireClientAuth] is false.
-  Uint8List? _peerCertPubKey;
-
-  // ─── ProtocolStateMachine ─────────────────────────────────────────────
+  // ─── Endpoint role hooks ──────────────────────────────────────────────
 
   @override
-  core.Result<ProcessResult, core.ProtocolError> processInput(
-    Uint8List packet, {
-    required IpAddress remoteIp,
-    required int remotePort,
-  }) {
-    _remoteIp = remoteIp;
-    _remotePort = remotePort;
-    if (packet.isEmpty) return const core.Ok(ProcessResult.empty);
+  bool get _isConnected => _state == DtlsV13ServerState.connected;
 
-    // Top three bits `001` mark a DTLS 1.3 ciphertext (unified header).
-    // Anything else is treated as a legacy DTLSPlaintext record (used for
-    // epoch 0 ClientHello / ServerHello).
-    if ((packet[0] & 0xE0) == 0x20) {
-      return _processCiphertextRecord(packet);
-    }
-    return _processPlaintextRecord(packet);
+  @override
+  void _markFailed() {
+    _state = DtlsV13ServerState.failed;
   }
 
   @override
-  core.Result<ProcessResult, core.ProtocolError> handleTimeout(
-    TimerToken token,
-  ) {
-    if (token is! DtlsRetransmitToken) {
-      return const core.Ok(ProcessResult.empty);
-    }
-    // Only retransmit while we are still waiting on the peer to advance
-    // the handshake. Once the handshake transitions away from the post-
-    // send waiting states (or fails), drop the timer silently — the next
-    // _scheduleTimeout call from a real event will replace it.
-    final waiting = _state == DtlsV13ServerState.waitSecondClientHello ||
-        _state == DtlsV13ServerState.waitClientFinished ||
-        _state == DtlsV13ServerState.waitClientCertificate ||
-        _state == DtlsV13ServerState.waitClientCertificateVerify;
-    if (!waiting) return const core.Ok(ProcessResult.empty);
-    final flight = _lastServerFlight;
-    if (flight == null) return const core.Ok(ProcessResult.empty);
-    if (_handshakeRetransmitCount >= _maxHandshakeRetransmits) {
-      _state = DtlsV13ServerState.failed;
-      return core.Err(const core.StateError(
+  bool get _rxUsesHandshakeKeys =>
+      _state == DtlsV13ServerState.waitClientFinished ||
+      _state == DtlsV13ServerState.waitClientCertificate ||
+      _state == DtlsV13ServerState.waitClientCertificateVerify;
+
+  @override
+  bool get _retransmitPending =>
+      _state == DtlsV13ServerState.waitSecondClientHello ||
+      _state == DtlsV13ServerState.waitClientFinished ||
+      _state == DtlsV13ServerState.waitClientCertificate ||
+      _state == DtlsV13ServerState.waitClientCertificateVerify;
+
+  @override
+  core.ProtocolError get _retransmitLimitError => const core.StateError(
         'DTLS 1.3: server flight retransmit limit exceeded',
-      ));
-    }
-    _handshakeRetransmitCount += 1;
-    return core.Ok(ProcessResult(
-      outputPackets: List.of(flight),
-      nextTimeout: _nextHandshakeRetransmitTimeout(),
-    ));
-  }
+      );
 
-  /// Compute the next exponential-backoff timeout for the active flight
-  /// (RFC 9147 §5.7 / RFC 6347 §4.2.4.1). Base 1s, doubling per attempt,
-  /// capped at 60s.
-  Timeout _nextHandshakeRetransmitTimeout() {
-    final delayMs = (_initialHandshakeRetransmitMs *
-            (1 << _handshakeRetransmitCount))
-        .clamp(0, 60000);
-    return Timeout(
-      at: DateTime.now().add(Duration(milliseconds: delayMs)),
-      token: DtlsRetransmitToken(0),
-    );
-  }
-
-  // ─── Record dispatch ──────────────────────────────────────────────────
-
-  core.Result<ProcessResult, core.ProtocolError> _processPlaintextRecord(
-    Uint8List packet,
+  @override
+  core.Result<ProcessResult, core.ProtocolError> _dispatchHandshakeMessage(
+    int msgType,
+    Uint8List body,
+    Uint8List fullDtls,
   ) {
-    final rec = DtlsRecord.parse(packet, 0);
-    if (rec == null) {
-      return core.Err(const core.ParseError('DTLS 1.3: bad plaintext record'));
-    }
-    if (rec.epoch != 0) {
-      // Encrypted records must come through the unified-header path.
-      return const core.Ok(ProcessResult.empty);
-    }
-    if (rec.contentType != DtlsContentType.handshake) {
-      return const core.Ok(ProcessResult.empty);
-    }
-    return _processHandshakeFragments(rec.fragment);
-  }
-
-  core.Result<ProcessResult, core.ProtocolError> _processCiphertextRecord(
-    Uint8List packet,
-  ) {
-    final isHandshakeEpoch = _state == DtlsV13ServerState.waitClientFinished ||
-        _state == DtlsV13ServerState.waitClientCertificate ||
-        _state == DtlsV13ServerState.waitClientCertificateVerify;
-    final keys = isHandshakeEpoch ? _clientHsKeys : _clientApKeys;
-    if (keys == null) return const core.Ok(ProcessResult.empty);
-
-    final epoch = isHandshakeEpoch ? 2 : _rxAppEpoch;
-    final out = DtlsV13RecordCrypto.decrypt(
-      record: packet,
-      keys: keys,
-      epoch: epoch,
-      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
-    );
-    if (out == null) {
-      // RFC 9147 §4.5.3: silently drop unauthenticatable records.
-      return const core.Ok(ProcessResult.empty);
-    }
-    _lastRxRecordNumber = DtlsAckRecordNumber(epoch, out.seqNum);
-    switch (out.contentType) {
-      case DtlsContentType.handshake:
-        return _processHandshakeFragments(out.content);
-      case DtlsContentType.applicationData:
-        if (_state == DtlsV13ServerState.connected) {
-          onApplicationData?.call(out.content);
-        }
-        return const core.Ok(ProcessResult.empty);
-      case DtlsContentType.ack:
-        // RFC 9147 §7: parse and discard. We do not yet maintain a
-        // per-record retransmit queue to clear, so received ACKs are
-        // informational only. Malformed bodies are silently dropped per
-        // §4.5.3 (unauthenticatable / unexpected records).
-        parseAckRecord(out.content);
-        return const core.Ok(ProcessResult.empty);
-      case DtlsContentType.alert:
-        _state = DtlsV13ServerState.failed;
-        return const core.Ok(ProcessResult.empty);
-      default:
-        return const core.Ok(ProcessResult.empty);
-    }
-  }
-
-  // ─── Handshake message dispatch ───────────────────────────────────────
-
-  /// Walk a buffer that may carry one or more concatenated DTLS handshake
-  /// records. WebRTC peers (notably Firefox) bundle the client response
-  /// flight — `Certificate || CertificateVerify || Finished` — into a
-  /// single ciphertext record, so the server has to keep dispatching
-  /// successive fragments until the buffer is exhausted.
-  core.Result<ProcessResult, core.ProtocolError> _processHandshakeFragments(
-    Uint8List buf,
-  ) {
-    final outputs = <OutputPacket>[];
-    Timeout? lastTimeout;
-    var offset = 0;
-    while (offset < buf.length) {
-      if (buf.length - offset < 12) {
-        return core.Err(
-          const core.ParseError('DTLS 1.3: short handshake header'),
-        );
-      }
-      final fragLen = (buf[offset + 9] << 16) |
-          (buf[offset + 10] << 8) |
-          buf[offset + 11];
-      final total = 12 + fragLen;
-      if (offset + total > buf.length) {
-        return core.Err(
-          const core.ParseError('DTLS 1.3: truncated handshake fragment'),
-        );
-      }
-      final slice = Uint8List.sublistView(buf, offset, offset + total);
-      final r = _processHandshakeFragment(slice);
-      if (r.isErr) return r;
-      outputs.addAll(r.value.outputPackets);
-      // Last non-null nextTimeout wins; flight-emitting handlers set this
-      // so the upper layer can schedule a retransmit timer (RFC 9147 §5.7).
-      if (r.value.nextTimeout != null) lastTimeout = r.value.nextTimeout;
-      offset += total;
-    }
-    return core.Ok(
-      ProcessResult(outputPackets: outputs, nextTimeout: lastTimeout),
-    );
-  }
-
-  core.Result<ProcessResult, core.ProtocolError> _processHandshakeFragment(
-    Uint8List fragment,
-  ) {
-    final hs = DtlsHandshakeHeader.parse(fragment);
-    if (hs == null) {
-      return core.Err(const core.ParseError('DTLS 1.3: bad handshake header'));
-    }
-
-    // Reassemble fragmented handshake messages (RFC 9147 §5.5). When a
-    // record carries the entire message in one fragment we use its bytes
-    // directly; otherwise we accumulate fragments by messageSeq until the
-    // whole body is in hand, then synthesize a single-fragment view.
-    final int msgType;
-    final Uint8List body;
-    final Uint8List fullDtls;
-    if (hs.fragmentOffset == 0 && hs.fragmentLength == hs.length) {
-      msgType = hs.msgType;
-      body = hs.body;
-      fullDtls = fragment.sublist(0, 12 + hs.body.length);
-    } else {
-      final completed = _accumulateFragment(hs);
-      if (completed == null) {
-        return const core.Ok(ProcessResult.empty);
-      }
-      msgType = hs.msgType;
-      body = completed;
-      fullDtls = _buildSingleFragmentView(hs.msgType, hs.messageSeq, completed);
-    }
-
     switch (msgType) {
       case TlsV13HandshakeType.clientHello:
         if (_state == DtlsV13ServerState.initial) {
@@ -450,10 +135,10 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         if ((_state == DtlsV13ServerState.waitClientFinished ||
                 _state == DtlsV13ServerState.waitClientCertificate ||
                 _state == DtlsV13ServerState.waitClientCertificateVerify) &&
-            _lastServerFlight != null) {
+            _lastFlight != null) {
           // Client retransmitted: re-send our flight verbatim.
           return core.Ok(
-            ProcessResult(outputPackets: List.of(_lastServerFlight!)),
+            ProcessResult(outputPackets: List.of(_lastFlight!)),
           );
         }
         return const core.Ok(ProcessResult.empty);
@@ -485,90 +170,6 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       default:
         return const core.Ok(ProcessResult.empty);
     }
-  }
-
-  /// Handle a peer KeyUpdate (RFC 8446 §4.6.3 / RFC 9147 §6.1):
-  /// rotate the rx application keys to the next generation, bump
-  /// `_rxAppEpoch`, ACK the KeyUpdate record (RFC 9147 §7 — KeyUpdate
-  /// is non-eliciting, so the only signal back is an ACK), and (if the
-  /// peer set `update_requested`) record that we owe a reciprocal
-  /// KeyUpdate before our next application_data.
-  core.Result<ProcessResult, core.ProtocolError> _handleKeyUpdate(
-    Uint8List body,
-  ) {
-    final req = parseKeyUpdateBody(body);
-    if (req == null) {
-      return core.Err(
-        const core.ParseError('DTLS 1.3: malformed KeyUpdate body'),
-      );
-    }
-    final ackRn = _lastRxRecordNumber!;
-    final nextSecret = TlsV13KeySchedule.deriveNextTrafficSecret(
-      _clientApKeys!.trafficSecret,
-    );
-    _clientApKeys = TlsV13KeySchedule.deriveTrafficKeys(
-      trafficSecret: nextSecret,
-      keyLength: (_suite ?? TlsV13CipherSuite.aes128GcmSha256).keyLength,
-    );
-    _rxAppEpoch += 1;
-    if (req == KeyUpdateRequest.requested) {
-      _peerRequestedKeyUpdate = true;
-    }
-    final ackPkt = _emitAck([ackRn]);
-    return core.Ok(ProcessResult(outputPackets: [ackPkt]));
-  }
-
-  /// Stash a fragment's body in [_fragmentBuffer]. Returns the fully
-  /// reassembled body once every byte has been observed, otherwise null.
-  /// Out-of-order arrival, duplicate fragments, and overlapping fragments
-  /// are tolerated; the latest copy of a given byte wins.
-  Uint8List? _accumulateFragment(DtlsHandshakeHeader hs) {
-    final buf = _fragmentBuffer.putIfAbsent(
-      hs.messageSeq,
-      () => _Reassembly(hs.length),
-    );
-    if (buf.totalLength != hs.length) {
-      // Inconsistent total length across fragments — can't reassemble.
-      return null;
-    }
-    final end = hs.fragmentOffset + hs.body.length;
-    if (end > buf.totalLength) return null;
-    for (var i = 0; i < hs.body.length; i++) {
-      if (!buf.received[hs.fragmentOffset + i]) {
-        buf.received[hs.fragmentOffset + i] = true;
-        buf.bodyOut[hs.fragmentOffset + i] = hs.body[i];
-        buf.bytesGot++;
-      } else {
-        // Already received this byte; keep the existing copy.
-      }
-    }
-    if (buf.bytesGot < buf.totalLength) return null;
-    _fragmentBuffer.remove(hs.messageSeq);
-    return Uint8List.fromList(buf.bodyOut);
-  }
-
-  /// Build the DTLS-form bytes a fully-reassembled handshake message would
-  /// have if it had been sent as a single fragment — `type(1) + length(3)
-  /// + msg_seq(2) + frag_offset=0(3) + frag_length=length(3) + body`. This
-  /// is what the transcript hash and downstream handlers expect.
-  Uint8List _buildSingleFragmentView(
-    int msgType,
-    int messageSeq,
-    Uint8List body,
-  ) {
-    final out = Uint8List(12 + body.length);
-    out[0] = msgType;
-    out[1] = (body.length >> 16) & 0xFF;
-    out[2] = (body.length >>  8) & 0xFF;
-    out[3] =  body.length        & 0xFF;
-    out[4] = (messageSeq >> 8) & 0xFF;
-    out[5] =  messageSeq        & 0xFF;
-    out[6] = 0; out[7] = 0; out[8] = 0;
-    out[9]  = (body.length >> 16) & 0xFF;
-    out[10] = (body.length >>  8) & 0xFF;
-    out[11] =  body.length        & 0xFF;
-    out.setRange(12, out.length, body);
-    return out;
   }
 
   // ─── ClientHello → server flight ──────────────────────────────────────
@@ -664,6 +265,10 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     );
   }
 
+  /// Peer key_share bytes from the accepted ClientHello, held until the
+  /// server flight derives the ECDHE shared secret.
+  Uint8List? _peerKeyShare;
+
   /// Latch negotiation results from a ClientHello and emit the server's
   /// flight. Shared between the no-HRR path (called from
   /// [_handleInitialClientHello]) and the HRR path (called from
@@ -678,7 +283,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     required Uint8List peerKeyShare,
     required Uint8List fullDtls,
   }) {
-    _suite = suite;
+    _records.suite = suite;
     _clientRandom = random;
     _legacySessionIdEcho = legacySessionId;
     _peerKeyShare = peerKeyShare;
@@ -724,7 +329,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   /// (RFC 8446 §4.4.1), and transition to [waitSecondClientHello].
   ///
   /// The client is expected to resubmit a ClientHello carrying both the
-  /// requested key_share and a verbatim copy of [_hrrCookie]; both are
+  /// requested key_share and a verbatim copy of the cookie; both are
   /// validated in [_handleSecondClientHello].
   core.Result<ProcessResult, core.ProtocolError> _sendHelloRetryRequest({
     required ClientHelloMessage ch,
@@ -732,7 +337,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     required TlsV13CipherSuite suite,
     required int selectedGroup,
   }) {
-    _suite = suite;
+    _records.suite = suite;
     _selectedGroup = selectedGroup;
     _legacySessionIdEcho = ch.legacySessionId;
 
@@ -749,8 +354,8 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     final cookie = DtlsV13Cookie.mint(
       macKey: _cookieMacKey,
       transcriptHashCh1: ch1Hash,
-      clientIp: _remoteIp!.toCanonical(),
-      clientPort: _remotePort!,
+      clientIp: _records.remoteIp!.toCanonical(),
+      clientPort: _records.remotePort!,
     );
 
     final hrrExts = <TlsExtension>[
@@ -774,18 +379,16 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     );
     final hrrFull = wrapHandshake(
       msgType: TlsV13HandshakeType.serverHello,
-      msgSeq: _outboundMsgSeq++,
+      msgSeq: _records.outboundMsgSeq++,
       body: hrrBody,
     );
     _transcript.addDtlsMessage(hrrFull);
 
     _state = DtlsV13ServerState.waitSecondClientHello;
     final flight = [_emitPlaintextHandshake(hrrFull)];
-    _lastServerFlight = List.of(flight);
-    _handshakeRetransmitCount = 0;
     return core.Ok(ProcessResult(
       outputPackets: flight,
-      nextTimeout: _nextHandshakeRetransmitTimeout(),
+      nextTimeout: _armFlightRetransmit(flight),
     ));
   }
 
@@ -821,8 +424,8 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     final opened = DtlsV13Cookie.open(
       macKey: _cookieMacKey,
       cookie: cookie,
-      clientIp: _remoteIp!.toCanonical(),
-      clientPort: _remotePort!,
+      clientIp: _records.remoteIp!.toCanonical(),
+      clientPort: _records.remotePort!,
     );
     if (opened == null || !opened.isValid) {
       return core.Err(const core.ParseError('DTLS 1.3: CH2 cookie mismatch'));
@@ -903,25 +506,6 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     return null;
   }
 
-  /// Bytes of TLS-exported keying material the negotiated SRTP profile
-  /// expects. Layout is per RFC 5764 §4.2 / RFC 7714 §12.
-  static int _srtpExportLengthForProfile(int profileId) {
-    switch (profileId) {
-      case 0x0001: // SRTP_AES128_CM_HMAC_SHA1_80
-      case 0x0002: // SRTP_AES128_CM_HMAC_SHA1_32
-        return 60; // 16 + 16 + 14 + 14
-      case 0x0007: // SRTP_AEAD_AES_128_GCM
-        return 56; // 16 + 16 + 12 + 12
-      case 0x0008: // SRTP_AEAD_AES_256_GCM
-        return 88; // 32 + 32 + 12 + 12
-      default:
-        // Unknown profile — fall back to the legacy 60-byte default; a
-        // mis-sized export will surface as a key-derivation mismatch
-        // rather than a silent truncation.
-        return 60;
-    }
-  }
-
   core.Result<ProcessResult, core.ProtocolError> _sendServerFlight() {
     final suite = _suite!;
     final outputs = <OutputPacket>[];
@@ -952,7 +536,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     );
     final shFull = wrapHandshake(
       msgType: TlsV13HandshakeType.serverHello,
-      msgSeq: _outboundMsgSeq++,
+      msgSeq: _records.outboundMsgSeq++,
       body: shBody,
     );
     _transcript.addDtlsMessage(shFull);
@@ -985,11 +569,11 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       handshakeSecret: _handshakeSecret!,
       chShTranscriptHash: chShHash,
     );
-    _clientHsKeys = TlsV13KeySchedule.deriveTrafficKeys(
+    _records.rxHandshakeKeys = TlsV13KeySchedule.deriveTrafficKeys(
       trafficSecret: cHsTraffic,
       keyLength: suite.keyLength,
     );
-    _serverHsKeys = TlsV13KeySchedule.deriveTrafficKeys(
+    _records.txHandshakeKeys = TlsV13KeySchedule.deriveTrafficKeys(
       trafficSecret: sHsTraffic,
       keyLength: suite.keyLength,
     );
@@ -1048,8 +632,10 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     );
 
     // ── server Finished ────────────────────────────────────────────────
-    final serverFinishedVerifyData =
-        HmacSha256.compute(_serverHsKeys!.finishedKey, _transcript.hash);
+    final serverFinishedVerifyData = HmacSha256.compute(
+      _records.txHandshakeKeys!.finishedKey,
+      _transcript.hash,
+    );
     _emitEncryptedHandshake(
       type: TlsV13HandshakeType.finished,
       body: buildFinishedBody(serverFinishedVerifyData),
@@ -1069,11 +655,11 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       masterSecret: _masterSecret!,
       chServerFinishedTranscriptHash: chSfHash,
     );
-    _clientApKeys = TlsV13KeySchedule.deriveTrafficKeys(
+    _records.rxApplicationKeys = TlsV13KeySchedule.deriveTrafficKeys(
       trafficSecret: cAp,
       keyLength: suite.keyLength,
     );
-    _serverApKeys = TlsV13KeySchedule.deriveTrafficKeys(
+    _records.txApplicationKeys = TlsV13KeySchedule.deriveTrafficKeys(
       trafficSecret: sAp,
       keyLength: suite.keyLength,
     );
@@ -1085,11 +671,9 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     _state = requireClientAuth
         ? DtlsV13ServerState.waitClientCertificate
         : DtlsV13ServerState.waitClientFinished;
-    _lastServerFlight = List.of(outputs);
-    _handshakeRetransmitCount = 0;
     return core.Ok(ProcessResult(
       outputPackets: outputs,
-      nextTimeout: _nextHandshakeRetransmitTimeout(),
+      nextTimeout: _armFlightRetransmit(outputs),
     ));
   }
 
@@ -1114,7 +698,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
       );
     }
     var off = 1 + ctxLen;
-    final listLen = (body[off] << 16) | (body[off + 1] << 8) | body[off + 2];
+    final listLen = readU24(body, off);
     off += 3;
     if (off + listLen != body.length) {
       return core.Err(
@@ -1135,7 +719,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         const core.ParseError('DTLS 1.3: bad client CertificateEntry'),
       );
     }
-    final certLen = (body[off] << 16) | (body[off + 1] << 8) | body[off + 2];
+    final certLen = readU24(body, off);
     off += 3;
     if (off + certLen > body.length) {
       return core.Err(
@@ -1183,8 +767,8 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         const core.ParseError('DTLS 1.3: short client CertificateVerify'),
       );
     }
-    final scheme = (body[0] << 8) | body[1];
-    final sigLen = (body[2] << 8) | body[3];
+    final scheme = readU16(body, 0);
+    final sigLen = readU16(body, 2);
     if (4 + sigLen != body.length) {
       return core.Err(
         const core.ParseError('DTLS 1.3: bad client CertificateVerify'),
@@ -1232,7 +816,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
     Uint8List body,
     Uint8List fullDtls,
   ) {
-    final keys = _clientHsKeys;
+    final keys = _records.rxHandshakeKeys;
     if (keys == null) {
       return core.Err(
         const core.StateError('DTLS 1.3: client Finished before keys'),
@@ -1246,11 +830,7 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
         const core.CryptoError('DTLS 1.3: client Finished wrong length'),
       );
     }
-    var diff = 0;
-    for (var i = 0; i < expected.length; i++) {
-      diff |= expected[i] ^ body[i];
-    }
-    if (diff != 0) {
+    if (!DtlsV13Endpoint._constantTimeEquals(expected, body)) {
       return core.Err(
         const core.CryptoError('DTLS 1.3: client Finished verify_data mismatch'),
       );
@@ -1258,158 +838,15 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
 
     _transcript.addDtlsMessage(fullDtls);
     _state = DtlsV13ServerState.connected;
-    final cb = onConnected;
-    if (cb != null) {
-      // Size the TLS-exporter output to the negotiated SRTP profile
-      // (RFC 7714 §12). When use_srtp wasn't negotiated we default to the
-      // legacy 60-byte AES-CM length so existing tests / non-SRTP callers
-      // keep working.
-      final exportLen = _selectedSrtpProfile != null
-          ? _srtpExportLengthForProfile(_selectedSrtpProfile!)
-          : DtlsV13SrtpExport.srtpAes128CmHmacSha180Length;
-      cb(DtlsV13SrtpExport.export(
-        exporterMasterSecret: _exporterMasterSecret!,
-        length: exportLen,
-      ));
-    }
+    _fireOnConnected();
     // Client Finished is the terminal flight from the client's
     // perspective — RFC 9147 §7.1 requires the receiver of a final
     // flight to send an ACK so the peer can clear its retransmit timer.
-    final ackPkt = _emitAck([_lastRxRecordNumber!]);
+    final ackPkt = _emitAck([_records.lastRxRecordNumber!]);
     return core.Ok(ProcessResult(outputPackets: [ackPkt]));
   }
 
-  /// Encrypt and emit an ACK record (RFC 9147 §7) at the current tx app
-  /// epoch using the server's app keys. Caller supplies the (epoch, seq)
-  /// pairs to acknowledge.
-  OutputPacket _emitAck(List<DtlsAckRecordNumber> records) {
-    final body = buildAckRecord(records);
-    final rec = DtlsV13RecordCrypto.encrypt(
-      contentType: DtlsContentType.ack,
-      content: body,
-      epoch: _txAppEpoch,
-      seqNum: _sendSeqEpoch3++,
-      keys: _serverApKeys!,
-      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
-    );
-    return OutputPacket(
-      data: rec,
-      remoteIp: _remoteIp!.toCanonical(),
-      remotePort: _remotePort!,
-    );
-  }
-
-  // ─── Public application-data API ──────────────────────────────────────
-
-  /// Encrypt [data] as an application_data record. Returns an Err if the
-  /// handshake hasn't reached CONNECTED yet — callers can still use a
-  /// uniform success / failure flow.
-  core.Result<ProcessResult, core.ProtocolError> sendApplicationData(
-    Uint8List data,
-  ) {
-    if (_state != DtlsV13ServerState.connected) {
-      return core.Err(
-        const core.StateError('DTLS 1.3: sendApplicationData before CONNECTED'),
-      );
-    }
-    final outputs = <OutputPacket>[];
-    if (_peerRequestedKeyUpdate) {
-      outputs.add(_emitKeyUpdate(KeyUpdateRequest.notRequested));
-    }
-    final rec = DtlsV13RecordCrypto.encrypt(
-      contentType: DtlsContentType.applicationData,
-      content: data,
-      epoch: _txAppEpoch,
-      seqNum: _sendSeqEpoch3++,
-      keys: _serverApKeys!,
-      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
-    );
-    outputs.add(OutputPacket(
-      data: rec,
-      remoteIp: _remoteIp!.toCanonical(),
-      remotePort: _remotePort!,
-    ));
-    return core.Ok(ProcessResult(outputPackets: outputs));
-  }
-
-  /// Trigger a post-handshake `KeyUpdate` (RFC 8446 §4.6.3 / RFC 9147
-  /// §6.1). Emits the message under the current tx app keys, then rotates
-  /// our own application-data sender to the next-generation keys / epoch.
-  ///
-  /// [requestPeerUpdate] sets the `KeyUpdateRequest` field to
-  /// `update_requested(1)`; the peer must reciprocate before its next
-  /// application_data record.
-  core.Result<ProcessResult, core.ProtocolError> requestKeyUpdate({
-    bool requestPeerUpdate = false,
-  }) {
-    if (_state != DtlsV13ServerState.connected) {
-      return core.Err(
-        const core.StateError('DTLS 1.3: requestKeyUpdate before CONNECTED'),
-      );
-    }
-    final pkt = _emitKeyUpdate(
-      requestPeerUpdate
-          ? KeyUpdateRequest.requested
-          : KeyUpdateRequest.notRequested,
-    );
-    return core.Ok(ProcessResult(outputPackets: [pkt]));
-  }
-
-  /// Build, encrypt, and emit a KeyUpdate handshake message under the
-  /// current tx app keys. After the record is on the wire the next-gen
-  /// secret + keys are derived and tx epoch / sequence are bumped per
-  /// RFC 9147 §6.1.
-  OutputPacket _emitKeyUpdate(int request) {
-    final body = buildKeyUpdateBody(request);
-    final fragment = wrapHandshake(
-      msgType: TlsV13HandshakeType.keyUpdate,
-      msgSeq: _outboundMsgSeq++,
-      body: body,
-    );
-    final rec = DtlsV13RecordCrypto.encrypt(
-      contentType: DtlsContentType.handshake,
-      content: fragment,
-      epoch: _txAppEpoch,
-      seqNum: _sendSeqEpoch3++,
-      keys: _serverApKeys!,
-      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
-    );
-    // Rotate our sender to the next generation. The KeyUpdate itself was
-    // sent under the old keys; everything after this point uses the new.
-    final nextSecret = TlsV13KeySchedule.deriveNextTrafficSecret(
-      _serverApKeys!.trafficSecret,
-    );
-    _serverApKeys = TlsV13KeySchedule.deriveTrafficKeys(
-      trafficSecret: nextSecret,
-      keyLength: (_suite ?? TlsV13CipherSuite.aes128GcmSha256).keyLength,
-    );
-    _txAppEpoch += 1;
-    _sendSeqEpoch3 = 0;
-    _peerRequestedKeyUpdate = false;
-    return OutputPacket(
-      data: rec,
-      remoteIp: _remoteIp!.toCanonical(),
-      remotePort: _remotePort!,
-    );
-  }
-
   // ─── Internal record-emission helpers ─────────────────────────────────
-
-  /// Wrap a handshake fragment in a DTLSPlaintext (epoch 0) record.
-  OutputPacket _emitPlaintextHandshake(Uint8List handshakeFragment) {
-    final rec = DtlsRecord(
-      contentType: DtlsContentType.handshake,
-      version: 0xFEFD,
-      epoch: 0,
-      sequenceNumber: _sendSeqEpoch0++,
-      fragment: handshakeFragment,
-    ).encode();
-    return OutputPacket(
-      data: rec,
-      remoteIp: _remoteIp!.toCanonical(),
-      remotePort: _remotePort!,
-    );
-  }
 
   /// Build a handshake message of [type] with [body], wrap it in the DTLS
   /// handshake header, add the resulting bytes to the transcript, and
@@ -1421,35 +858,10 @@ final class DtlsV13ServerStateMachine implements core.ProtocolStateMachine {
   }) {
     final fragment = wrapHandshake(
       msgType: type,
-      msgSeq: _outboundMsgSeq++,
+      msgSeq: _records.outboundMsgSeq++,
       body: body,
     );
     _transcript.addDtlsMessage(fragment);
-    final rec = DtlsV13RecordCrypto.encrypt(
-      contentType: DtlsContentType.handshake,
-      content: fragment,
-      epoch: 2,
-      seqNum: _sendSeqEpoch2++,
-      keys: _serverHsKeys!,
-      cipherSuite: _suite ?? TlsV13CipherSuite.aes128GcmSha256,
-    );
-    outputs.add(OutputPacket(
-      data: rec,
-      remoteIp: _remoteIp!.toCanonical(),
-      remotePort: _remotePort!,
-    ));
+    outputs.add(_records.encryptHandshake(fragment));
   }
 }
-
-/// Reassembly state for a single in-flight handshake message.
-final class _Reassembly {
-  final int totalLength;
-  final List<int> bodyOut;
-  final List<bool> received;
-  int bytesGot = 0;
-
-  _Reassembly(this.totalLength)
-      : bodyOut = List<int>.filled(totalLength, 0),
-        received = List<bool>.filled(totalLength, false);
-}
-

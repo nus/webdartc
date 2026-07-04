@@ -14,11 +14,10 @@ import 'package:webdartc/crypto/csprng.dart';
 import 'package:webdartc/crypto/ecdsa.dart';
 import 'package:webdartc/crypto/x25519.dart';
 import 'package:webdartc/dtls/record.dart';
-import 'package:webdartc/dtls/v13/client_state_machine.dart';
+import 'package:webdartc/dtls/v13/endpoint.dart';
 import 'package:webdartc/dtls/v13/handshake.dart';
 import 'package:webdartc/dtls/v13/key_schedule.dart';
 import 'package:webdartc/dtls/v13/record_crypto.dart';
-import 'package:webdartc/dtls/v13/state_machine.dart';
 import 'package:webdartc/dtls/v13/transcript.dart';
 
 void main() {

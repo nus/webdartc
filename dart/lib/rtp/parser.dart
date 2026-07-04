@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../core/byte_io.dart';
 import '../core/result.dart';
 import '../core/state_machine.dart' show ParseError;
 import 'packet.dart';
@@ -39,16 +40,16 @@ abstract final class RtpParser {
     final cc        = raw[0] & 0x0F;
     final marker    = (raw[1] & 0x80) != 0;
     final pt        = raw[1] & 0x7F;
-    final seq       = _u16(raw, 2);
-    final ts        = _u32(raw, 4);
-    final ssrc      = _u32(raw, 8);
+    final seq       = readU16(raw, 2);
+    final ts        = readU32(raw, 4);
+    final ssrc      = readU32(raw, 8);
 
     if (raw.length < 12 + cc * 4) {
       return Err(const ParseError('RTP: truncated CSRC list'));
     }
     final csrcs = <int>[];
     for (var i = 0; i < cc; i++) {
-      csrcs.add(_u32(raw, 12 + i * 4));
+      csrcs.add(readU32(raw, 12 + i * 4));
     }
 
     var offset = 12 + cc * 4;
@@ -57,8 +58,8 @@ abstract final class RtpParser {
       if (raw.length < offset + 4) {
         return Err(const ParseError('RTP: truncated extension'));
       }
-      final profile = _u16(raw, offset);
-      final extLenWords = _u16(raw, offset + 2);
+      final profile = readU16(raw, offset);
+      final extLenWords = readU16(raw, offset + 2);
       final extLen = extLenWords * 4;
       offset += 4;
       if (raw.length < offset + extLen) {
@@ -100,7 +101,7 @@ abstract final class RtpParser {
       if (raw.length - offset < 4) break;
       final rc  = raw[offset] & 0x1F;
       final pt  = raw[offset + 1];
-      final len = (_u16(raw, offset + 2) + 1) * 4;
+      final len = (readU16(raw, offset + 2) + 1) * 4;
       if (offset + len > raw.length) break;
       final body = raw.sublist(offset, offset + len);
       offset += len;
@@ -128,12 +129,12 @@ abstract final class RtpParser {
 
   static RtcpSenderReport _parseSr(Uint8List body, int rc) {
     if (body.length < 28) return RtcpSenderReport(ssrc: 0, ntpTimestampHigh: 0, ntpTimestampLow: 0, rtpTimestamp: 0, packetCount: 0, octetCount: 0);
-    final ssrc  = _u32(body, 4);
-    final ntpHi = _u32(body, 8);
-    final ntpLo = _u32(body, 12);
-    final rtpTs = _u32(body, 16);
-    final pkts  = _u32(body, 20);
-    final octs  = _u32(body, 24);
+    final ssrc  = readU32(body, 4);
+    final ntpHi = readU32(body, 8);
+    final ntpLo = readU32(body, 12);
+    final rtpTs = readU32(body, 16);
+    final pkts  = readU32(body, 20);
+    final octs  = readU32(body, 24);
     final rbs = _parseReportBlocks(body, 28, rc);
     return RtcpSenderReport(
       ssrc: ssrc,
@@ -148,7 +149,7 @@ abstract final class RtpParser {
 
   static RtcpReceiverReport _parseRr(Uint8List body, int rc) {
     if (body.length < 8) return RtcpReceiverReport(ssrc: 0);
-    final ssrc = _u32(body, 4);
+    final ssrc = readU32(body, 4);
     final rbs = _parseReportBlocks(body, 8, rc);
     return RtcpReceiverReport(ssrc: ssrc, reportBlocks: rbs);
   }
@@ -157,13 +158,13 @@ abstract final class RtpParser {
     final blocks = <RtcpReportBlock>[];
     for (var i = 0; i < count && offset + 24 <= body.length; i++) {
       blocks.add(RtcpReportBlock(
-        ssrc: _u32(body, offset),
+        ssrc: readU32(body, offset),
         fractionLost: body[offset + 4],
         cumulativeLost: (body[offset + 5] << 16) | (body[offset + 6] << 8) | body[offset + 7],
-        extendedHighestSeq: _u32(body, offset + 8),
-        jitter: _u32(body, offset + 12),
-        lastSr: _u32(body, offset + 16),
-        delaySinceLastSr: _u32(body, offset + 20),
+        extendedHighestSeq: readU32(body, offset + 8),
+        jitter: readU32(body, offset + 12),
+        lastSr: readU32(body, offset + 16),
+        delaySinceLastSr: readU32(body, offset + 20),
       ));
       offset += 24;
     }
@@ -174,7 +175,7 @@ abstract final class RtpParser {
     final chunks = <RtcpSdesChunk>[];
     var offset = 4;
     for (var i = 0; i < rc && offset + 4 <= body.length; i++) {
-      final ssrc = _u32(body, offset);
+      final ssrc = readU32(body, offset);
       offset += 4;
       final items = <int, String>{};
       while (offset < body.length) {
@@ -199,7 +200,7 @@ abstract final class RtpParser {
     final ssrcs = <int>[];
     var offset = 4;
     for (var i = 0; i < rc && offset + 4 <= body.length; i++) {
-      ssrcs.add(_u32(body, offset));
+      ssrcs.add(readU32(body, offset));
       offset += 4;
     }
     return RtcpBye(ssrcs: ssrcs);
@@ -207,8 +208,8 @@ abstract final class RtpParser {
 
   static RtcpPacket? _parseFb(Uint8List body, int fmt, int pt) {
     if (body.length < 12) return null;
-    final senderSsrc = _u32(body, 4);
-    final mediaSsrc  = _u32(body, 8);
+    final senderSsrc = readU32(body, 4);
+    final mediaSsrc  = readU32(body, 8);
 
     if (pt == 205 && fmt == 1) {
       // Generic NACK
@@ -216,8 +217,8 @@ abstract final class RtpParser {
       var offset = 12;
       while (offset + 4 <= body.length) {
         nacks.add(RtcpNackEntry(
-          pid: _u16(body, offset),
-          blp: _u16(body, offset + 2),
+          pid: readU16(body, offset),
+          blp: readU16(body, offset + 2),
         ));
         offset += 4;
       }
@@ -232,8 +233,4 @@ abstract final class RtpParser {
     }
     return null;
   }
-
-  static int _u16(Uint8List d, int o) => (d[o] << 8) | d[o + 1];
-  static int _u32(Uint8List d, int o) =>
-      ((d[o] << 24) | (d[o+1] << 16) | (d[o+2] << 8) | d[o+3]) >>> 0;
 }

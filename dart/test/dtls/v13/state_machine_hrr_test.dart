@@ -18,7 +18,7 @@ import 'package:webdartc/dtls/record.dart';
 import 'package:webdartc/dtls/v13/handshake.dart';
 import 'package:webdartc/dtls/v13/key_schedule.dart';
 import 'package:webdartc/dtls/v13/record_crypto.dart';
-import 'package:webdartc/dtls/v13/state_machine.dart';
+import 'package:webdartc/dtls/v13/endpoint.dart';
 import 'package:webdartc/dtls/v13/transcript.dart';
 
 void main() {

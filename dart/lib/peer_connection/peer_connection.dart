@@ -7,6 +7,7 @@ import '../api/media_engine.dart';
 import '../api/setting_engine.dart';
 import '../api/stats.dart';
 import '../codec/default_codecs.dart';
+import '../core/byte_io.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
 import '../dtls/state_machine.dart';
@@ -26,6 +27,9 @@ import '../turn/state_machine.dart';
 
 part 'data_channel.dart';
 part 'events.dart';
+part 'rtcp_session.dart';
+part 'sdp_negotiator.dart';
+part 'stats_collector.dart';
 
 /// ICE server configuration.
 final class IceServer {
@@ -95,21 +99,12 @@ final class PeerConnection {
 
   // Local credentials
   late final EcdsaCertificate _localCert;
-  // Mutable: regenerated on an ICE restart (RFC 8445 §9).
-  late String _iceUfrag;
-  late String _icePwd;
-  bool _iceRestartPending = false;
-  // Last remote ICE credentials seen — a change in an offer signals a
-  // peer-initiated ICE restart.
-  String? _remoteIceUfrag;
-  String? _remoteIcePwd;
 
-  // SDP — cached parses, so re-negotiation parses each side once and
-  // `getStats()` doesn't have to re-tokenise the SDP on every snapshot.
-  SessionDescription? _localDescription;
-  SessionDescription? _remoteDescription;
-  SdpSessionDescription? _localParsed;
-  SdpSessionDescription? _remoteParsed;
+  // Collaborators (same-library parts): SDP offer/answer + ICE credentials,
+  // RTCP send/receive + reception stats, and getStats assembly.
+  late final SdpNegotiator _negotiation = SdpNegotiator(this);
+  late final RtcpSession _rtcp = RtcpSession(this);
+  late final StatsCollector _stats = StatsCollector(this);
 
   // Data channels
   final Map<int, DataChannel> _dataChannels = {};
@@ -118,28 +113,6 @@ final class PeerConnection {
   // Media transceivers
   final List<RtpTransceiver> _transceivers = [];
   final Map<int, RtpReceiver> _receivers = {}; // SSRC → receiver
-
-  // RTP reception stats for RTCP RR
-  final Map<int, _RtpRecvStats> _rtpRecvStats = {};
-  int _localRtcpSsrc = 0; // Our SSRC for RTCP reports
-  Timer? _rtcpTimer;
-  final Set<int> _pendingPliSsrcs = {}; // SSRCs needing PLI in next RTCP
-
-  /// Latest RTCP-RR snapshot per our outbound SSRC. Populated when the
-  /// remote peer sends a Receiver Report whose report block names
-  /// that SSRC; surfaced via `getStats()` as `RemoteInboundRtpStats`.
-  final Map<int, _RemoteInboundStats> _remoteInboundStats = {};
-
-  /// Parsed remote DTLS fingerprint (algorithm + hex pair) from the
-  /// SDP `a=fingerprint` attribute on `setRemoteDescription`. Used in
-  /// `getStats` to emit the remote [CertificateStats] entry; null
-  /// until the remote description is set.
-  ({String algorithm, String hex})? _remoteFp;
-
-  // Transport-CC state
-  int _twccExtId = 0; // extension ID from SDP (0 = not negotiated)
-  final List<_TwccEntry> _twccRecvLog = [];
-  int _twccFbCount = 0;
 
   // Stream controllers
   final _iceCandidateController =
@@ -207,8 +180,8 @@ final class PeerConnection {
   /// while local candidates are collected, `complete` once finished.
   IceGatheringState get iceGatheringState => _iceGatheringState;
   PeerConnectionState get connectionState => _connectionState;
-  SessionDescription? get localDescription => _localDescription;
-  SessionDescription? get remoteDescription => _remoteDescription;
+  SessionDescription? get localDescription => _negotiation._localDescription;
+  SessionDescription? get remoteDescription => _negotiation._remoteDescription;
 
   // W3C current/pending split, derived from the last-set description and the
   // signaling state: a side's description is "pending" exactly while that side
@@ -222,15 +195,15 @@ final class PeerConnection {
 
   /// W3C: the description currently in negotiation, or null when stable.
   SessionDescription? get pendingLocalDescription =>
-      _localPending ? _localDescription : null;
+      _localPending ? _negotiation._localDescription : null;
   SessionDescription? get pendingRemoteDescription =>
-      _remotePending ? _remoteDescription : null;
+      _remotePending ? _negotiation._remoteDescription : null;
 
   /// W3C: the last successfully negotiated description.
   SessionDescription? get currentLocalDescription =>
-      _localPending ? null : _localDescription;
+      _localPending ? null : _negotiation._localDescription;
   SessionDescription? get currentRemoteDescription =>
-      _remotePending ? null : _remoteDescription;
+      _remotePending ? null : _negotiation._remoteDescription;
 
   /// W3C `getConfiguration()` — the configuration this connection was created
   /// with.
@@ -258,15 +231,8 @@ final class PeerConnection {
   /// afterwards (`createOffer` → `setLocalDescription` → exchange); the peer
   /// auto-restarts when it sees the changed credentials in the offer.
   void restartIce() {
-    _regenerateIceCredentials();
-    _iceRestartPending = true;
-  }
-
-  /// Generate a fresh ICE ufrag/pwd (RFC 8445 §5.4 lengths). Used at init and
-  /// on every ICE restart (local or peer-initiated).
-  void _regenerateIceCredentials() {
-    _iceUfrag = Csprng.randomHex(4);
-    _icePwd = Csprng.randomHex(22);
+    _negotiation._regenerateIceCredentials();
+    _negotiation._iceRestartPending = true;
   }
 
   // ── Event streams ─────────────────────────────────────────────────────────
@@ -309,51 +275,7 @@ final class PeerConnection {
         _signalingState != SignalingState.haveLocalOffer) {
       throw StateError('createOffer: invalid state $_signalingState');
     }
-    await _ensureTransportStarted();
-
-    // Relay candidates trickle in once the TURN allocation completes,
-    // so under relay-only the inline host candidate would be the only
-    // non-relay path the offer ever advertised.
-    final localIp = _relayOnly ? null : _transport.localAddress;
-    final localPort = _relayOnly ? null : _transport.localPort;
-
-    final SdpSessionDescription sdp;
-    if (_transceivers.isNotEmpty) {
-      // Media session — codec list comes from MediaEngine, optionally
-      // narrowed by the transceiver's preferredCodecs.
-      final tracks = _transceivers.map((t) {
-        final codecs = t.kind == 'audio'
-            ? mediaEngine.resolveAudioCodecs(t.preferredCodecs)
-            : mediaEngine.resolveVideoCodecs(t.preferredCodecs);
-        return MediaTrack(
-          type: t.kind,
-          direction: t.direction.sdpToken,
-          senderSsrc: t.sender?.ssrc,
-          codecs: codecs,
-        );
-      }).toList();
-      sdp = SdpBuilder.buildMediaSdp(
-        ufrag: _iceUfrag,
-        password: _icePwd,
-        fingerprint: _localCert.sha256Fingerprint,
-        isOffer: true,
-        tracks: tracks,
-        localIp: localIp,
-        localPort: localPort,
-      );
-    } else {
-      // Data channel session
-      sdp = SdpBuilder.buildDataChannelSdp(
-        ufrag: _iceUfrag,
-        password: _icePwd,
-        fingerprint: _localCert.sha256Fingerprint,
-        isOffer: true,
-        sctpPort: 5000,
-        localIp: localIp,
-        localPort: localPort,
-      );
-    }
-    return SessionDescription(type: SessionDescriptionType.offer, sdp: sdp.build());
+    return _negotiation.createOffer();
   }
 
   /// Create an SDP answer based on the remote offer (RFC 3264).
@@ -361,36 +283,7 @@ final class PeerConnection {
     if (_signalingState != SignalingState.haveRemoteOffer) {
       throw StateError('createAnswer: invalid state $_signalingState');
     }
-    await _ensureTransportStarted();
-    final remoteDesc = _remoteDescription;
-    final remoteParsed = _remoteParsed;
-    if (remoteDesc == null || remoteParsed == null) {
-      throw StateError('createAnswer: no remote offer set');
-    }
-
-    final localSenderSsrcs = <String, int>{};
-    for (final t in _transceivers) {
-      if (t.sender != null) localSenderSsrcs[t.kind] = t.sender!.ssrc;
-    }
-    // Honour each transceiver's preferredCodecs on the answer side.
-    final sdp = SdpBuilder.buildAnswerFromOffer(
-      remoteOffer: remoteParsed,
-      ufrag: _iceUfrag,
-      password: _icePwd,
-      fingerprint: _localCert.sha256Fingerprint,
-      localIp: _relayOnly ? null : _transport.localAddress,
-      localPort: _relayOnly ? null : _transport.localPort,
-      localSenderSsrcs: localSenderSsrcs,
-      supportedAudioCodecs: _answerCodecNames('audio'),
-      supportedVideoCodecs: _answerCodecNames('video'),
-    );
-    final answerSdp = sdp.build();
-
-    // PT must come from the answer (the codec we narrowed down to), not the
-    // offer (which lists every PT the remote was willing to use).
-    _assignMidToTransceivers(sdp);
-
-    return SessionDescription(type: SessionDescriptionType.answer, sdp: answerSdp);
+    return _negotiation.createAnswer();
   }
 
   /// Set the local description and begin ICE gathering.
@@ -400,177 +293,12 @@ final class PeerConnection {
   /// and its parsed cache out of sync. `createOffer` / `createAnswer`
   /// produce well-formed SDP, so the throw mainly catches a caller
   /// passing hand-rolled bytes.
-  Future<void> setLocalDescription(SessionDescription desc) async {
-    final parsed = SdpParser.parse(desc.sdp);
-    if (parsed.isErr) throw Exception(parsed.error.message);
-    _localDescription = desc;
-    _localParsed = parsed.value;
-    // Applying our own description starts (offer) or finishes (answer) the
-    // pending negotiation — clear the W3C negotiation-needed flag.
-    _negotiationNeeded = false;
-    _setSignalingState(
-      desc.type == SessionDescriptionType.offer
-          ? SignalingState.haveLocalOffer
-          : SignalingState.stable,
-    );
-    // ICE role: offerer = controlling, answerer = controlled (RFC 8445 §5.1)
-    _ice.controlling = desc.type == SessionDescriptionType.offer;
-    await _ensureTransportStarted();
-    final localParams =
-        IceParameters(usernameFragment: _iceUfrag, password: _icePwd);
-    final restarting = _iceRestartPending;
-    _iceRestartPending = false;
-    // On a restart the initiator (offer) drops the peer's stale credentials;
-    // the answerer keeps the peer's new credentials it just applied.
-    final result = restarting
-        ? _ice.restart(localParams,
-            hosts: _transport.bindings,
-            clearRemote: desc.type == SessionDescriptionType.offer)
-        : _ice.startGathering(localParams, hosts: _transport.bindings);
-    if (result.isErr) throw Exception(result.error.message);
-    // Forward any initial check packets (answerer: remote params already set).
-    _transport.handleIceControl(result);
-  }
+  Future<void> setLocalDescription(SessionDescription desc) =>
+      _negotiation.setLocalDescription(desc);
 
   /// Set the remote description.
-  Future<void> setRemoteDescription(SessionDescription desc) async {
-    // Parse first so the description and its parsed cache land
-    // atomically — see `setLocalDescription` for the same rationale.
-    final parsed = SdpParser.parse(desc.sdp);
-    if (parsed.isErr) throw Exception(parsed.error.message);
-    final sdp = parsed.value;
-    _remoteDescription = desc;
-    _remoteParsed = sdp;
-    _setSignalingState(
-      desc.type == SessionDescriptionType.offer
-          ? SignalingState.haveRemoteOffer
-          : SignalingState.stable,
-    );
-
-    // When we are the offerer and an answer just arrived, apply the
-    // negotiated MID/PT to our senders so outgoing RTP uses the remote's
-    // expected payload type.
-    if (desc.type == SessionDescriptionType.answer) {
-      _assignMidToTransceivers(sdp);
-    }
-
-    if (sdp.media.isEmpty) return;
-    final media = sdp.media.first;
-
-    // Build PT→kind map from remote SDP for RTP demuxing.
-    // Each m-line type (audio/video) lists its payload types as formats.
-    for (final m in sdp.media) {
-      if (m.type == 'application') continue;
-      for (final fmt in m.formats) {
-        final pt = int.tryParse(fmt);
-        if (pt != null) _ptKindMap[pt] = m.type;
-      }
-      // PT→clock-rate / PT→codec from a=rtpmap ("<PT> <codec>/<clock>[/<ch>]").
-      // Clock rate feeds the RFC 3550 §A.8 jitter calc; the codec name (lower-
-      // cased to a CodecRegistry key) lets the receive path build a decoder.
-      for (final rtpmap in m.getAll('rtpmap')) {
-        final space = rtpmap.indexOf(' ');
-        if (space < 0) continue;
-        final pt = int.tryParse(rtpmap.substring(0, space));
-        if (pt == null) continue;
-        final parts = rtpmap.substring(space + 1).split('/');
-        if (parts[0].isNotEmpty) _ptCodecMap[pt] = parts[0].toLowerCase();
-        final rate = parts.length > 1 ? int.tryParse(parts[1]) : null;
-        if (rate != null) _ptClockRateMap[pt] = rate;
-        final ch = parts.length > 2 ? int.tryParse(parts[2]) : null;
-        if (ch != null) _ptChannelsMap[pt] = ch;
-      }
-    }
-
-    // Extract ICE and DTLS parameters (media-level overrides session-level)
-    final sa = sdp.sessionAttributes;
-    final remoteUfrag = media.iceUfrag ?? sa['ice-ufrag'] ?? '';
-    final remotePwd = media.icePwd ?? sa['ice-pwd'] ?? '';
-
-    // A changed ICE ufrag/pwd in an *offer* is a peer-initiated ICE restart
-    // (RFC 8445 §9): regenerate our own credentials and flag so the answer
-    // carries them and setLocalDescription re-gathers.
-    if (desc.type == SessionDescriptionType.offer &&
-        _remoteIceUfrag != null &&
-        (remoteUfrag != _remoteIceUfrag || remotePwd != _remoteIcePwd)) {
-      _regenerateIceCredentials();
-      _iceRestartPending = true;
-    }
-    _remoteIceUfrag = remoteUfrag;
-    _remoteIcePwd = remotePwd;
-    final remoteFingerprint = media.fingerprint ?? sa['fingerprint'];
-    final setup = media.setup ?? sa['setup'] ?? 'active';
-
-    // RFC 8827 §5: a=fingerprint is mandatory in WebRTC offers/answers.
-    if (remoteFingerprint == null) {
-      throw Exception('Remote SDP missing required a=fingerprint attribute (RFC 8827 §5)');
-    }
-    // SDP a=fingerprint is "<algorithm> <hex>" (RFC 4572 §5). Split
-    // properly so the stats layer can report the actual algorithm the
-    // remote used; tolerant fallback treats a missing prefix as
-    // sha-256, which is what every real WebRTC peer sends today.
-    final spaceIdx = remoteFingerprint.indexOf(' ');
-    final algorithm =
-        spaceIdx > 0 ? remoteFingerprint.substring(0, spaceIdx) : 'sha-256';
-    final hex = spaceIdx > 0
-        ? remoteFingerprint.substring(spaceIdx + 1)
-        : remoteFingerprint;
-    // Reject cryptographically weak fingerprint hashes (RFC 8122 §5:
-    // SHA-1 and the MD family are deprecated; RFC 8827 §6.5 mandates
-    // SHA-256 for WebRTC). Stronger digests (sha-384/512) are left to
-    // pass through — only sha-256 actually verifies against our DTLS
-    // layer, but that capability gap is the handshake's concern, not a
-    // security one. A weak digest, by contrast, must never be honoured.
-    if (const {'sha-1', 'md5', 'md2'}.contains(algorithm.toLowerCase())) {
-      throw Exception(
-          'Remote a=fingerprint uses weak hash "$algorithm"; '
-          'WebRTC requires sha-256 (RFC 8827 §6.5, RFC 8122 §5)');
-    }
-    _dtls.expectedRemoteFingerprint = hex;
-    _remoteFp = (algorithm: algorithm, hex: hex);
-
-    // Set DTLS role: if remote is active, we are passive (server); otherwise client.
-    _dtls.role = (setup == 'active') ? DtlsRole.server : DtlsRole.client;
-
-    // Add remote ICE candidates embedded in SDP (if any).
-    for (final cand in media.candidates) {
-      _transport.handleIceControl(_ice.addRemoteCandidate(cand));
-    }
-
-    // Extract transport-cc extension ID from SDP.
-    // Format: a=extmap:N http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
-    for (final m in sdp.media) {
-      for (final extmap in m.getAll('extmap')) {
-        if (extmap.contains('transport-wide-cc')) {
-          final id = int.tryParse(extmap.split(' ').first.split('/').first);
-          if (id != null) {
-            _twccExtId = id;
-            if (_debug) _log('[pc] transport-cc extension ID: $id');
-          }
-        }
-      }
-    }
-
-    // Extract remote SSRCs from SDP for pre-populating RTCP RR.
-    for (final m in sdp.media) {
-      for (final ssrcAttr in m.getAll('ssrc')) {
-        // Format: "SSRC cname:..." or "SSRC msid:..."
-        final spaceIdx = ssrcAttr.indexOf(' ');
-        if (spaceIdx > 0) {
-          final ssrc = int.tryParse(ssrcAttr.substring(0, spaceIdx));
-          if (ssrc != null) {
-            _rtpRecvStats.putIfAbsent(ssrc, () => _RtpRecvStats(ssrc));
-            if (_debug) _log('[pc] pre-populated remote SSRC from SDP: $ssrc');
-          }
-        }
-      }
-    }
-
-    // Set remote ICE parameters — starts connectivity checking if local
-    // description is already set (both sets of parameters are now known).
-    _transport.handleIceControl(_ice.setRemoteParameters(
-        IceParameters(usernameFragment: remoteUfrag, password: remotePwd)));
-  }
+  Future<void> setRemoteDescription(SessionDescription desc) =>
+      _negotiation.setRemoteDescription(desc);
 
   /// Add a remote ICE candidate (Trickle ICE).
   Future<void> addIceCandidate(IceCandidateInit candidate) async {
@@ -709,70 +437,6 @@ final class PeerConnection {
   /// W3C: all RTP receivers that have produced an incoming stream.
   List<RtpReceiver> getReceivers() => List.unmodifiable(_receivers.values);
 
-  /// Codec names to advertise in the answer for [kind], filtered by the
-  /// matching transceiver's preferredCodecs (if any). m-lines without a
-  /// local transceiver still negotiate normally, treating the answerer as
-  /// recv-only for that kind.
-  List<String> _answerCodecNames(String kind) {
-    final prefs = _transceivers
-        .where((t) => t.kind == kind)
-        .firstOrNull
-        ?.preferredCodecs;
-    final resolved = kind == 'audio'
-        ? mediaEngine.resolveAudioCodecs(prefs)
-        : mediaEngine.resolveVideoCodecs(prefs);
-    return [for (final c in resolved) c.name];
-  }
-
-  /// Align transceivers to the remote SDP: record each transceiver's MID +
-  /// currentDirection, and set its sender's MID, MID header-extension ID (if
-  /// negotiated), and negotiated payload type. Runs for both offerer (after
-  /// receiving the answer) and answerer (when building the answer).
-  void _assignMidToTransceivers(SdpSessionDescription remoteSdp) {
-    int midExtId = 0;
-    for (final m in remoteSdp.media) {
-      for (final extmap in m.getAll('extmap')) {
-        if (extmap.contains('sdes:mid')) {
-          final id = int.tryParse(extmap.split(' ').first.split('/').first);
-          if (id != null) midExtId = id;
-        }
-      }
-    }
-
-    // Pair each m-line with the first unassigned matching-kind sender.
-    // Walking transceivers in lockstep with m-lines breaks when the two
-    // lists diverge (e.g. offer m=audio+m=video, only video transceiver).
-    final assigned = <RtpTransceiver>{};
-    for (var i = 0; i < remoteSdp.media.length; i++) {
-      final m = remoteSdp.media[i];
-      if (m.type == 'application' || m.port == 0) continue;
-      final mid = m.mid ?? '$i';
-      for (final t in _transceivers) {
-        if (t.kind != m.type || assigned.contains(t) || t.stopped) continue;
-        // Record the negotiated mid + currentDirection on the transceiver
-        // (W3C): currentDirection is the intersection of our preferred
-        // direction and the remote m-line's direction.
-        t._mid = mid;
-        t._currentDirection = RtpTransceiverDirection.negotiated(
-            t._direction, RtpTransceiverDirection.fromToken(m.direction));
-        // Align the sender (if any) to the negotiated mid + payload type.
-        final sender = t.sender;
-        if (sender != null) {
-          sender._mid = mid;
-          sender._midExtId = midExtId;
-          if (m.formats.isNotEmpty) {
-            final negotiatedPt = int.tryParse(m.formats.first);
-            if (negotiatedPt != null) sender.payloadType = negotiatedPt;
-          }
-          if (_debug) _log('[pc] sender ${t.kind} mid=$mid extId=$midExtId pt=${sender.payloadType}');
-        }
-        assigned.add(t);
-        break;
-      }
-    }
-  }
-
-
   void _sendSrtpRtp(Uint8List rtpPacket) {
     final srtp = _srtp;
     if (srtp == null) return;
@@ -785,283 +449,18 @@ final class PeerConnection {
   /// Returned counters are monotonic; callers compute deltas across
   /// snapshots themselves.
   Future<RtcStatsReport> getStats() {
-    // Body is synchronous: no awaits, just assembling counter snapshots
-    // into typed entries. Returning via `Future.value` keeps the W3C
+    // Assembly is synchronous: no awaits, just counter snapshots into
+    // typed entries. Returning via `Future.value` keeps the W3C
     // Promise-shaped API without forcing the extra microtask `async`
     // would queue per call.
-    final now = DateTime.now();
-    final entries = <String, RtcStats>{};
-    var dcOpened = 0;
-    var dcClosed = 0;
-    for (final dc in _dataChannels.values) {
-      if (dc.readyState == DataChannelState.open) dcOpened++;
-      if (dc.readyState == DataChannelState.closed) dcClosed++;
-      final id = 'dc-${dc.id}';
-      entries[id] = DataChannelStats(
-        id: id,
-        timestamp: now,
-        label: dc.label,
-        state: dc.readyState.name,
-        messagesSent: dc.messagesSent,
-        bytesSent: dc.bytesSent,
-        messagesReceived: dc.messagesReceived,
-        bytesReceived: dc.bytesReceived,
-      );
-    }
-
-    String? selectedPairId;
-    for (final pair in _ice.pairs) {
-      final localId = pair.local.statsId(isLocal: true);
-      final remoteId = pair.remote.statsId(isLocal: false);
-      // ICE state machine de-dupes by candidate coords in `_addPair`,
-      // so this structured id is collision-free: one entry per
-      // (local-candidate, remote-candidate) coordinate.
-      final pairId = 'pair-$localId-$remoteId';
-      final isSelected = identical(_ice.selectedPair, pair);
-      if (isSelected) selectedPairId = pairId;
-      entries[pairId] = CandidatePairStats(
-        id: pairId,
-        timestamp: now,
-        localCandidateId: localId,
-        remoteCandidateId: remoteId,
-        state: pair.state.name,
-        nominated: pair.nominated,
-        currentRoundTripTime: pair.roundTripTimeMs == null
-            ? null
-            : pair.roundTripTimeMs! / 1000.0,
-      );
-    }
-    for (final c in _ice.localCandidates) {
-      final id = c.statsId(isLocal: true);
-      entries[id] = CandidateStats(
-        id: id,
-        type: RtcStatsType.localCandidate,
-        timestamp: now,
-        ip: c.ip.toCanonical(),
-        port: c.port,
-        protocol: c.transport,
-        candidateType: c.type,
-        priority: c.priority,
-      );
-    }
-    for (final c in _ice.remoteCandidates) {
-      final id = c.statsId(isLocal: false);
-      entries[id] = CandidateStats(
-        id: id,
-        type: RtcStatsType.remoteCandidate,
-        timestamp: now,
-        ip: c.ip.toCanonical(),
-        port: c.port,
-        protocol: c.transport,
-        candidateType: c.type,
-        priority: c.priority,
-      );
-    }
-
-    // Media sources + codecs are emitted first so the outbound /
-    // inbound entries below can back-reference them by id.
-    final mediaSourceIdByTrack = <String, String>{};
-    for (final t in _transceivers) {
-      final track = t.sender?.track;
-      if (track == null) continue;
-      final id = 'media-source-${track.id}';
-      if (mediaSourceIdByTrack.containsKey(track.id)) continue;
-      mediaSourceIdByTrack[track.id] = id;
-      entries[id] = MediaSourceStats(
-        id: id,
-        timestamp: now,
-        trackIdentifier: track.id,
-        kind: track.kind,
-      );
-    }
-    final codecIdByPt = _emitCodecStats(entries, now);
-
-    for (final t in _transceivers) {
-      final sender = t.sender;
-      if (sender == null) continue;
-      final outboundId = 'outbound-rtp-${sender.ssrc}';
-      entries[outboundId] = OutboundRtpStats(
-        id: outboundId,
-        timestamp: now,
-        ssrc: sender.ssrc,
-        kind: sender.kind,
-        packetsSent: sender.packetsSent,
-        bytesSent: sender.bytesSent,
-        // PT-only lookup — if the same PT shows up under multiple
-        // m-lines the first one wins (see _emitCodecStats). A pair-
-        // keyed (mid, pt) map would need RtpSender to expose its mid.
-        codecId: codecIdByPt[sender.payloadType],
-        mediaSourceId: mediaSourceIdByTrack[sender.track?.id],
-      );
-      // Emit a paired remote-inbound entry once the remote has actually
-      // reported anything about this SSRC. `clockRate` converts the
-      // RR's jitter field from RTP timestamp units to seconds.
-      final remote = _remoteInboundStats[sender.ssrc];
-      if (remote != null) {
-        final remoteId = 'remote-inbound-rtp-${sender.ssrc}';
-        entries[remoteId] = RemoteInboundRtpStats(
-          id: remoteId,
-          timestamp: now,
-          ssrc: sender.ssrc,
-          localId: outboundId,
-          packetsLost: remote.packetsLost,
-          fractionLost: remote.fractionLost,
-          jitter: remote.jitterRtpUnits / sender.clockRate,
-          roundTripTime: remote.roundTripTimeSeconds,
-        );
-      }
-    }
-    for (final s in _rtpRecvStats.values) {
-      // Skip the placeholder entry created for the local sender's
-      // SSRC in `setRemoteDescription` (line ~369) — it never gets a
-      // packet, so emitting it would falsely suggest a paired inbound
-      // stream that doesn't exist.
-      if (s.packetsReceived == 0) continue;
-      final id = 'inbound-rtp-${s.ssrc}';
-      entries[id] = InboundRtpStats(
-        id: id,
-        timestamp: now,
-        ssrc: s.ssrc,
-        kind: s.kind,
-        packetsReceived: s.packetsReceived,
-        bytesReceived: s.bytesReceived,
-        packetsLost: s.cumulativeLost,
-        jitter: s.jitterSeconds,
-        codecId: codecIdByPt[s.payloadType],
-      );
-      // Pair a remote-outbound entry from the remote's SR, when one has
-      // arrived (the SR describes the sending side of this inbound SSRC).
-      if (s.reportsReceived > 0) {
-        final remoteId = 'remote-outbound-rtp-${s.ssrc}';
-        entries[remoteId] = RemoteOutboundRtpStats(
-          id: remoteId,
-          timestamp: now,
-          ssrc: s.ssrc,
-          kind: s.kind,
-          localId: id,
-          packetsSent: s.srPacketCount,
-          bytesSent: s.srOctetCount,
-          remoteTimestamp: ntpToDateTime(s.srNtpHigh, s.srNtpLow),
-          reportsReceived: s.reportsReceived,
-        );
-      }
-    }
-
-    // DTLS certificates. The local cert is sha-256 by impl
-    // (EcdsaCertificate); the remote algorithm comes verbatim from
-    // the SDP a=fingerprint line, so a peer using sha-384/sha-512
-    // gets reported as such instead of being mis-labelled.
-    const localCertId = 'certificate-local';
-    entries[localCertId] = CertificateStats(
-      id: localCertId,
-      timestamp: now,
-      fingerprint: _localCert.sha256Fingerprint,
-      fingerprintAlgorithm: 'sha-256',
-    );
-    String? remoteCertId;
-    final remoteFp = _remoteFp;
-    if (remoteFp != null) {
-      remoteCertId = 'certificate-remote';
-      entries[remoteCertId] = CertificateStats(
-        id: remoteCertId,
-        timestamp: now,
-        fingerprint: remoteFp.hex,
-        fingerprintAlgorithm: remoteFp.algorithm,
-      );
-    }
-
-    entries['transport'] = TransportStats(
-      id: 'transport',
-      timestamp: now,
-      bytesSent: _transport.bytesSent,
-      bytesReceived: _transport.bytesReceived,
-      packetsSent: _transport.packetsSent,
-      packetsReceived: _transport.packetsReceived,
-      selectedCandidatePairId: selectedPairId,
-      localCertificateId: localCertId,
-      remoteCertificateId: remoteCertId,
-    );
-
-    entries['pc'] = PeerConnectionStats(
-      id: 'pc',
-      timestamp: now,
-      dataChannelsOpened: dcOpened,
-      dataChannelsClosed: dcClosed,
-    );
-
-    return Future.value(RtcStatsReport(entries));
-  }
-
-  /// Emit one [CodecStats] per (m-line, payloadType) found in the
-  /// Whichever description is the agreed-upon answer — that's the
-  /// narrowed codec list both sides committed to. Returns null while
-  /// the offer/answer dance is still pending, in which case `getStats`
-  /// skips codec entries entirely.
-  SdpSessionDescription? _agreedSdp() {
-    if (_localDescription?.type == SessionDescriptionType.answer) {
-      return _localParsed;
-    }
-    if (_remoteDescription?.type == SessionDescriptionType.answer) {
-      return _remoteParsed;
-    }
-    return null;
-  }
-
-  /// Emit one [CodecStats] per (m-line, payloadType) found in the
-  /// agreed-upon SDP and return a `{payloadType: codecId}` map for
-  /// outbound entries to back-reference. The same PT under multiple
-  /// m-lines (rare but legal) collapses to the first one in the map —
-  /// `getStats` reports the most-likely codec only.
-  Map<int, String> _emitCodecStats(Map<String, RtcStats> entries, DateTime now) {
-    final sdp = _agreedSdp();
-    if (sdp == null) return const {};
-
-    final out = <int, String>{};
-    for (final m in sdp.media) {
-      if (m.type != 'audio' && m.type != 'video') continue;
-      final mid = m.mid;
-      // BUNDLE makes `a=mid` mandatory; a missing one means malformed
-      // SDP rather than something we should paper over with a `?`
-      // placeholder that would collide across m-lines.
-      if (mid == null) continue;
-
-      // PT→fmtp lookup, hoisted out of the rtpmap loop below so the
-      // fmtp scan happens once per m-line rather than once per codec.
-      final fmtpByPt = m.fmtpByPayloadType();
-
-      for (final rtpmap in m.getAll('rtpmap')) {
-        // Format: "<PT> <codec>/<clock>[/<channels>]"
-        final space = rtpmap.indexOf(' ');
-        if (space < 0) continue;
-        final pt = int.tryParse(rtpmap.substring(0, space));
-        if (pt == null) continue;
-        final parts = rtpmap.substring(space + 1).split('/');
-        if (parts.isEmpty) continue;
-        final codecName = parts[0];
-        final clockRate = parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0;
-        final channels =
-            parts.length > 2 ? int.tryParse(parts[2]) : null;
-        final id = 'codec-$mid-$pt';
-        entries[id] = CodecStats(
-          id: id,
-          timestamp: now,
-          payloadType: pt,
-          mimeType: '${m.type}/$codecName',
-          clockRate: clockRate,
-          channels: channels,
-          sdpFmtpLine: fmtpByPt[pt],
-        );
-        out.putIfAbsent(pt, () => id);
-      }
-    }
-    return out;
+    return Future.value(_stats.collect());
   }
 
   /// Close the connection.
   Future<void> close() async {
     _setConnectionState(PeerConnectionState.closed);
     _setSignalingState(SignalingState.closed);
-    _rtcpTimer?.cancel();
+    _rtcp._close();
     for (final r in _receivers.values) { r._close(); }
     _receivers.clear();
     // Tear down channels immediately — the whole transport is going away, so
@@ -1083,7 +482,8 @@ final class PeerConnection {
 
   /// Allocate next data channel ID: offerer uses even, answerer uses odd.
   int _allocateDataChannelId() {
-    final isOfferer = _localDescription?.type == SessionDescriptionType.offer;
+    final isOfferer =
+        _negotiation._localDescription?.type == SessionDescriptionType.offer;
     // First ID: 0 for offerer, 1 for answerer. Then increment by 2.
     if (_nextDataChannelId == 0 && isOfferer != true) {
       _nextDataChannelId = 1;
@@ -1097,9 +497,6 @@ final class PeerConnection {
 
   void _init() {
     _localCert = EcdsaCertificate.selfSigned();
-    _regenerateIceCredentials();
-
-    _localRtcpSsrc = Csprng.randomUint32();
     // Split iceServers into STUN and TURN forms. STUN URLs are gathered
     // for srflx discovery; TURN URLs become allocations driven by the
     // transport (relay candidates emitted on Allocate success).
@@ -1148,7 +545,7 @@ final class PeerConnection {
     _transport.attachSctp(_sctp);
 
     _transport.onRtp = _onRtpReceived;
-    _transport.onRtcp = _onRtcpReceived;
+    _transport.onRtcp = _rtcp._onRtcpReceived;
   }
 
   bool _transportStarted = false;
@@ -1287,7 +684,7 @@ final class PeerConnection {
       if (_debug) _log('[pc] media-only session — skipping SCTP');
       // Send periodic RTCP RR to kick-start and sustain Chrome's video encoder.
       // Chrome won't send VP8 until it receives RTCP RR.
-      _startRtcpTimer();
+      _rtcp._startTimer();
       return;
     }
 
@@ -1400,13 +797,14 @@ final class PeerConnection {
 
     // Update reception stats for RTCP RR + getStats inboundRtp. Resolve the
     // codec (kind + clock rate) once, on first bind — not per packet.
-    final stats = _rtpRecvStats.putIfAbsent(ssrc, () => _RtpRecvStats(ssrc));
+    final stats =
+        _rtcp._rtpRecvStats.putIfAbsent(ssrc, () => _RtpRecvStats(ssrc));
     if (!stats.isBound) {
-      final recvKind = _resolveTrackKind(rtp.payloadType);
+      final recvKind = _negotiation._resolveTrackKind(rtp.payloadType);
       stats.bind(
         kind: recvKind,
         payloadType: rtp.payloadType,
-        clockRate: _clockRateForPt(rtp.payloadType, recvKind),
+        clockRate: _negotiation._clockRateForPt(rtp.payloadType, recvKind),
       );
     }
     stats.update(
@@ -1417,25 +815,7 @@ final class PeerConnection {
     );
 
     // Extract transport-cc sequence number from header extension
-    if (_twccExtId > 0) {
-      if (rtp.headerExtension != null) {
-        final elements = rtp.headerExtension!.parseElements();
-        for (final ext in elements) {
-          if (ext.id == _twccExtId && ext.data.length >= 2) {
-            final twccSeq = (ext.data[0] << 8) | ext.data[1];
-            _twccRecvLog.add(_TwccEntry(twccSeq, arrivalUs));
-            if (_debug && _twccRecvLog.length <= 3) {
-              _log('[pc] twcc seq=$twccSeq (ext elements=${elements.length})');
-            }
-          }
-        }
-        if (elements.isEmpty && _debug) {
-          _log('[pc] headerExt present but 0 elements (profile=0x${rtp.headerExtension!.profile.toRadixString(16)}, dataLen=${rtp.headerExtension!.data.length})');
-        }
-      } else if (_debug && _receivers.length <= 1) {
-        _log('[pc] no headerExtension on RTP pt=${rtp.payloadType} ext=${rtp.extension}');
-      }
-    }
+    _rtcp._recordTwcc(rtp, arrivalUs);
 
     _rtpPacketController.add(rtp);
 
@@ -1445,14 +825,14 @@ final class PeerConnection {
       existing._deliver(rtp, arrivalUs);
     } else {
       // New SSRC — create receiver and fire onTrack
-      final kind = _resolveTrackKind(rtp.payloadType);
+      final kind = _negotiation._resolveTrackKind(rtp.payloadType);
       final receiver = RtpReceiver._(
         kind: kind,
         ssrc: ssrc,
-        codecKey: _codecForPt(rtp.payloadType),
-        clockRate: _clockRateForPt(rtp.payloadType, kind),
-        channels: _channelsForPt(rtp.payloadType),
-        requestKeyframe: () => _sendPli(ssrc),
+        codecKey: _negotiation._codecForPt(rtp.payloadType),
+        clockRate: _negotiation._clockRateForPt(rtp.payloadType, kind),
+        channels: _negotiation._channelsForPt(rtp.payloadType),
+        requestKeyframe: () => _rtcp._sendPli(ssrc),
       );
       _receivers[ssrc] = receiver;
       // Associate the receiver with a matching transceiver (W3C: each
@@ -1468,317 +848,11 @@ final class PeerConnection {
       receiver._deliver(rtp, arrivalUs);
       if (_debug) _log('[pc] onTrack fired: kind=$kind ssrc=$ssrc');
       // Send initial RTCP RR after first packet (triggers Chrome video encoder)
-      _sendRtcpRR();
+      _rtcp._sendRtcpRR();
       // Send PLI for video to request an immediate keyframe (RFC 4585 §6.3.1).
       // Without this, the decoder waits for the next periodic keyframe.
-      if (kind == 'video') _sendPli(ssrc);
+      if (kind == 'video') _rtcp._sendPli(ssrc);
     }
-  }
-
-  // Dynamic PT→kind / PT→clock-rate / PT→codec maps built from SDP negotiation.
-  final Map<int, String> _ptKindMap = {};
-  final Map<int, int> _ptClockRateMap = {};
-  final Map<int, String> _ptCodecMap = {};
-  final Map<int, int> _ptChannelsMap = {};
-
-  /// Audio channel count for [payloadType] from `a=rtpmap` (the optional
-  /// third field, e.g. `opus/48000/2`), defaulting to 2 (WebRTC's Opus
-  /// default) when unspecified.
-  int _channelsForPt(int payloadType) => _ptChannelsMap[payloadType] ?? 2;
-
-  /// RTP clock rate for [payloadType] — from the negotiated `a=rtpmap`,
-  /// falling back to the WebRTC defaults (Opus 48 kHz, video 90 kHz) for
-  /// static or unmapped PTs.
-  int _clockRateForPt(int payloadType, String kind) =>
-      _ptClockRateMap[payloadType] ?? (kind == 'audio' ? 48000 : 90000);
-
-  /// Codec key (CodecRegistry lookup key, e.g. `vp8`, `h264`, `opus`) for
-  /// [payloadType] from the negotiated `a=rtpmap`, or null if unmapped. The
-  /// `a=rtpmap` encoding name (e.g. `VP8`, `H264`, `opus`) is lower-cased to
-  /// match the keys CodecRegistry registers under (see [VideoCodecName] /
-  /// [AudioCodecName], which are already lower-case).
-  String? _codecForPt(int payloadType) => _ptCodecMap[payloadType];
-
-  String _resolveTrackKind(int payloadType) {
-    // Check dynamically negotiated PTs first (populated from SDP).
-    final fromSdp = _ptKindMap[payloadType];
-    if (fromSdp != null) return fromSdp;
-    // Fallback heuristics for well-known static PTs.
-    if (payloadType <= 34) return 'audio'; // RFC 3551 static audio range
-    if (payloadType >= 96 && payloadType <= 127) {
-      // Dynamic range — check unmatched transceivers
-      for (final t in _transceivers) {
-        if (!_receivers.values.any((r) => r.kind == t.kind)) return t.kind;
-      }
-    }
-    return 'audio';
-  }
-
-  void _onRtcpReceived(Uint8List data) {
-    final result = RtpParser.parseRtcp(data);
-    if (result.isErr) return;
-    for (final pkt in result.value) {
-      if (_debug) _log('[pc] RTCP received: ${pkt.runtimeType}');
-      if (pkt is RtcpSenderReport) {
-        // Update stats with SR info and send RR back. The SR describes the
-        // remote's own outbound stream (our inbound SSRC) — capture it for
-        // `remote-outbound-rtp`.
-        final stats =
-            _rtpRecvStats.putIfAbsent(pkt.ssrc, () => _RtpRecvStats(pkt.ssrc));
-        stats.lastSrReceivedAt = DateTime.now();
-        stats.srPacketCount = pkt.packetCount;
-        stats.srOctetCount = pkt.octetCount;
-        stats.srNtpHigh = pkt.ntpTimestampHigh;
-        stats.srNtpLow = pkt.ntpTimestampLow;
-        stats.reportsReceived++;
-        _ingestReportBlocks(pkt.reportBlocks);
-        _sendRtcpRR();
-      } else if (pkt is RtcpReceiverReport) {
-        _ingestReportBlocks(pkt.reportBlocks);
-      }
-    }
-  }
-
-  /// RFC 3550 §6.4.1: RR/SR report blocks describe how the *remote*
-  /// peer is receiving one of our outbound SSRCs. Store the latest
-  /// snapshot per SSRC, plus a freshly-computed RTT when the remote
-  /// has echoed a non-zero `lastSr`. Blocks naming an SSRC we don't
-  /// own are dropped — without that gate a misbehaving peer can grow
-  /// the map without bound by flooding RRs with random SSRCs.
-  void _ingestReportBlocks(List<RtcpReportBlock> blocks) {
-    if (blocks.isEmpty) return;
-    final knownSsrcs = {
-      for (final t in _transceivers)
-        if (t.sender != null) t.sender!.ssrc,
-    };
-    if (knownSsrcs.isEmpty) return;
-    final nowCompact = currentCompactNtp(DateTime.now());
-    for (final b in blocks) {
-      if (!knownSsrcs.contains(b.ssrc)) continue;
-      final s = _remoteInboundStats.putIfAbsent(b.ssrc, _RemoteInboundStats.new);
-      s.packetsLost = sext24(b.cumulativeLost);
-      s.fractionLost = b.fractionLost / rtcpFractionLostScale;
-      s.jitterRtpUnits = b.jitter;
-      final rtt = rttSeconds(
-        nowCompactNtp: nowCompact,
-        lastSr: b.lastSr,
-        dlsrNtp: b.delaySinceLastSr,
-      );
-      if (rtt != null) s.roundTripTimeSeconds = rtt;
-    }
-  }
-
-  void _sendPli(int mediaSourceSsrc) {
-    // Queue PLI to be sent on the next periodic compound RTCP. The compound's
-    // sender SSRC is either an active video sender (preferred — Chrome
-    // already knows it from a=ssrc) or `_localRtcpSsrc` when this side is
-    // receive-only; the same `_localRtcpSsrc` carries the RR + SDES + REMB
-    // in that compound and Chrome accepts those, so PLI rides along.
-    _pendingPliSsrcs.add(mediaSourceSsrc);
-    if (_debug) _log('[pc] queued PLI for ssrc=$mediaSourceSsrc');
-  }
-
-  void _startRtcpTimer() {
-    _rtcpTimer?.cancel();
-    // Send RTCP RR + transport-cc and pump receive pipelines every 100ms.
-    // The receive pipelines deliberately share this timer rather than owning a
-    // separate one — jitter-buffer playout granularity is therefore 100ms,
-    // coarser than the 50ms default playout delay but adequate; revisit with a
-    // dedicated faster pump if playout latency becomes a concern.
-    _rtcpTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      _sendRtcpRR();
-      _tickReceivers();
-    });
-    Future<void>.delayed(const Duration(milliseconds: 50), _sendRtcpRR);
-  }
-
-  /// Pump each receiver's decode pipeline: release jitter-buffered packets,
-  /// depacketize, decode, and retransmit PLI as needed. Uses the transport's
-  /// monotonic clock so playout timing matches packet arrival timestamps.
-  void _tickReceivers() {
-    if (_receivers.isEmpty) return;
-    final nowUs = _transport.nowUs;
-    for (final r in _receivers.values) {
-      r._tick(nowUs);
-    }
-  }
-
-  void _sendRtcpRR() {
-    final srtp = _srtp;
-    if (srtp == null) return;
-
-    // Only include RR blocks for SSRCs that have actually sent packets.
-    final blocks = <RtcpReportBlock>[];
-    for (final stats in _rtpRecvStats.values) {
-      if (stats.packetsReceived == 0) continue;
-      final dlsr = stats.lastSrReceivedAt != null
-          ? ((DateTime.now().difference(stats.lastSrReceivedAt!).inMicroseconds *
-                  65536) ~/
-              1000000)
-          : 0;
-      blocks.add(RtcpReportBlock(
-        ssrc: stats.ssrc,
-        fractionLost: stats.takeFractionLost(),
-        // RR cumulative-lost is a 24-bit two's-complement field.
-        cumulativeLost: stats.cumulativeLost & 0xFFFFFF,
-        extendedHighestSeq: stats.extendedHighestSeq,
-        jitter: stats.jitterRtpUnits.round(),
-        lastSr: stats.lastSrNtp,
-        delaySinceLastSr: dlsr,
-      ));
-    }
-
-    // Build compound RTCP: SR/RR + SDES(CNAME) [+ REMB] [+ Transport-CC]
-    // RFC 3550 §6.1 requires compound packets with SR/RR + SDES as minimum.
-    // Use SR if we are actively sending RTP, RR otherwise.
-    final compound = <int>[];
-
-    // Determine SSRC for this compound packet — must be consistent across
-    // all sub-packets (SR/RR, SDES, etc.) per RFC 3550 §6.1.
-    final activeSenders = _transceivers
-        .where((t) => t.sender != null && t.sender!._packetsSent > 0)
-        .map((t) => t.sender!)
-        .toList();
-
-    // Send SR for an active sender, or RR if no sender is active.
-    // When PLI is pending, prefer the video sender so Chrome associates
-    // the compound with the video m= line.
-    final int compoundSsrc;
-    if (activeSenders.isNotEmpty) {
-      final sender = (_pendingPliSsrcs.isNotEmpty
-          ? activeSenders.where((s) => s.kind == 'video').firstOrNull
-          : null) ?? activeSenders.first;
-      compoundSsrc = sender.ssrc;
-      final ntp = ntpTimestampOf(DateTime.now());
-      compound.addAll(RtcpSenderReport(
-        ssrc: compoundSsrc,
-        ntpTimestampHigh: ntp.high,
-        ntpTimestampLow: ntp.low,
-        rtpTimestamp: sender._lastRtpTimestamp,
-        packetCount: sender._packetsSent,
-        octetCount: sender._octetsSent,
-        reportBlocks: blocks,
-      ).build());
-    } else {
-      compoundSsrc = _localRtcpSsrc;
-      compound.addAll(RtcpReceiverReport(ssrc: compoundSsrc, reportBlocks: blocks).build());
-    }
-    compound.addAll(RtcpSdes(chunks: [
-      RtcpSdesChunk(ssrc: compoundSsrc, items: {1: 'webdartc'}),
-    ]).build());
-
-    // REMB for video bandwidth signaling
-    if (_transceivers.any((t) => t.kind == 'video')) {
-      final remoteSsrcs = _rtpRecvStats.keys.where((ssrc) {
-        final s = _rtpRecvStats[ssrc];
-        return s != null && s.packetsReceived > 0;
-      }).toList();
-      if (remoteSsrcs.isNotEmpty) {
-        compound.addAll(RtcpRemb(
-          senderSsrc: compoundSsrc,
-          bitrate: 10000000, // 10 Mbps
-          mediaSsrcs: remoteSsrcs,
-        ).build());
-      }
-    }
-
-    // Pending keyframe requests (PLI + FIR, RFC 4585/5104). Piggybacks
-    // on the same compound that just carried RR + SDES (+ REMB) — all use
-    // `compoundSsrc`, which is the active video sender's SSRC when one
-    // exists and `_localRtcpSsrc` for receive-only sessions. Chrome
-    // accepts both. Keep retrying until cleared externally.
-    if (_pendingPliSsrcs.isNotEmpty) {
-      for (final mediaSsrc in _pendingPliSsrcs) {
-        // PLI (RFC 4585 §6.3.1)
-        compound.addAll(RtcpPli(senderSsrc: compoundSsrc, mediaSourceSsrc: mediaSsrc).build());
-        // FIR (RFC 5104 §4.3.1) — some implementations respond to FIR but not PLI
-        final fir = Uint8List(20);
-        fir[0] = 0x80 | 4; // V=2, FMT=4
-        fir[1] = 206; // PT=PSFB
-        fir[2] = 0; fir[3] = 4; // length=4
-        void w32(Uint8List b, int o, int v) { b[o]=(v>>24)&0xFF; b[o+1]=(v>>16)&0xFF; b[o+2]=(v>>8)&0xFF; b[o+3]=v&0xFF; }
-        w32(fir, 4, compoundSsrc); // sender SSRC
-        w32(fir, 8, 0); // media source (unused in FIR)
-        w32(fir, 12, mediaSsrc); // FCI: target SSRC
-        fir[16] = 1; // Seq nr
-        compound.addAll(fir);
-      }
-      if (_debug) _log('[pc] PLI+FIR for ssrcs=$_pendingPliSsrcs (sender=$compoundSsrc)');
-    }
-
-    // Transport-cc feedback — use a consistent known SSRC so Chrome's
-    // transport-cc processor always matches it to our session.
-    final videoSender = _transceivers
-        .where((t) => t.kind == 'video' && t.sender != null)
-        .map((t) => t.sender!)
-        .firstOrNull;
-    if (videoSender != null) {
-      // mediaSsrc: Chrome expects the SSRC of the media stream being fed
-      // back, despite the spec saying 0. Use first known remote video SSRC.
-      final remoteVideoSsrc = _receivers.entries
-          .where((e) => e.value.kind == 'video')
-          .map((e) => e.key)
-          .firstOrNull ?? _rtpRecvStats.keys.firstOrNull ?? 0;
-      final ccBytes = _buildTransportCcFeedback(videoSender.ssrc, remoteVideoSsrc);
-      if (ccBytes != null) compound.addAll(ccBytes);
-    }
-
-    _transport.sendRtp(srtp.encryptRtcp(Uint8List.fromList(compound)));
-    if (_debug) _log('[pc] sent compound RTCP (${compound.length}b): RR(${blocks.length})');
-  }
-
-  Uint8List? _buildTransportCcFeedback(int senderSsrc, int mediaSsrc) {
-    if (_twccRecvLog.isEmpty) return null;
-
-    // Consume all pending entries
-    final entries = List<_TwccEntry>.from(_twccRecvLog);
-    _twccRecvLog.clear();
-
-    // Build seq → arrival map, handling duplicates by keeping earliest.
-    final arrivalMap = <int, int>{};
-    for (final e in entries) {
-      arrivalMap.putIfAbsent(e.seq, () => e.arrivalUs);
-    }
-
-    // Determine full sequence range.
-    final seqs = arrivalMap.keys.toList()..sort();
-    final baseSeq = seqs.first;
-    final maxSeq = seqs.last;
-    final statusCount = maxSeq - baseSeq + 1;
-    final baseTimeUs = arrivalMap[baseSeq]!;
-
-    // Reference time is quantized to 64ms. The first delta captures the
-    // sub-64ms remainder so cross-feedback timing stays accurate to 250µs.
-    final referenceTimeMs = baseTimeUs ~/ 1000;
-    final refTimeQuantizedUs = (referenceTimeMs ~/ 64) * 64 * 1000;
-
-    // Build deltas for the full range [baseSeq, maxSeq].
-    // null = not received, non-null = inter-arrival delta in µs.
-    final deltas = <int?>[];
-    var prevUs = refTimeQuantizedUs; // start from quantized reference, NOT baseTimeUs
-    for (var seq = baseSeq; seq <= maxSeq; seq++) {
-      final arrival = arrivalMap[seq];
-      if (arrival == null) {
-        deltas.add(null); // not received
-      } else {
-        deltas.add(arrival - prevUs);
-        prevUs = arrival;
-      }
-    }
-
-    final fb = RtcpTransportCc(
-      senderSsrc: senderSsrc,
-      mediaSsrc: mediaSsrc,
-      baseSeq: baseSeq,
-      referenceTimeMs: referenceTimeMs,
-      fbPktCount: _twccFbCount & 0xFF,
-      recvDeltasUs: deltas,
-    );
-    _twccFbCount++;
-
-    final rawFb = fb.build();
-    if (_debug) _log('[pc] transport-cc fb: base=$baseSeq count=$statusCount recv=${seqs.length}');
-    return rawFb;
   }
 
   // ── Deferred SCTP actions ─────────────────────────────────────────────────
@@ -1841,80 +915,5 @@ final class PeerConnection {
     _connectionState = state;
     _connectionStateController.add(state);
   }
-}
-
-final class _RtpRecvStats {
-  final int ssrc;
-  String kind = '';
-  int payloadType = -1;
-  int bytesReceived = 0;
-
-  // RFC 3550 loss + interarrival jitter. Bound on the first packet, once
-  // the PT (and hence clock rate) is known via [bind] — entries
-  // pre-populated from SDP SSRC attributes or an SR start unbound.
-  RtpReceptionTracker? _tracker;
-
-  // Latest RTCP SR detail for this (remote) SSRC — the remote's view of
-  // its own outbound stream, surfaced as `remote-outbound-rtp`.
-  DateTime? lastSrReceivedAt;
-  int srPacketCount = 0;
-  int srOctetCount = 0;
-  int srNtpHigh = 0;
-  int srNtpLow = 0;
-  int reportsReceived = 0;
-
-  _RtpRecvStats(this.ssrc);
-
-  bool get isBound => _tracker != null;
-  int get packetsReceived => _tracker?.packetsReceived ?? 0;
-  int get extendedHighestSeq => _tracker?.extendedHighestSeq ?? 0;
-  int get cumulativeLost => _tracker?.cumulativeLost ?? 0;
-  double get jitterRtpUnits => _tracker?.jitter ?? 0;
-  double get jitterSeconds => _tracker?.jitterSeconds ?? 0;
-  int takeFractionLost() => _tracker?.takeFractionLost() ?? 0;
-
-  /// Compact NTP of the last SR, echoed back as our RR's `lastSr`
-  /// (0 until an SR has arrived).
-  int get lastSrNtp =>
-      reportsReceived > 0 ? compactNtpOf(srNtpHigh, srNtpLow) : 0;
-
-  /// Bind the loss/jitter tracker once the stream's codec is known.
-  void bind({
-    required String kind,
-    required int payloadType,
-    required int clockRate,
-  }) {
-    this.kind = kind;
-    this.payloadType = payloadType;
-    _tracker = RtpReceptionTracker(clockRate);
-  }
-
-  void update({
-    required int seq,
-    required int rtpTimestamp,
-    required int arrivalUs,
-    required int payloadBytes,
-  }) {
-    _tracker!.onPacket(seq: seq, rtpTimestamp: rtpTimestamp, arrivalUs: arrivalUs);
-    bytesReceived += payloadBytes;
-  }
-}
-
-/// Latest snapshot from a Receiver Report block the remote sent about
-/// one of our outbound SSRCs. `roundTripTime` is null until we've
-/// received an RR that echoes a non-zero `lastSr` (which only happens
-/// after the peer has both received an SR from us and replied at
-/// least once).
-final class _RemoteInboundStats {
-  int packetsLost = 0;
-  double fractionLost = 0;
-  int jitterRtpUnits = 0;
-  double? roundTripTimeSeconds;
-}
-
-final class _TwccEntry {
-  final int seq;
-  final int arrivalUs;
-  const _TwccEntry(this.seq, this.arrivalUs);
 }
 

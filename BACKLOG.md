@@ -584,70 +584,6 @@ Each item:
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
 
-### DTLS 1.3 client/server state machines are near-total copies
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [client_state_machine.dart](dart/lib/dtls/v13/client_state_machine.dart)
-  (1355 lines) and [state_machine.dart](dart/lib/dtls/v13/state_machine.dart)
-  (server, 1455 lines) duplicate the record layer wholesale: `_Reassembly`
-  (identical), fragment accumulation/`_buildSingleFragmentView` (byte-for-byte),
-  `_processHandshakeFragments`, ACK/KeyUpdate emit+handle, retransmit
-  timers/counters, plaintext/ciphertext record dispatch, and
-  `sendApplicationData`. Roughly 40–50 % of the combined ~2800 lines.
-- **Why deferred:** Large structural change; needs the full DTLS test suite
-  (and Chrome interop e2e) as a safety net, not a drive-by.
-- **Acceptance:** A shared `DtlsV13RecordLayer` (epoch/seq, emit, reassembly,
-  ACK/KeyUpdate) + common endpoint base; client/server keep only role-specific
-  handshake transitions. All DTLS unit + e2e tests stay green.
-
-### PeerConnection god class (1920 lines)
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [peer_connection.dart](dart/lib/peer_connection/peer_connection.dart)
-  holds SDP negotiation, RTCP send/receive, stats, track/transceiver management,
-  and ICE/DTLS/SCTP wiring in one class. Cohesive extractable chunks:
-  **RtcpSession** (`_sendRtcpRR` ~1625–1747, TWCC feedback, PLI, RTCP timer +
-  its field cluster), **StatsCollector** (`getStats` alone is 206 lines,
-  ~L796), **SdpNegotiator** (create/set-description, `_assignMidToTransceivers`,
-  the PT→kind/clock/codec/channels maps). `setRemoteDescription` (137 lines)
-  also splits into ingest/fingerprint/twcc/ssrc helpers.
-- **Why deferred:** Wide blast radius; best done as its own branch with no
-  behavior change.
-- **Acceptance:** PeerConnection reduced to a facade delegating to the three
-  new collaborators; no public-API change; existing tests pass unchanged.
-
-### TransportController mixed responsibilities (1143 lines)
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [transport_controller.dart](dart/lib/transport/transport_controller.dart)
-  mixes socket bind/recovery/pending-send queueing, packet demux
-  (`_dispatch`/`_processIce`/`_processDtls`/`_processSrtp`), timer scheduling
-  (`_dispatchTimeout` is a giant `token is X || token is Y` chain), TURN relay
-  routing/channel promotion, TURN-TCP control connections, and a DNS cache.
-- **Why deferred:** It is the only I/O module — regressions here break
-  everything; split needs care.
-- **Acceptance:** Extracted `SocketPool`, `PacketDemuxer`, `TimerScheduler`
-  (TimerToken→owning-SM registry instead of type chains), and
-  `TurnRelayRouter`; TransportController composes them.
-
-### Shared ByteReader/ByteWriter in lib/core
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** Big-endian u16/u32(/u64) read/write helpers are copy-pasted with
-  inconsistent names across at least 6 files:
-  [rtp/parser.dart](dart/lib/rtp/parser.dart) (~L236),
-  [rtp/packet.dart](dart/lib/rtp/packet.dart),
-  [srtp/context.dart](dart/lib/srtp/context.dart) (~L621),
-  [sctp/chunk.dart](dart/lib/sctp/chunk.dart) (~L610),
-  [stun/parser.dart](dart/lib/stun/parser.dart) (~L203), and the DTLS
-  record/handshake files. On top of that, hand-rolled shift-and-mask byte
-  packing bypasses even the local helpers (e.g. `RtcpTransportCc.build`,
-  SCTP `_buildPacket`, DTLS fragment views).
-- **Why deferred:** Touches every parser/serializer; mechanical but broad.
-- **Acceptance:** `lib/core/` gains an offset-advancing `ByteReader` /
-  `ByteWriter`; the six-plus local helper sets are deleted. Unlocks the SRTP
-  IV, SCTP chunk, and DTLS cleanups below.
-
 ### Crypto per-platform dispatch copy-pasted six times
 
 - **Found:** 2026-07-03, refactoring audit
@@ -795,20 +731,18 @@ Each item:
   builder split by media kind; `parse` either validates (missing `v=`/`m=` →
   `Err`) or drops the `Result` wrapper.
 
-### DTLS v13 client re-implements handshake.dart builders privately
+### DTLS v1.2 SM hand-parses extension blocks v13/handshake.dart covers
 
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** `_buildSignatureAlgorithmsExtData`, `_buildSupportedGroupsExtData`,
-  `_buildClientHelloSupportedVersionsExtData`, key-share and use_srtp builders
-  in [client_state_machine.dart](dart/lib/dtls/v13/client_state_machine.dart)
-  (~L520–702) duplicate or shadow public builders/parsers in
-  [v13/handshake.dart](dart/lib/dtls/v13/handshake.dart). The v1.2 SM likewise
-  hand-parses extension blocks that `parseTlsExtensionsBlock` /
-  `parseUseSrtpExtData` already cover.
-- **Why deferred:** Pairs naturally with the v13 client/server merge above.
-- **Acceptance:** ClientHello builders move to `handshake.dart` as public
-  functions paired with their parsers; v1.2 reuses the shared extension parser
-  at least for use_srtp.
+- **Found:** 2026-07-03, refactoring audit (v13-client half shipped 2026-07-04
+  with the v13 client/server merge — ClientHello builders now live in
+  [v13/handshake.dart](dart/lib/dtls/v13/handshake.dart))
+- **Detail:** The v1.2 SM hand-parses extension blocks that
+  `parseTlsExtensionsBlock` / `parseUseSrtpExtData` already cover.
+- **Why deferred:** Touches v1.2 SRTP-profile selection code, which also has
+  the preference-order divergence tracked in "SRTP profile tables defined
+  thrice" — coordinate with that entry.
+- **Acceptance:** v1.2 reuses the shared extension parser at least for
+  use_srtp.
 
 ### STUN transaction bookkeeping duplicated between ICE and TURN
 
@@ -842,8 +776,7 @@ Each item:
   `_sendServerFlight` (~170 lines), v13 client `_handleServerFinished`
   (~113), v1.2 `_handleClientHello` (~95) / `_sendServerFlight` /
   `_sendClientFlight`, ICE `_handleIceTimer` / `_handleBindingRequest`,
-  `RtcpTransportCc.build` (~100, classify→chunk→serialize in one; pairs with
-  the ByteReader/ByteWriter entry),
+  `RtcpTransportCc.build` (~100, classify→chunk→serialize in one),
   [rtp/packet.dart:368-465](dart/lib/rtp/packet.dart#L368-L465).
 - **Why deferred:** Pure readability; fold into whichever branch touches each
   file next rather than a dedicated pass.

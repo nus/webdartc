@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../core/byte_io.dart';
 import '../core/result.dart';
 import '../core/state_machine.dart' show CryptoError;
 import '../crypto/aes_cm.dart';
@@ -225,8 +226,8 @@ final class SrtpContext {
   Uint8List encryptRtp(Uint8List rtpPacket) {
     if (rtpPacket.length < 12) return rtpPacket;
 
-    final seq  = _readUint16(rtpPacket, 2);
-    final ssrc = _readUint32(rtpPacket, 8);
+    final seq  = readU16(rtpPacket, 2);
+    final ssrc = readU32(rtpPacket, 8);
     final headerLen = _rtpHeaderLength(rtpPacket);
     final payload = rtpPacket.sublist(headerLen);
 
@@ -271,8 +272,8 @@ final class SrtpContext {
       return Err(const CryptoError('SRTP: packet too short'));
     }
 
-    final seq  = _readUint16(srtpPacket, 2);
-    final ssrc = _readUint32(srtpPacket, 8);
+    final seq  = readU16(srtpPacket, 2);
+    final ssrc = readU32(srtpPacket, 8);
     final headerLen = _rtpHeaderLength(srtpPacket);
 
     final tracker = _rocTrackers.putIfAbsent(ssrc, _RocTracker.new);
@@ -339,7 +340,7 @@ final class SrtpContext {
     if (rtcpPacket.length < 8) return rtcpPacket;
     // SRTCP index: 32-bit, E bit = 1 (encrypted)
     final srtcpIndex = 1 << 31 | (_srtcpSendIndex++ & 0x7FFFFFFF);
-    final ssrc = _readUint32(rtcpPacket, 4);
+    final ssrc = readU32(rtcpPacket, 4);
     final header = rtcpPacket.sublist(0, 8);
     final payload = rtcpPacket.sublist(8);
 
@@ -392,9 +393,9 @@ final class SrtpContext {
         return Err(const CryptoError('SRTCP: GCM packet too short'));
       }
       final srtcpIndexOffset = srtcpPacket.length - 4;
-      final srtcpIndexWord = _readUint32(srtcpPacket, srtcpIndexOffset);
+      final srtcpIndexWord = readU32(srtcpPacket, srtcpIndexOffset);
       final srtcpIndex = srtcpIndexWord & 0x7FFFFFFF;
-      final ssrc = _readUint32(srtcpPacket, 4);
+      final ssrc = readU32(srtcpPacket, 4);
       // RFC 7714 §9.1 SRTCP-GCM IV.
       final iv = _computeGcmRtcpIv(_remoteRtcpEncSalt, ssrc, srtcpIndex);
       final header = srtcpPacket.sublist(0, 8);
@@ -430,11 +431,11 @@ final class SrtpContext {
       return Err(const CryptoError('SRTCP: authentication failed'));
     }
 
-    final srtcpIndexWord = _readUint32(srtcpPacket, srtcpIndexOffset);
+    final srtcpIndexWord = readU32(srtcpPacket, srtcpIndexOffset);
     final encrypted = (srtcpIndexWord >> 31) != 0;
     final srtcpIndex = srtcpIndexWord & 0x7FFFFFFF;
 
-    final ssrc = _readUint32(srtcpPacket, 4);
+    final ssrc = readU32(srtcpPacket, 4);
     final encPayload = srtcpPacket.sublist(8, srtcpIndexOffset);
 
     final Uint8List decPayload;
@@ -594,10 +595,7 @@ final class SrtpContext {
   static Uint8List _computeAuthTag(Uint8List authKey, Uint8List pkt, int index, int tagLen) {
     final roc = index >> 16;
     final rocBytes = Uint8List(4);
-    rocBytes[0] = (roc >> 24) & 0xFF;
-    rocBytes[1] = (roc >> 16) & 0xFF;
-    rocBytes[2] = (roc >>  8) & 0xFF;
-    rocBytes[3] = roc & 0xFF;
+    writeU32(rocBytes, 0, roc);
     final forAuth = Uint8List(pkt.length + 4);
     forAuth.setRange(0, pkt.length, pkt);
     forAuth.setRange(pkt.length, forAuth.length, rocBytes);
@@ -612,14 +610,9 @@ final class SrtpContext {
     len += (pkt[0] & 0x0F) * 4;
     // Extension header
     if ((pkt[0] & 0x10) != 0 && pkt.length >= len + 4) {
-      final extLen = _readUint16(pkt, len + 2);
+      final extLen = readU16(pkt, len + 2);
       len += 4 + extLen * 4;
     }
     return len;
   }
-
-  static int _readUint16(Uint8List d, int o) => (d[o] << 8) | d[o + 1];
-
-  static int _readUint32(Uint8List d, int o) =>
-      ((d[o] << 24) | (d[o+1] << 16) | (d[o+2] << 8) | d[o+3]) >>> 0;
 }
