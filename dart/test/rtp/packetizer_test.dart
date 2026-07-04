@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
+import 'package:webdartc/codec/codec_support.dart';
 import 'package:webdartc/codec/video_codec.dart';
 import 'package:webdartc/codec/audio_codec.dart';
 import 'package:webdartc/rtp/packetizer.dart';

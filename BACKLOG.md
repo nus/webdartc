@@ -587,22 +587,6 @@ Each item:
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
 
-### Codec capability + registration: single source of truth
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** "Which codec can we send/receive" is answered in several places:
-  three parallel `switch(codecKey)` factories in
-  [packetizer.dart](dart/lib/rtp/packetizer.dart) (`videoDepacketizerFor` /
-  `videoPacketizerFor` / `audioDepacketizerFor`, ~L512–537), the
-  decoder+depacketizer probe in
-  [receive_pipeline.dart](dart/lib/media/receive_pipeline.dart) (~L72), and
-  each `registerXxxCodec()` hand-rolling its own platform branch (VP8/Opus
-  near-identical, H.264 three-way, VP9 none).
-- **Why deferred:** Registration-shape change; ties into `autoRegisterCodecs`.
-- **Acceptance:** A declarative `CodecDescriptor` table drives registration,
-  and a `CodecSupport.canSend/canReceive(kind, codecKey)` helper is the one
-  probe the receive pipeline calls.
-
 ### dart:io isolation violations + injectable debug logger
 
 - **Found:** 2026-07-03, refactoring audit

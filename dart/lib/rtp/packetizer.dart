@@ -502,36 +502,7 @@ final class OpusDepacketizer implements AudioPayloadDepacketizer {
   }
 }
 
-// ── Depacketizer factories ──────────────────────────────────────────────────
-
-/// A fresh [VideoPayloadDepacketizer] for [codecKey] (a lower-case
-/// CodecRegistry key, e.g. `vp8` / `h264`), or null if the codec has no RTP
-/// depacketizer. The single source of truth for which video codecs can be
-/// received; a new instance is returned per call since depacketizers are
-/// stateful (they accumulate fragments).
-VideoPayloadDepacketizer? videoDepacketizerFor(String codecKey) =>
-    switch (codecKey) {
-      'vp8' => Vp8Depacketizer(),
-      'vp9' => Vp9Depacketizer(),
-      'h264' => H264Depacketizer(),
-      _ => null,
-    };
-
-/// A fresh [PayloadPacketizer] for [codecKey], or null if the codec has no
-/// RTP packetizer. Send-side counterpart of [videoDepacketizerFor].
-PayloadPacketizer? videoPacketizerFor(String codecKey,
-        {int maxPayloadSize = 1200}) =>
-    switch (codecKey) {
-      'vp8' => Vp8Packetizer(maxPayloadSize: maxPayloadSize),
-      'vp9' => Vp9Packetizer(maxPayloadSize: maxPayloadSize),
-      'h264' => H264Packetizer(maxPayloadSize: maxPayloadSize),
-      _ => null,
-    };
-
-/// A fresh [AudioPayloadDepacketizer] for [codecKey], or null if unsupported.
-/// See [videoDepacketizerFor].
-AudioPayloadDepacketizer? audioDepacketizerFor(String codecKey) =>
-    switch (codecKey) {
-      'opus' => OpusDepacketizer(),
-      _ => null,
-    };
+// The per-codec factory lookups (`videoDepacketizerFor` / `videoPacketizerFor`
+// / `audioDepacketizerFor`) live in `lib/codec/codec_support.dart`, resolved
+// from the declarative CodecDescriptor table so RTP payload support has a
+// single source of truth.

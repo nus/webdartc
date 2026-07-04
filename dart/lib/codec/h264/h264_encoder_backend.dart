@@ -6,13 +6,13 @@
 library;
 
 import 'dart:ffi' as ffi;
-import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart' as pkgffi;
 
 import '../../media/video_frame.dart';
-import '../codec_registry.dart';
+import '../../rtp/packetizer.dart';
+import '../codec_descriptor.dart';
 import '../video_codec.dart';
 import '../mediacodec/mediacodec_video_decoder_backend.dart';
 import '../mediacodec/mime_types.dart';
@@ -23,32 +23,34 @@ import 'openh264_bindings.g.dart' as oh;
 import 'videotoolbox_decoder_backend.dart';
 import 'videotoolbox_encoder_backend.dart';
 
-/// Registers H.264 codecs under the key `h264`.
-///
-/// Backend per platform, each using the OS-provided (patent-licensed) codec
-/// where one exists:
+/// H.264 under the key `h264` — a backend per platform, each using the
+/// OS-provided (patent-licensed) codec where one exists:
 /// - macOS/iOS: hardware-accelerated VideoToolbox.
-/// - Android: hardware-accelerated MediaCodec (`AMediaCodec` via FFI).
+/// - Android: hardware-accelerated MediaCodec (`AMediaCodec` via FFI). H.264
+///   is a mandatory Android codec, so the availability gate always passes.
 /// - Linux/Windows: Cisco OpenH264 software codec (bundled by
 ///   `dart/hook/build.dart`; see `lib/codec/h264/_openh264.dart`).
-void registerH264Codec() {
-  if (Platform.isMacOS || Platform.isIOS) {
-    CodecRegistry.registerVideoEncoder(
-        VideoCodecName.h264, VideoToolboxEncoderBackend.new);
-    CodecRegistry.registerVideoDecoder(
-        VideoCodecName.h264, VideoToolboxDecoderBackend.new);
-  } else if (Platform.isAndroid) {
-    CodecRegistry.registerVideoEncoder(
-        VideoCodecName.h264, MediaCodecEncoderBackend.new);
-    CodecRegistry.registerVideoDecoder(
-        VideoCodecName.h264, () => MediaCodecVideoDecoderBackend(h264Mime));
-  } else {
-    CodecRegistry.registerVideoEncoder(
-        VideoCodecName.h264, H264EncoderBackend.new);
-    CodecRegistry.registerVideoDecoder(
-        VideoCodecName.h264, H264DecoderBackend.new);
-  }
-}
+final VideoCodecDescriptor h264Descriptor = VideoCodecDescriptor(
+  key: VideoCodecName.h264,
+  bundled: const VideoBackendPair(
+    encoder: H264EncoderBackend.new,
+    decoder: H264DecoderBackend.new,
+  ),
+  apple: const VideoBackendPair(
+    encoder: VideoToolboxEncoderBackend.new,
+    decoder: VideoToolboxDecoderBackend.new,
+  ),
+  android: VideoBackendPair(
+    encoder: MediaCodecEncoderBackend.new,
+    decoder: () => MediaCodecVideoDecoderBackend(h264Mime),
+  ),
+  packetizer: H264Packetizer.new,
+  depacketizer: H264Depacketizer.new,
+);
+
+/// Registers H.264 codecs under the key `h264`.
+/// See [h264Descriptor] for the per-platform backend choice.
+void registerH264Codec() => registerCodec(h264Descriptor);
 
 /// H.264 encoder backend wrapping OpenH264's ISVCEncoder via its C vtable.
 final class H264EncoderBackend implements VideoEncoderBackend {
