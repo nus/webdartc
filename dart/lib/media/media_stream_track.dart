@@ -118,3 +118,69 @@ abstract class MediaStreamTrack {
     unawaited(_unmuteController.close());
   }
 }
+
+/// Base for tracks whose media flows through a typed broadcast stream —
+/// shared by receiver tracks (pushed by the RTP decode pipeline) and
+/// capture tracks (polled from a native FIFO) so the id/enabled/
+/// controller/`stop()` lifecycle exists once instead of per source kind.
+///
+/// Not part of the W3C surface: [events] and the listener hooks are for
+/// subclass wiring, not applications.
+abstract base class StreamBackedTrack<TEvent> extends MediaStreamTrack {
+  final String _id;
+  final String _label;
+  bool _enabled = true;
+
+  StreamBackedTrack({required String id, required String label})
+      : _id = id,
+        _label = label;
+
+  /// The typed media event stream backing [MediaStreamTrack.onVideoFrame] /
+  /// [MediaStreamTrack.onAudioData]. Lazily activates its source:
+  /// [onFirstListener] fires when the first consumer subscribes and
+  /// [onLastListenerGone] when the last one leaves.
+  late final StreamController<TEvent> events =
+      StreamController<TEvent>.broadcast(
+    onListen: onFirstListener,
+    onCancel: onLastListenerGone,
+  );
+
+  /// First consumer subscribed — start the source (decode pipeline, poll
+  /// timer).
+  void onFirstListener() {}
+
+  /// Last consumer unsubscribed — the source may pause.
+  void onLastListenerGone() {}
+
+  /// Release source-side resources; runs from [stop] before the event
+  /// stream closes.
+  void onStop() {}
+
+  /// Whether anyone is currently consuming (drives lazy activation).
+  bool get hasListener => events.hasListener;
+
+  @override
+  String get id => _id;
+
+  @override
+  String get label => _label;
+
+  @override
+  bool get enabled => _enabled;
+
+  @override
+  set enabled(bool value) => _enabled = value;
+
+  @override
+  MediaStreamTrackState get readyState => events.isClosed
+      ? MediaStreamTrackState.ended
+      : MediaStreamTrackState.live;
+
+  @override
+  void stop() {
+    if (events.isClosed) return;
+    onStop();
+    unawaited(events.close());
+    notifyEnded();
+  }
+}

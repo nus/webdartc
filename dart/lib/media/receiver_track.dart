@@ -10,22 +10,16 @@
 library;
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import '../crypto/csprng.dart';
 import 'audio_data.dart';
 import 'media_stream_track.dart';
 import 'video_frame.dart';
 
-/// Base for tracks fed by a remote RTP receive pipeline. Holds the shared
-/// `MediaStreamTrack` lifecycle and lazy-activation hooks; subclasses supply
-/// the media kind, the typed media stream, the disabled-state behaviour, and a
-/// clone factory.
-abstract base class ReceiverTrack<T> extends MediaStreamTrack {
-  final String _id;
-  final String _label;
-  bool _enabled = true;
-
+/// Base for tracks fed by a remote RTP receive pipeline. The stream/enabled/
+/// stop lifecycle comes from [StreamBackedTrack]; this adds the pipeline
+/// push ([deliver]), the disabled-state hook, and the clone machinery.
+abstract base class ReceiverTrack<T> extends StreamBackedTrack<T> {
   /// Called when the first consumer subscribes to the media stream — the owner
   /// uses this to start the decode pipeline lazily.
   void Function()? onActivate;
@@ -33,26 +27,26 @@ abstract base class ReceiverTrack<T> extends MediaStreamTrack {
   /// Called when the last consumer unsubscribes — the owner may pause it.
   void Function()? onDeactivate;
 
-  late final StreamController<T> _events = StreamController<T>.broadcast(
-    onListen: () => onActivate?.call(),
-    onCancel: () => onDeactivate?.call(),
-  );
   StreamSubscription<T>? _cloneSub;
 
-  ReceiverTrack({required String id, required String label})
-      : _id = id,
-        _label = label;
+  ReceiverTrack({required super.id, required super.label});
+
+  @override
+  void onFirstListener() => onActivate?.call();
+
+  @override
+  void onLastListenerGone() => onDeactivate?.call();
 
   /// Push a decoded media item from the receive pipeline. Dropped once stopped;
   /// when disabled, [whenDisabled] decides what (if anything) is emitted.
   void deliver(T item) {
-    if (_events.isClosed) return;
-    if (_enabled) {
-      _events.add(item);
+    if (events.isClosed) return;
+    if (enabled) {
+      events.add(item);
       return;
     }
     final muted = whenDisabled(item);
-    if (muted != null) _events.add(muted);
+    if (muted != null) events.add(muted);
   }
 
   /// What a disabled track emits for [item]: null to drop it (video), or a
@@ -63,42 +57,19 @@ abstract base class ReceiverTrack<T> extends MediaStreamTrack {
   /// A fresh same-type track sharing nothing — used by [clone].
   ReceiverTrack<T> newInstance(String id, String label);
 
-  /// Whether anyone is currently consuming (drives lazy activation).
-  bool get hasListener => _events.hasListener;
-
-  @override
-  String get id => _id;
-
-  @override
-  String get label => _label;
-
-  @override
-  bool get enabled => _enabled;
-
-  @override
-  set enabled(bool value) => _enabled = value;
-
-  @override
-  MediaStreamTrackState get readyState => _events.isClosed
-      ? MediaStreamTrackState.ended
-      : MediaStreamTrackState.live;
-
   /// A clone shares this track's decoded-media source (W3C clones share the
   /// underlying source) with independent `enabled`/`stop` state.
   @override
   ReceiverTrack<T> clone() {
-    final c = newInstance(Csprng.randomHex(16), _label);
-    c._cloneSub = _events.stream.listen(c.deliver);
+    final c = newInstance(Csprng.randomHex(16), label);
+    c._cloneSub = events.stream.listen(c.deliver);
     return c;
   }
 
   @override
-  void stop() {
-    if (_events.isClosed) return;
+  void onStop() {
     unawaited(_cloneSub?.cancel());
     _cloneSub = null;
-    unawaited(_events.close());
-    notifyEnded();
   }
 }
 
@@ -120,7 +91,7 @@ final class ReceiverVideoTrack extends ReceiverTrack<VideoFrame> {
   String get kind => 'video';
 
   @override
-  Stream<VideoFrame> get onVideoFrame => _events.stream;
+  Stream<VideoFrame> get onVideoFrame => events.stream;
 
   @override
   Stream<AudioData> get onAudioData =>
@@ -135,15 +106,7 @@ final class ReceiverAudioTrack extends ReceiverTrack<AudioData> {
   void deliverAudio(AudioData data) => deliver(data);
 
   @override
-  AudioData whenDisabled(AudioData data) => AudioData(
-        // Silence of the same shape, keeping downstream playout cadence intact.
-        format: data.format,
-        sampleRate: data.sampleRate,
-        numberOfChannels: data.numberOfChannels,
-        numberOfFrames: data.numberOfFrames,
-        timestamp: data.timestamp,
-        data: Uint8List(data.data.length),
-      );
+  AudioData whenDisabled(AudioData data) => AudioData.silenceLike(data);
 
   @override
   ReceiverAudioTrack newInstance(String id, String label) =>
@@ -153,7 +116,7 @@ final class ReceiverAudioTrack extends ReceiverTrack<AudioData> {
   String get kind => 'audio';
 
   @override
-  Stream<AudioData> get onAudioData => _events.stream;
+  Stream<AudioData> get onAudioData => events.stream;
 
   @override
   Stream<VideoFrame> get onVideoFrame =>

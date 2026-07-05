@@ -592,21 +592,6 @@ Each item:
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
 
-### Media layer: track-class duplication
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** `ReceiverTrack` and `_AvfCaptureTrack` duplicate the
-  id/enabled/broadcast-controller/`stop()` base and the "same-shape silence
-  when disabled" audio logic
-  ([receiver_track.dart](dart/lib/media/receiver_track.dart#L138),
-  [avf_capture_track.dart](dart/lib/media/macos/avf_capture_track.dart#L207)).
-  A future W3C send path will need a third, source-side track class — extract
-  the common base first so it lands on top instead of as another copy.
-- **Why deferred:** Small today (two copies); becomes three the moment a send
-  path lands, so fix it before or with that work.
-- **Acceptance:** A common stream-backed track base class;
-  `AudioData.silenceLike(src)` replaces the inline silence builders.
-
 ### SdpParser.parse returns Result but has no Err path
 
 - **Found:** 2026-07-03, refactoring audit (remainder of "SDP parser/builder
