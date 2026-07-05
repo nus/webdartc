@@ -607,20 +607,17 @@ Each item:
 - **Acceptance:** A common stream-backed track base class;
   `AudioData.silenceLike(src)` replaces the inline silence builders.
 
-### SDP parser/builder cleanups
+### SdpParser.parse returns Result but has no Err path
 
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [sdp/parser.dart](dart/lib/sdp/parser.dart):
-  (a) the transport-attrs map + session-header block is copy-pasted across
-  `buildDataChannelSdp` / `buildMediaSdp` / `buildAnswerFromOffer` (×2);
-  (b) `buildAnswerFromOffer` is ~160 lines; (c) session/media attribute
-  dispatch is duplicated in the parse loop (~L51–86); (d) `SdpParser.parse`
-  returns `Result` but has no `Err` path — broken input parses as `Ok`
-  (a decision-shaped contract fix, shippable separately from the dedup items).
-- **Why deferred:** Builder output must stay byte-compatible for e2e interop.
-- **Acceptance:** Shared `_baseTransportAttrs`/`_wrapSession` helpers; answer
-  builder split by media kind; `parse` either validates (missing `v=`/`m=` →
-  `Err`) or drops the `Result` wrapper.
+- **Found:** 2026-07-03, refactoring audit (remainder of "SDP parser/builder
+  cleanups" — the dedup items (a)–(c) shipped 2026-07-05 with snapshot tests)
+- **Detail:** `SdpParser.parse` returns `Result` but never `Err` — broken
+  input parses as `Ok`. Decision-shaped contract fix: either validate
+  (missing `v=`/`m=` → `Err`) or drop the `Result` wrapper. Needs an owner
+  decision on which contract the callers want.
+- **Why deferred:** API-contract decision, shippable separately.
+- **Acceptance:** `parse` validates or loses the `Result` wrapper; callers
+  updated accordingly.
 
 ### DTLS v1.2 SM hand-parses extension blocks v13/handshake.dart covers
 
