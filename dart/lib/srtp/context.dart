@@ -155,11 +155,19 @@ final class SrtpContext {
   }
 
   /// SRTP HMAC-SHA1 auth-tag length: 10 bytes for the `_80` profile, 4 for
-  /// `_32` (RFC 3711 §5.2). Only meaningful on the AES-CM paths — GCM
-  /// carries its own 16-byte AEAD tag. (SRTCP always authenticates with the
-  /// full 80-bit tag regardless, RFC 3711 §3.4.)
-  int get _rtpAuthTagLen =>
-      profile == SrtpProfile.aesCm128HmacSha1_80 ? 10 : 4;
+  /// `_32` (RFC 3711 §5.2). Only meaningful on the AES-CM paths — the GCM
+  /// paths return before tag-length use (AEAD carries its own 16-byte tag).
+  /// (SRTCP always authenticates with the full 80-bit tag, RFC 3711 §3.4.)
+  int get _rtpAuthTagLen {
+    switch (profile) {
+      case SrtpProfile.aesCm128HmacSha1_80:
+        return 10;
+      case SrtpProfile.aesCm128HmacSha1_32:
+      case SrtpProfile.aesGcm128: // unreachable on the CM tag path
+      case SrtpProfile.aesGcm256: // unreachable on the CM tag path
+        return 4;
+    }
+  }
 
   /// Derive SRTP context from exported DTLS key material.
   ///
@@ -513,8 +521,9 @@ final class SrtpContext {
   /// then XOR SSRC/index fields at layout-specific offsets. [_xorBe] XORs
   /// the low [width] big-endian bytes of [value] into [iv] at [offset].
   static void _xorBe(Uint8List iv, int offset, int value, int width) {
-    for (var i = 0; i < width; i++) {
-      iv[offset + i] ^= (value >> (8 * (width - 1 - i))) & 0xFF;
+    var shift = 8 * (width - 1);
+    for (var i = 0; i < width; i++, shift -= 8) {
+      iv[offset + i] ^= (value >> shift) & 0xFF;
     }
   }
 

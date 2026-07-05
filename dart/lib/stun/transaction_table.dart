@@ -8,8 +8,6 @@ library;
 
 import 'dart:typed_data';
 
-import '../core/hex.dart';
-
 /// Contract for [StunTransactionTable] entries: when the request went out,
 /// used for TTL pruning.
 abstract interface class StunPendingRequest {
@@ -26,8 +24,10 @@ final class StunTransactionTable<T extends StunPendingRequest> {
   final Duration? ttl;
   final Map<String, T> _pending = {};
 
-  /// Normalized (lowercase hex) map key for a transaction id.
-  static String keyOf(Uint8List txId) => hex(txId);
+  /// Opaque map key for a transaction id. 12 bytes (each 0–255) round-trip
+  /// through `String.fromCharCodes` losslessly with value equality — one
+  /// 12-char string, cheaper than a hex encode.
+  static String _keyOf(Uint8List txId) => String.fromCharCodes(txId);
 
   /// Register an outstanding request, pruning expired entries first when
   /// a [ttl] is configured.
@@ -37,24 +37,21 @@ final class StunTransactionTable<T extends StunPendingRequest> {
       final cutoff = DateTime.now().subtract(ttl);
       _pending.removeWhere((_, e) => e.sentAt.isBefore(cutoff));
     }
-    _pending[keyOf(txId)] = entry;
+    _pending[_keyOf(txId)] = entry;
   }
 
-  T? lookup(Uint8List txId) => _pending[keyOf(txId)];
-
-  bool contains(Uint8List txId) => _pending.containsKey(keyOf(txId));
+  T? lookup(Uint8List txId) => _pending[_keyOf(txId)];
 
   /// Remove and return the entry for [txId] (null when absent).
-  T? take(Uint8List txId) => _pending.remove(keyOf(txId));
+  T? take(Uint8List txId) => _pending.remove(_keyOf(txId));
 
-  /// [take] by an already-normalized key (from [keyOf] / [keys]).
+  /// [take] by an opaque key from [entries].
   T? takeKey(String key) => _pending.remove(key);
 
-  T? operator [](String key) => _pending[key];
-
-  /// Snapshot of the normalized keys — safe to remove entries while
-  /// iterating (the retransmit-loop pattern).
-  List<String> get keys => _pending.keys.toList();
+  /// Snapshot of (opaque key, entry) pairs — safe to remove entries via
+  /// [takeKey] while iterating (the retransmit-loop pattern).
+  List<(String, T)> get entries =>
+      [for (final e in _pending.entries) (e.key, e.value)];
 
   Iterable<T> get values => _pending.values;
   bool get isEmpty => _pending.isEmpty;

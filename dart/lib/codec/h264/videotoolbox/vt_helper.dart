@@ -28,7 +28,6 @@ import 'dart:io' show Platform;
 
 import 'package:ffi/ffi.dart' as pkgffi;
 
-import '../../../crypto/constant_time.dart';
 import 'bindings.g.dart';
 
 // ── Apple SDK constants not emitted by ffigen ─────────────────────────────
@@ -956,9 +955,14 @@ int wvtDecoderDecode(
   return 0;
 }
 
+// Plain equality for SPS/PPS change detection — not a MAC compare, so an
+// early exit is fine (and cheaper than a constant-time scan).
 bool _bytesEqual(
     ffi.Pointer<ffi.Uint8> a, ffi.Pointer<ffi.Uint8> b, int n) {
-  return constantTimeEquals(a.asTypedList(n), b.asTypedList(n));
+  for (int i = 0; i < n; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 ffi.Pointer<WvtDecodedFrame> wvtDecoderDrainOne(

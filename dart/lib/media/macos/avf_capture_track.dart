@@ -46,10 +46,8 @@ abstract base class _AvfCaptureTrack<TEvent> extends StreamBackedTrack<TEvent> {
 
   @override
   void onLastListenerGone() {
-    if (!events.hasListener) {
-      _timer?.cancel();
-      _timer = null;
-    }
+    _timer?.cancel();
+    _timer = null;
   }
 
   @override

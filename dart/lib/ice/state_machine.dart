@@ -109,12 +109,12 @@ final class IceStateMachine implements ProtocolStateMachine {
   static const int _maxMissedConsentChecks = 6;
   int _missedConsentChecks = 0;
 
-  // Connectivity check retransmit timeout: 500ms base (RFC 8445 §14.3)
-  static const Duration _checkTimeout = Duration(milliseconds: 500);
-
-  // Connectivity check retransmit backoff: 500ms * 2^Rc, capped at 16s
-  // (RFC 8445 §14.3).
-  static const _checkBackoff = ExponentialBackoff(baseMs: 500, maxMs: 16000);
+  // Connectivity check RTO base (RFC 8445 §14.3): first retransmit tick
+  // and backoff share it — 500ms * 2^Rc, capped at 16s.
+  static const int _checkRtoMs = 500;
+  static const Duration _checkTimeout = Duration(milliseconds: _checkRtoMs);
+  static const _checkBackoff =
+      ExponentialBackoff(baseMs: _checkRtoMs, maxMs: 16000);
 
   // STUN server gathering timeout
   static const Duration _stunGatherTimeout = Duration(seconds: 3);
@@ -454,8 +454,9 @@ final class IceStateMachine implements ProtocolStateMachine {
       return _handleBindingRequest(msg, remoteIp, remotePort, packet, localIp);
     } else if (msg.type == StunMessageType.bindingSuccessResponse) {
       // Check if this is a response to a STUN server gathering request.
-      if (_stunServerRequests.contains(msg.transactionId)) {
-        return _handleStunServerResponse(msg);
+      final gatherReq = _stunServerRequests.take(msg.transactionId);
+      if (gatherReq != null) {
+        return _handleStunServerResponse(msg, gatherReq);
       }
       return _handleBindingResponse(msg, remoteIp, remotePort, packet);
     } else if (msg.type == StunMessageType.bindingErrorResponse) {
@@ -982,8 +983,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     // Retransmit in-progress checks that have exceeded their timeout.
     // Exponential backoff per RFC 8445 §14.3: 500ms * 2^retransmitCount.
     final now = DateTime.now();
-    for (final txId in _pendingChecks.keys) {
-      final check = _pendingChecks[txId]!;
+    for (final (txId, check) in _pendingChecks.entries) {
       final rtoMs = _checkBackoff.delayMs(check.retransmitCount);
       if (now.difference(check.sentAt) >= Duration(milliseconds: rtoMs)) {
         if (check.retransmitCount >= 7) {
@@ -1066,10 +1066,7 @@ final class IceStateMachine implements ProtocolStateMachine {
   // ── STUN server gathering ─────────────────────────────────────────────────
 
   Result<ProcessResult, ProtocolError> _handleStunServerResponse(
-      StunMessage msg) {
-    final req = _stunServerRequests.take(msg.transactionId);
-    if (req == null) return const Ok(ProcessResult.empty);
-
+      StunMessage msg, _StunServerRequest req) {
     final xma = msg.attribute<XorMappedAddress>();
     if (xma != null) {
       // Avoid duplicate srflx candidates.

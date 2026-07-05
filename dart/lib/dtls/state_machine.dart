@@ -1,8 +1,10 @@
 import 'dart:typed_data';
 
 import '../core/backoff.dart';
+import '../core/hex.dart';
 import '../core/log.dart';
 import '../core/state_machine.dart';
+import '../crypto/constant_time.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdh.dart';
 import '../crypto/ecdsa.dart';
@@ -526,23 +528,22 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     // Skip compression method (1 byte)
     if (offset < body.length) offset += 1;
 
-    // Parse extensions with the shared TLS extensions-block parser; the
-    // use_srtp payload is the same struct in DTLS 1.2 and 1.3
-    // (RFC 5764 §4.1.1), so reuse the v13 codec for it too.
-    if (offset + 2 <= body.length) {
-      for (final ext in v13hs.parseTlsExtensionsBlock(body, offset) ??
-          const <v13hs.TlsExtension>[]) {
-        if (ext.type != v13hs.TlsV13ExtensionType.useSrtp) continue;
-        final profiles = v13hs.parseUseSrtpExtData(ext.data);
-        if (profiles == null || profiles.isEmpty) continue;
-        final profileId = profiles.first;
-        _selectedSrtpProfile = [(profileId >> 8) & 0xFF, profileId & 0xFF];
-        if (_debug) {
-          webdartcLog(
-            '[dtls] ServerHello use_srtp profile: '
-            '0x${profileId.toRadixString(16).padLeft(4, "0")}',
-          );
-        }
+    // Parse extensions with the shared TLS extensions-block parser (which
+    // handles short/absent blocks by returning null); the use_srtp payload
+    // is the same struct in DTLS 1.2 and 1.3 (RFC 5764 §4.1.1), so reuse
+    // the v13 codec for it too.
+    for (final ext in v13hs.parseTlsExtensionsBlock(body, offset) ??
+        const <v13hs.TlsExtension>[]) {
+      if (ext.type != v13hs.TlsV13ExtensionType.useSrtp) continue;
+      final profiles = v13hs.parseUseSrtpExtData(ext.data);
+      if (profiles == null || profiles.isEmpty) continue;
+      final profileId = profiles.first;
+      _selectedSrtpProfile = [(profileId >> 8) & 0xFF, profileId & 0xFF];
+      if (_debug) {
+        webdartcLog(
+          '[dtls] ServerHello use_srtp profile: '
+          '0x${profileId.toRadixString(16).padLeft(4, "0")}',
+        );
       }
     }
 
@@ -756,11 +757,8 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       isClient: false,
     );
     if (body.length < 12) return Err(const ParseError('DTLS: short Finished'));
-    var mismatch = 0;
-    for (var i = 0; i < 12; i++) {
-      mismatch |= body[i] ^ expectedVerifyData[i];
-    }
-    if (mismatch != 0) {
+    if (!constantTimeEquals(
+        Uint8List.sublistView(body, 0, 12), expectedVerifyData)) {
       return Err(const CryptoError('DTLS: Finished verify_data mismatch'));
     }
 
@@ -911,8 +909,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     for (var i = 0; i < suitesLen; i += 2) {
       if (suitesStart + i + 1 < body.length) {
         suites.add(
-          '0x${body[suitesStart + i].toRadixString(16).padLeft(2, "0")}'
-          '${body[suitesStart + i + 1].toRadixString(16).padLeft(2, "0")}',
+          '0x${hex([body[suitesStart + i], body[suitesStart + i + 1]])}',
         );
       }
     }
@@ -935,10 +932,10 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     // compression_methods: 1 byte length + methods
     final compLen = body[off];
     off += 1 + compLen;
-    if (off + 2 > body.length) return;
     // Extensions: shared block parser + use_srtp payload codec
-    // (RFC 5764 §4.1.1), then pick per the DTLS 1.2 preference order (see
-    // SrtpProfileNegotiation.v12Preference for the rationale).
+    // (RFC 5764 §4.1.1) — short input yields null → no-op. Pick per the
+    // DTLS 1.2 preference order (see SrtpProfileNegotiation.v12Preference
+    // for the rationale).
     for (final ext in v13hs.parseTlsExtensionsBlock(body, off) ??
         const <v13hs.TlsExtension>[]) {
       if (ext.type != v13hs.TlsV13ExtensionType.useSrtp) continue;
@@ -1175,11 +1172,8 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       isClient: true, // verifying CLIENT's Finished
     );
     if (body.length < 12) return Err(const ParseError('DTLS: short Finished'));
-    var mismatch = 0;
-    for (var i = 0; i < 12; i++) {
-      mismatch |= body[i] ^ expectedVerifyData[i];
-    }
-    if (mismatch != 0) {
+    if (!constantTimeEquals(
+        Uint8List.sublistView(body, 0, 12), expectedVerifyData)) {
       return Err(const CryptoError('DTLS: Finished verify_data mismatch'));
     }
 

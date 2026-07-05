@@ -209,11 +209,6 @@ abstract final class SdpBuilder {
         },
       );
 
-  /// Data-channel m-line extras appended after [_baseTransportAttrs].
-  static void _addSctpAttrs(Map<String, String> attrs, String sctpPort) {
-    attrs['sctp-port'] = sctpPort;
-    attrs['max-message-size'] = '262144';
-  }
 
   /// Build an SDP offer/answer for a data channel session. Pass `null`
   /// for [localIp]/[localPort] to skip the inline host candidate (used
@@ -235,8 +230,9 @@ abstract final class SdpBuilder {
       password: password,
       fingerprint: fingerprint,
       setup: isOffer ? 'actpass' : 'active',
-    );
-    _addSctpAttrs(attrs, '$sctpPort');
+    )
+      ..['sctp-port'] = '$sctpPort'
+      ..['max-message-size'] = '262144';
 
     final candidates = <IceCandidate>[];
     if (localIp != null && localPort != null) {
@@ -352,24 +348,25 @@ abstract final class SdpBuilder {
     for (final rm in remoteOffer.media) {
       final remoteMid = rm.mid ?? '${mediaDescriptions.length}';
       mids.add(remoteMid);
+      final setup = _answerSetup(rm, remoteOffer);
       mediaDescriptions.add(rm.type == 'application'
           ? _answerDataChannelMedia(
               rm,
-              remoteOffer,
               mid: remoteMid,
               ufrag: ufrag,
               password: password,
               fingerprint: fingerprint,
+              setup: setup,
               hostCandidates: hostCandidates,
             )
           : _answerAvMedia(
               rm,
-              remoteOffer,
               mid: remoteMid,
               mediaIndex: mediaDescriptions.length,
               ufrag: ufrag,
               password: password,
               fingerprint: fingerprint,
+              setup: setup,
               supported: rm.type == 'audio'
                   ? supportedAudioCodecs
                   : supportedVideoCodecs,
@@ -384,12 +381,12 @@ abstract final class SdpBuilder {
 
   /// Answer m-line for a data-channel offer — accepted as-is.
   static SdpMediaDescription _answerDataChannelMedia(
-    SdpMediaDescription rm,
-    SdpSessionDescription offer, {
+    SdpMediaDescription rm, {
     required String mid,
     required String ufrag,
     required String password,
     required String fingerprint,
+    required String setup,
     required List<IceCandidate> hostCandidates,
   }) {
     final attrs = _baseTransportAttrs(
@@ -397,9 +394,10 @@ abstract final class SdpBuilder {
       ufrag: ufrag,
       password: password,
       fingerprint: fingerprint,
-      setup: _answerSetup(rm, offer),
-    );
-    _addSctpAttrs(attrs, rm.sctpPort ?? '5000');
+      setup: setup,
+    )
+      ..['sctp-port'] = rm.sctpPort ?? '5000'
+      ..['max-message-size'] = '262144';
     return SdpMediaDescription(
       type: 'application',
       port: 9,
@@ -415,13 +413,13 @@ abstract final class SdpBuilder {
   /// local sender), and signal our sender SSRC. Produces a rejected
   /// (port 0) m-line when no offered codec is supported.
   static SdpMediaDescription _answerAvMedia(
-    SdpMediaDescription rm,
-    SdpSessionDescription offer, {
+    SdpMediaDescription rm, {
     required String mid,
     required int mediaIndex,
     required String ufrag,
     required String password,
     required String fingerprint,
+    required String setup,
     required List<String> supported,
     required int? localSenderSsrc,
     required List<IceCandidate> hostCandidates,
@@ -456,7 +454,7 @@ abstract final class SdpBuilder {
       ufrag: ufrag,
       password: password,
       fingerprint: fingerprint,
-      setup: _answerSetup(rm, offer),
+      setup: setup,
     )
       ..[answerDir] = ''
       ..['rtcp-mux'] = '';

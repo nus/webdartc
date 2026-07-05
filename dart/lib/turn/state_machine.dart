@@ -575,8 +575,4 @@ final class TurnAllocation implements ProtocolStateMachine {
   static const int _refreshDivisor = 2;
   static const int _minRefreshIntervalSeconds = 10;
 
-  /// Map key for transaction IDs. 12 bytes (each 0–255) round-trip through
-  /// `String.fromCharCodes` losslessly and yield a single 12-char string
-  /// with value equality — cheaper than a hex encode that would allocate
-  /// 12 substrings plus the join buffer per call.
 }
