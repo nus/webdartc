@@ -15,122 +15,7 @@ import 'dart:typed_data';
 import 'package:webdartc/webdartc.dart';
 
 import 'e2e_settings.dart';
-
-// ── Minimal WebSocket client ────────────────────────────────────────────────
-
-final class _WsClient {
-  final Socket _socket;
-  final _buf = <int>[];
-  // Single-subscription (not broadcast): a broadcast controller drops events
-  // that arrive before `.listen`, and a signal can land between registering
-  // and wiring the message handler. Single-subscription buffers until the
-  // listener attaches, so no early offer/candidate is lost.
-  final _messages = StreamController<String>();
-
-  _WsClient._(this._socket);
-
-  static Future<_WsClient> connect(int port) async {
-    final socket = await Socket.connect('127.0.0.1', port);
-    final client = _WsClient._(socket);
-    final keyBytes = Csprng.randomBytes(16);
-    final key = base64.encode(keyBytes);
-    socket.add(utf8.encode(
-      'GET / HTTP/1.1\r\n'
-      'Host: 127.0.0.1:$port\r\n'
-      'Upgrade: websocket\r\n'
-      'Connection: Upgrade\r\n'
-      'Sec-WebSocket-Key: $key\r\n'
-      'Sec-WebSocket-Version: 13\r\n'
-      '\r\n',
-    ));
-    final completer = Completer<_WsClient>();
-    final httpBuf = StringBuffer();
-    bool handshakeDone = false;
-    socket.listen(
-      (data) {
-        if (!handshakeDone) {
-          httpBuf.write(utf8.decode(data, allowMalformed: true));
-          if (httpBuf.toString().contains('\r\n\r\n')) {
-            handshakeDone = true;
-            if (!completer.isCompleted) completer.complete(client);
-          }
-        } else {
-          client._buf.addAll(data);
-          client._drainFrames();
-        }
-      },
-      onError: (Object e) {
-        client._messages.close();
-        if (!completer.isCompleted) completer.completeError(e);
-      },
-      onDone: () {
-        client._messages.close();
-        if (!completer.isCompleted) completer.complete(client);
-      },
-    );
-    return completer.future;
-  }
-
-  void _drainFrames() {
-    while (true) {
-      final msg = _tryParseFrame();
-      if (msg == null) break;
-      if (msg.isNotEmpty) _messages.add(msg);
-    }
-  }
-
-  String? _tryParseFrame() {
-    if (_buf.length < 2) return null;
-    final b1 = _buf[1];
-    final masked = (b1 & 0x80) != 0;
-    final lenByte = b1 & 0x7F;
-    final opcode = _buf[0] & 0x0F;
-    int headerLen = 2 + (masked ? 4 : 0);
-    int payloadLen;
-    if (lenByte < 126) {
-      payloadLen = lenByte;
-    } else if (lenByte == 126) {
-      if (_buf.length < 4) return null;
-      payloadLen = (_buf[2] << 8) | _buf[3];
-      headerLen += 2;
-    } else {
-      if (_buf.length < 10) return null;
-      payloadLen = 0;
-      for (var i = 0; i < 8; i++) payloadLen = (payloadLen << 8) | _buf[2 + i];
-      headerLen += 8;
-    }
-    if (_buf.length < headerLen + payloadLen) return null;
-    final maskKey = masked ? _buf.sublist(headerLen - 4, headerLen) : null;
-    final raw = _buf.sublist(headerLen, headerLen + payloadLen);
-    _buf.removeRange(0, headerLen + payloadLen);
-    if (opcode != 1) return '';
-    final payload = masked
-        ? List<int>.generate(raw.length, (i) => raw[i] ^ maskKey![i % 4])
-        : raw;
-    return utf8.decode(payload, allowMalformed: true);
-  }
-
-  void sendJson(Map<String, dynamic> msg) {
-    final payload = utf8.encode(jsonEncode(msg));
-    final len = payload.length;
-    final maskKey = Csprng.randomBytes(4);
-    late List<int> header;
-    if (len < 126) {
-      header = [0x81, 0x80 | len];
-    } else if (len < 65536) {
-      header = [0x81, 0xFE, (len >> 8) & 0xFF, len & 0xFF];
-    } else {
-      header = [0x81, 0xFF];
-      for (var i = 7; i >= 0; i--) header.add((len >> (i * 8)) & 0xFF);
-    }
-    header.addAll(maskKey);
-    final masked = List<int>.generate(len, (i) => payload[i] ^ maskKey[i % 4]);
-    _socket.add(Uint8List.fromList([...header, ...masked]));
-  }
-
-  Stream<String> get messages => _messages.stream;
-  Future<void> close() async => _socket.destroy();
-}
+import 'helper_ws_client.dart';
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -144,7 +29,7 @@ void main(List<String> args) async {
 }
 
 Future<int> _run(int sigPort) async {
-  final ws = await _WsClient.connect(sigPort);
+  final ws = await HelperWsClient.connect(sigPort);
   ws.sendJson({'type': 'register', 'role': 'answerer'});
 
   final pc = PeerConnection(
