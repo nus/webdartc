@@ -8,7 +8,7 @@ integration that renders its media on screen.
 | Package | What it is | Status |
 |---|---|---|
 | [`dart/`](dart) | The WebRTC library. W3C `PeerConnection` API on top of RFC-compliant protocol state machines (STUN / ICE / TURN / DTLS / SRTP / SCTP / RTP / SDP), with UDP handled by `TransportController`. Codecs (H.264 / VP8 / VP9 / Opus) and crypto run through platform-native libraries via FFI. | Implemented |
-| [`flutter/`](flutter) | Rendering and capture on top of `dart`. A `Texture`-backed video widget — Metal `CVPixelBuffer` on macOS, `PixelBufferTexture` on Windows, `SurfaceTexture` on Android — plus camera/mic/speaker integration. Depends on `dart` via a local `path:`. | macOS + Windows + Android renderers working; iOS / Linux on the roadmap |
+| [`flutter/`](flutter) | Rendering and capture on top of `dart`. A `Texture`-backed video widget — Metal `CVPixelBuffer` on macOS, `PixelBufferTexture` on Windows, `SurfaceTexture` on Android — plus camera/mic/speaker integration. Depends on `dart` via a local `path:`. | macOS + Windows + Linux + Android renderers working; iOS on the roadmap |
 
 ## Quick start
 
@@ -33,7 +33,7 @@ Flutter SDK.
 
 ## Try it against a browser
 
-### Flutter video call (macOS / Android)
+### Flutter video call (macOS / Windows / Linux / Android)
 
 The fastest way to see the whole stack working is the Flutter demo app
 calling a browser. The app embeds its own signaling relay, so one command is
@@ -41,7 +41,7 @@ enough:
 
 ```bash
 cd flutter/example
-flutter run -d macos        # or: flutter run -d <android-device>
+flutter run -d macos        # or: -d windows / -d linux / -d <android-device>
 ```
 
 Then open the URL the app shows on its launch screen (normally
@@ -51,10 +51,11 @@ ICE / DTLS / SRTP: the browser shows the Flutter app's generated test
 pattern, and the Flutter app's `remote` tile shows your camera, with `sent` /
 `recv` frame counters advancing on both sides.
 
-Prereqs on macOS: Xcode + CocoaPods (`brew install cocoapods`). For Android
-devices, hosted [OpenAyame](https://github.com/OpenAyame/ayame) servers, and
-`--dart-define` options, see
-[`flutter/example/README.md`](flutter/example/README.md).
+Prereqs are the per-OS native toolchains listed under
+[Native requirements](#native-requirements) (macOS additionally needs
+CocoaPods: `brew install cocoapods`). For Android devices, hosted
+[OpenAyame](https://github.com/OpenAyame/ayame) servers, and `--dart-define`
+options, see [`flutter/example/README.md`](flutter/example/README.md).
 
 ### Dart only (no Flutter SDK)
 
@@ -94,7 +95,7 @@ listed in [`dart/README.md#examples`](dart/README.md#examples).
 ├── flutter/                   # Flutter integration (needs the Flutter SDK)
 │   ├── lib/render/            #   VideoRenderer / ShaderVideoRenderer / widget
 │   ├── macos/Classes/         #   Swift FlutterTexture plugin
-│   └── example/               #   macOS + Android demo app (browser ↔ Flutter call)
+│   └── example/               #   macOS/Windows/Linux/Android demo (browser ↔ Flutter call)
 ├── .github/workflows/ci.yaml  # Linux + macOS + Windows CI
 ├── CLAUDE.md                  # agent guidance for this repo
 └── README.md

@@ -1,7 +1,9 @@
 # webdartc_flutter example
 
-macOS app that acts as a full WebRTC peer, exercising the `webdartc`
-protocol stack and the `webdartc_flutter` renderer end-to-end:
+macOS / Windows / Linux / Android app that acts as a full WebRTC peer,
+exercising the `webdartc` protocol stack and the `webdartc_flutter`
+renderer end-to-end (shown here with macOS's codec backend; Windows and
+Linux use OpenH264, Android uses MediaCodec):
 
 ```
                  ┌────────────────── Flutter peer (this app) ──────────────────┐
@@ -51,7 +53,7 @@ instead by editing the form or passing
 
 ```bash
 cd flutter/example
-flutter run -d macos          # or: flutter run -d <android-device>
+flutter run -d macos          # or: -d windows / -d linux / -d <android-device>
 ```
 
 Then:
@@ -85,8 +87,11 @@ relay, and auto-joins `ws://127.0.0.1:N/signaling`
 (room=`webdartc-demo`). The `flutter_video_call_bidir_test.dart` e2e
 harness drives the app this way with its own relay.
 
-Requires Xcode and CocoaPods (`brew install cocoapods`). The VideoToolbox C
-helper is compiled automatically by `dart/hook/build.dart` during the build.
+Prereqs are the per-OS native toolchains listed in the root README's
+"Native requirements" (macOS additionally needs CocoaPods:
+`brew install cocoapods`). All native codec assets — the VideoToolbox C
+helper on macOS, OpenH264 downloads on Windows / Linux — are produced
+automatically by `dart/hook/build.dart` during the build.
 
 ## What it verifies
 
