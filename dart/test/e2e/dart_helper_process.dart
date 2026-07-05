@@ -1,7 +1,5 @@
 import 'dart:io';
 
-int _seq = 0;
-
 /// Spawns `dart run <script>` for an e2e helper in a private working directory.
 ///
 /// dartdev re-copies every bundled native code asset (the BoringSSL-backed
@@ -26,9 +24,14 @@ Future<Process> spawnDartHelper(
   List<String> args, {
   Map<String, String>? environment,
 }) async {
+  // createTempSync guarantees a unique name. A counter + $pid does not:
+  // `dart test` runs every suite as an isolate of one VM process, so suites
+  // share the pid while each isolate restarts the counter at 0 — colliding
+  // helpers then delete each other's CWD on exit.
   final pkgRoot = Directory.current.absolute.path;
-  final workDir = Directory('$pkgRoot/.e2e_work/h${_seq++}_$pid')
-    ..createSync(recursive: true);
+  final workDir = (Directory(
+    '$pkgRoot/.e2e_work',
+  )..createSync(recursive: true)).createTempSync('h');
   final proc = await Process.start(
     Platform.resolvedExecutable,
     ['run', '$pkgRoot/$script', ...args],
