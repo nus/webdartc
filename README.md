@@ -69,15 +69,12 @@ cd dart
 dart run example/video_sender/server.dart --port=8080 --codec=h264
 # open http://127.0.0.1:8080 in Chrome
 
-# browser camera → Dart decoder
-dart run example/video_receiver/server.dart --port=8080 --codec=h264
-
 # browser camera echoed back through a Dart RTP forwarder
 dart run example/video_echo/server.dart --port=8080
 ```
 
-More examples (audio send/receive, getUserMedia call, ICE gathering) are
-listed in [`dart/README.md#examples`](dart/README.md#examples).
+More examples (video receive, audio send/receive, getUserMedia call, ICE
+gathering) are listed in [`dart/README.md#examples`](dart/README.md#examples).
 
 ## Layout
 
