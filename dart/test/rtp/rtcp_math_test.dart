@@ -1,5 +1,5 @@
 import 'package:test/test.dart';
-import 'package:webdartc/rtp/rtcp_math.dart';
+import 'package:webdartc/src/rtp/rtcp_math.dart';
 
 void main() {
   group('sext24', () {

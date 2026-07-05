@@ -21,7 +21,7 @@ import 'package:ffi/ffi.dart' as pkgffi;
 import '../../media/video_frame.dart';
 import '../video_codec.dart';
 import '_openh264.dart' as wels;
-import 'openh264_bindings.g.dart' as oh;
+import 'openh264/bindings.g.dart' as oh;
 
 final class H264DecoderBackend implements VideoDecoderBackend {
   ffi.Pointer<oh.ISVCDecoder>? _decoder;

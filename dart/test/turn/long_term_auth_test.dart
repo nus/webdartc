@@ -1,7 +1,11 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/stun/builder.dart';
+import 'package:webdartc/src/stun/parser.dart';
+import 'package:webdartc/src/stun/message.dart';
+import 'package:webdartc/src/crypto/hmac_sha1.dart';
+import 'package:webdartc/src/crypto/csprng.dart';
 
 void main() {
   group('Long-term credential auth', () {

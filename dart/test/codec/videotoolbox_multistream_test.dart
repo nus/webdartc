@@ -3,12 +3,12 @@
 library;
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/codec_registry.dart';
-import 'package:webdartc/codec/h264/videotoolbox_decoder_backend.dart';
-import 'package:webdartc/codec/h264/videotoolbox_encoder_backend.dart';
-import 'package:webdartc/codec/video_codec.dart';
-import 'package:webdartc/media/fake_video_source.dart';
-import 'package:webdartc/media/video_frame.dart';
+import 'package:webdartc/src/codec/codec_registry.dart';
+import 'package:webdartc/src/codec/h264/videotoolbox_decoder_backend.dart';
+import 'package:webdartc/src/codec/h264/videotoolbox_encoder_backend.dart';
+import 'package:webdartc/src/codec/video_codec.dart';
+import 'package:webdartc/src/media/fake_video_source.dart';
+import 'package:webdartc/src/media/video_frame.dart';
 
 /// One encoder+decoder pair driven by [step]. Mirrors a single PeerConnection
 /// stream that encodes its outbound frames and decodes inbound chunks.

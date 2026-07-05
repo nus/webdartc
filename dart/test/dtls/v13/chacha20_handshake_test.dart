@@ -7,10 +7,10 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/state_machine.dart';
-import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/dtls/v13/cipher_suite.dart';
-import 'package:webdartc/dtls/v13/endpoint.dart';
+import 'package:webdartc/src/core/state_machine.dart';
+import 'package:webdartc/src/crypto/ecdsa.dart';
+import 'package:webdartc/src/dtls/v13/cipher_suite.dart';
+import 'package:webdartc/src/dtls/v13/endpoint.dart';
 
 void main() {
   void drainLoopback(

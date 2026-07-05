@@ -385,6 +385,7 @@ abstract base class DtlsV13Endpoint implements core.ProtocolStateMachine {
     Uint8List packet, {
     required IpAddress remoteIp,
     required int remotePort,
+    IpAddress? localIp,
   }) {
     _records.remoteIp = remoteIp;
     _records.remotePort = remotePort;
@@ -613,7 +614,7 @@ abstract base class DtlsV13Endpoint implements core.ProtocolStateMachine {
   ) {
     if (!_isConnected) {
       return core.Err(
-        const core.StateError('DTLS 1.3: sendApplicationData before CONNECTED'),
+        const core.ProtocolStateError('DTLS 1.3: sendApplicationData before CONNECTED'),
       );
     }
     final outputs = <OutputPacket>[];
@@ -639,7 +640,7 @@ abstract base class DtlsV13Endpoint implements core.ProtocolStateMachine {
   }) {
     if (!_isConnected) {
       return core.Err(
-        const core.StateError('DTLS 1.3: requestKeyUpdate before CONNECTED'),
+        const core.ProtocolStateError('DTLS 1.3: requestKeyUpdate before CONNECTED'),
       );
     }
     final pkt = _emitKeyUpdate(

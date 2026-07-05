@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/crypto/hmac_sha1.dart';
 
 void main() {
   group('HmacSha1', () {

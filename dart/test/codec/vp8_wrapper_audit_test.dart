@@ -42,7 +42,7 @@ void main() {
       dylibBasename: 'libwebdartc_vp8',
       expectedExports: _expectedExports,
       foreignPrefix: 'vpx_',
-      bindingsPath: 'lib/codec/vp8/_libvpx.dart',
+      bindingsPath: 'lib/src/codec/vp8/_libvpx.dart',
     );
   });
 }

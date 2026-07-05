@@ -1,9 +1,9 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/backoff.dart';
-import 'package:webdartc/core/hex.dart';
-import 'package:webdartc/crypto/constant_time.dart';
+import 'package:webdartc/src/core/backoff.dart';
+import 'package:webdartc/src/core/hex.dart';
+import 'package:webdartc/src/crypto/constant_time.dart';
 
 void main() {
   group('hex', () {

@@ -1,9 +1,9 @@
 import 'dart:typed_data';
 
-import 'package:webdartc/media/receiver_track.dart';
-import 'package:webdartc/media/video_frame.dart';
-import 'package:webdartc/media/audio_data.dart';
-import 'package:webdartc/media/media_stream_track.dart';
+import 'package:webdartc/src/media/receiver_track.dart';
+import 'package:webdartc/src/media/video_frame.dart';
+import 'package:webdartc/src/media/audio_data.dart';
+import 'package:webdartc/src/media/media_stream_track.dart';
 import 'package:test/test.dart';
 
 VideoFrame _frame(int ts) => VideoFrame(

@@ -1,5 +1,5 @@
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/crypto/csprng.dart';
 
 void main() {
   group('Csprng', () {

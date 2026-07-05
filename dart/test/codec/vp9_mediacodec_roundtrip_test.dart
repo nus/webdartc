@@ -21,10 +21,10 @@
 library;
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/video_codec.dart';
-import 'package:webdartc/codec/vp9/vp9_codec.dart';
-import 'package:webdartc/media/fake_video_source.dart';
-import 'package:webdartc/media/video_frame.dart';
+import 'package:webdartc/src/codec/video_codec.dart';
+import 'package:webdartc/src/codec/vp9/vp9_codec.dart';
+import 'package:webdartc/src/media/fake_video_source.dart';
+import 'package:webdartc/src/media/video_frame.dart';
 
 const int _width = 160;
 const int _height = 120;

@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/turn/channel_data.dart';
+import 'package:webdartc/src/turn/channel_data.dart';
 
 void main() {
   group('ChannelData framing', () {

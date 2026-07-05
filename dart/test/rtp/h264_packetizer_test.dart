@@ -3,8 +3,8 @@ library;
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/video_codec.dart';
-import 'package:webdartc/rtp/packetizer.dart';
+import 'package:webdartc/src/codec/video_codec.dart';
+import 'package:webdartc/src/rtp/packetizer.dart';
 
 void main() {
   group('splitH264AnnexB', () {

@@ -4,10 +4,10 @@ library;
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/h264/h264_encoder_backend.dart';
-import 'package:webdartc/codec/video_codec.dart';
-import 'package:webdartc/media/fake_video_source.dart';
-import 'package:webdartc/rtp/packetizer.dart';
+import 'package:webdartc/src/codec/h264/h264_encoder_backend.dart';
+import 'package:webdartc/src/codec/video_codec.dart';
+import 'package:webdartc/src/media/fake_video_source.dart';
+import 'package:webdartc/src/rtp/packetizer.dart';
 
 void main() {
   setUpAll(registerH264Codec);

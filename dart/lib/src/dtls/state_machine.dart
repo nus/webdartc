@@ -123,7 +123,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     required int remotePort,
   }) {
     if (role != DtlsRole.client) {
-      return Err(const StateError('DTLS: only client can initiate handshake'));
+      return Err(const ProtocolStateError('DTLS: only client can initiate handshake'));
     }
     _remoteIp = remoteIp;
     _remotePort = remotePort;
@@ -139,7 +139,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       return v13Inner.sendApplicationData(plaintext);
     }
     if (_state != DtlsHandshakeState.connected) {
-      return Err(const StateError('DTLS: not connected'));
+      return Err(const ProtocolStateError('DTLS: not connected'));
     }
     final record = _encryptRecord(DtlsContentType.applicationData, plaintext);
     return Ok(
@@ -160,6 +160,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     Uint8List packet, {
     required IpAddress remoteIp,
     required int remotePort,
+    IpAddress? localIp,
   }) {
     _remoteIp = remoteIp;
     _remotePort = remotePort;
@@ -610,7 +611,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
     final peerPub = _peerCertPubKey;
     if (peerPub == null) {
-      return Err(const StateError(
+      return Err(const ProtocolStateError(
           'DTLS 1.2: SKE arrived before Certificate'));
     }
 
@@ -619,7 +620,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     final ecParams = body.sublist(0, paramsEnd);
     final serverRandom = _serverRandom;
     if (serverRandom == null) {
-      return Err(const StateError(
+      return Err(const ProtocolStateError(
           'DTLS 1.2: SKE arrived before ServerHello'));
     }
     final signed = Uint8List(
@@ -647,7 +648,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       // ServerKeyExchange hasn't arrived yet (dropped in transit).
       // Return Err so this message is not marked as processed and can
       // be retried when the retransmitted flight delivers the missing SKE.
-      return Err(const StateError('DTLS: no server public key'));
+      return Err(const ProtocolStateError('DTLS: no server public key'));
     }
     _ecdhKeyPair ??= EcdhKeyPair.generate();
     // If client flight was already sent, resend it (retransmission scenario
@@ -1092,7 +1093,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
     // Compute shared secret and derive keys
     if (_ecdhKeyPair == null || _serverRandom == null) {
-      return Err(const StateError('DTLS: server state not ready for CKE'));
+      return Err(const ProtocolStateError('DTLS: server state not ready for CKE'));
     }
     final premaster = _ecdhKeyPair!.computeSharedSecret(_peerPublicKeyBytes!);
 
@@ -1133,7 +1134,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
 
     final peerPub = _peerCertPubKey;
     if (peerPub == null) {
-      return Err(const StateError(
+      return Err(const ProtocolStateError(
           'DTLS 1.2: CertificateVerify before client Certificate'));
     }
 
@@ -1163,7 +1164,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     Uint8List fullFragment,
   ) {
     if (_masterSecret == null) {
-      return Err(const StateError('DTLS: no master secret for Finished'));
+      return Err(const ProtocolStateError('DTLS: no master secret for Finished'));
     }
     // Verify client Finished — hash must NOT include the Finished message itself
     final expectedVerifyData = DtlsKeyMaterial.computeFinishedVerifyData(
@@ -1292,7 +1293,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     }
     if (_retransmitCount >= _maxRetransmit) {
       _state = DtlsHandshakeState.failed;
-      return Err(const StateError('DTLS: max retransmissions exceeded'));
+      return Err(const ProtocolStateError('DTLS: max retransmissions exceeded'));
     }
     _retransmitCount++;
 

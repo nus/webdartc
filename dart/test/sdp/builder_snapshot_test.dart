@@ -3,7 +3,7 @@
 // wire format — any diff here is an interop-relevant behavior change, not
 // a formatting nit. The `o=` timestamp is normalized to `TS`.
 import 'package:test/test.dart';
-import 'package:webdartc/sdp/parser.dart';
+import 'package:webdartc/src/sdp/parser.dart';
 
 const _dataChannelOffer = '''
 v=0

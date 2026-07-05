@@ -12,10 +12,10 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/api/setting_engine.dart';
-import 'package:webdartc/core/result.dart';
-import 'package:webdartc/core/types.dart';
-import 'package:webdartc/transport/transport_controller.dart';
+import 'package:webdartc/src/api/setting_engine.dart';
+import 'package:webdartc/src/core/result.dart';
+import 'package:webdartc/src/core/types.dart';
+import 'package:webdartc/src/transport/transport_controller.dart';
 
 /// First non-loopback IPv4 on this host, or null on loopback-only hosts.
 Future<String?> _hostIp() async {

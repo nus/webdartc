@@ -14,11 +14,7 @@ import '../../media/video_frame.dart';
 import '../mediacodec/mediacodec_video.dart';
 import '../mediacodec/mime_types.dart';
 import '../video_codec.dart';
-
-// H.264 Annex B NAL parsing.
-const int _nalTypeMask = 0x1F;
-const int _nalTypeIdr = 5;
-const int _nalTypeSps = 7;
+import 'nal_unit_types.dart';
 
 /// Returns `(hasIdr, hasSps)` by scanning Annex B NAL unit types.
 (bool, bool) _scanNals(Uint8List b) {
@@ -28,18 +24,18 @@ const int _nalTypeSps = 7;
   while (i + 3 < n) {
     // Match a 3- or 4-byte start code.
     if (b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1) {
-      final t = b[i + 3] & _nalTypeMask;
-      if (t == _nalTypeIdr) hasIdr = true;
-      if (t == _nalTypeSps) hasSps = true;
+      final t = b[i + 3] & H264NalType.mask;
+      if (t == H264NalType.idr) hasIdr = true;
+      if (t == H264NalType.sps) hasSps = true;
       i += 4;
     } else if (i + 4 < n &&
         b[i] == 0 &&
         b[i + 1] == 0 &&
         b[i + 2] == 0 &&
         b[i + 3] == 1) {
-      final t = b[i + 4] & _nalTypeMask;
-      if (t == _nalTypeIdr) hasIdr = true;
-      if (t == _nalTypeSps) hasSps = true;
+      final t = b[i + 4] & H264NalType.mask;
+      if (t == H264NalType.idr) hasIdr = true;
+      if (t == H264NalType.sps) hasSps = true;
       i += 5;
     } else {
       i++;

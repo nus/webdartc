@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/byte_io.dart';
+import 'package:webdartc/src/core/byte_io.dart';
 
 void main() {
   group('random-access reads', () {

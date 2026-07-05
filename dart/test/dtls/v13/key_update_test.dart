@@ -12,10 +12,10 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/state_machine.dart';
-import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/dtls/v13/endpoint.dart';
-import 'package:webdartc/dtls/v13/handshake.dart';
+import 'package:webdartc/src/core/state_machine.dart';
+import 'package:webdartc/src/crypto/ecdsa.dart';
+import 'package:webdartc/src/dtls/v13/endpoint.dart';
+import 'package:webdartc/src/dtls/v13/handshake.dart';
 
 void _drainHandshake(
   DtlsV13ClientStateMachine client,
@@ -224,7 +224,7 @@ void main() {
       expect(serverRx.first, equals([0xCC]));
     });
 
-    test('requestKeyUpdate before CONNECTED returns StateError', () {
+    test('requestKeyUpdate before CONNECTED returns ProtocolStateError', () {
       final c = DtlsV13ClientStateMachine(
         localCert: EcdsaCertificate.selfSigned(),
       );

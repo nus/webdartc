@@ -18,7 +18,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:webdartc/codec/codec_support.dart';
+import 'package:webdartc/src/codec/codec_support.dart';
 import 'package:webdartc/webdartc.dart';
 
 import '../serve.dart';

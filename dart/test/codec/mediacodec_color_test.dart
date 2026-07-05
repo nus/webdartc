@@ -9,7 +9,7 @@ library;
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/mediacodec/mediacodec_video.dart';
+import 'package:webdartc/src/codec/mediacodec/mediacodec_video.dart';
 
 /// Builds a packed I420 buffer where every sample is a deterministic function
 /// of its plane and (row, col), so conversions are easy to assert.

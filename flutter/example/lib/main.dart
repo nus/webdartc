@@ -36,7 +36,6 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-import 'package:webdartc/rtp/packetizer.dart'; // H264Packetizer (send path)
 import 'package:webdartc/webdartc.dart';
 import 'package:webdartc_flutter/webdartc_flutter.dart';
 

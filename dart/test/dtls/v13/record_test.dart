@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/crypto/hkdf.dart';
-import 'package:webdartc/dtls/v13/record.dart';
+import 'package:webdartc/src/crypto/hkdf.dart';
+import 'package:webdartc/src/dtls/v13/record.dart';
 
 void main() {
   Uint8List bytes(List<int> v) => Uint8List.fromList(v);

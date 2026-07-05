@@ -9,12 +9,16 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/stun/builder.dart';
+import 'package:webdartc/src/stun/parser.dart';
+import 'package:webdartc/src/stun/message.dart';
+import 'package:webdartc/src/rtp/parser.dart';
 
 // Not exported via webdartc.dart — import directly.
-import 'package:webdartc/dtls/record.dart';
-import 'package:webdartc/rtp/rtcp_math.dart';
-import 'package:webdartc/sctp/chunk.dart';
-import 'package:webdartc/turn/channel_data.dart';
+import 'package:webdartc/src/dtls/record.dart';
+import 'package:webdartc/src/rtp/rtcp_math.dart';
+import 'package:webdartc/src/sctp/chunk.dart';
+import 'package:webdartc/src/turn/channel_data.dart';
 
 /// Number of random iterations per test.
 const int _iterations = 10000;

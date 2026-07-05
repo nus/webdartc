@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/rtp/parser.dart';
 
 void main() {
   group('RtpParser', () {

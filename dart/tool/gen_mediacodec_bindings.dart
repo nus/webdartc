@@ -1,5 +1,5 @@
 // Regenerates the Android MediaCodec FFI bindings
-// (`lib/codec/h264/mediacodec/bindings.g.dart`).
+// (`lib/src/codec/mediacodec/bindings.g.dart`).
 //
 // `tool/ffigen_mediacodec.yaml` is a token-based template: its `@NDK_*@`
 // placeholders are machine-specific absolute paths (the NDK install location
@@ -69,7 +69,7 @@ void main() async {
   } finally {
     if (localCfg.existsSync()) localCfg.deleteSync();
   }
-  stdout.writeln('Generated lib/codec/h264/mediacodec/bindings.g.dart');
+  stdout.writeln('Generated lib/src/codec/mediacodec/bindings.g.dart');
 }
 
 Directory? _findNdk() {

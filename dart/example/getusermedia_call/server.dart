@@ -16,9 +16,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:webdartc/media/macos/avf_capture_track.dart';
-import 'package:webdartc/media/macos/avf_media_devices.dart';
-import 'package:webdartc/codec/codec_support.dart';
+import 'package:webdartc/src/media/macos/avf_capture_track.dart';
+import 'package:webdartc/src/media/macos/avf_media_devices.dart';
+import 'package:webdartc/src/codec/codec_support.dart';
 import 'package:webdartc/webdartc.dart';
 
 int _port = 8080;

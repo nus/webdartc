@@ -2,10 +2,10 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/types.dart';
-import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/dtls/handshake.dart';
-import 'package:webdartc/dtls/state_machine.dart';
+import 'package:webdartc/src/core/types.dart';
+import 'package:webdartc/src/crypto/ecdsa.dart';
+import 'package:webdartc/src/dtls/handshake.dart';
+import 'package:webdartc/src/dtls/state_machine.dart';
 
 /// Simulated lossy channel between two DTLS state machines.
 ///

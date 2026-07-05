@@ -11,76 +11,59 @@
 /// final offer = await pc.createOffer();
 /// await pc.setLocalDescription(offer);
 /// ```
+///
+/// Protocol internals (crypto primitives, STUN/SRTP/DTLS state machines,
+/// RTP packetizers, …) live under `src/` and are not part of the public
+/// contract — import `package:webdartc/src/...` directly at your own risk.
 library;
 
-// Core types
-export 'core/ip_address.dart';
-export 'core/result.dart';
-export 'core/types.dart';
+// Core types — state_machine.dart re-exports result.dart and types.dart
+// (which re-exports ip_address.dart). The ProtocolError hierarchy it defines
+// appears in the exported ICE/SCTP state machines' signatures.
+export 'src/core/state_machine.dart';
 
 // W3C PeerConnection API (data_channel.dart and events.dart are parts of peer_connection.dart)
-export 'peer_connection/peer_connection.dart';
+export 'src/peer_connection/peer_connection.dart';
 
 // API factory (optional; default `PeerConnection(...)` constructor still works)
-export 'api/webdartc.dart';
-export 'api/setting_engine.dart';
-export 'api/media_engine.dart';
-export 'api/stats.dart';
+export 'src/api/webdartc.dart';
+export 'src/api/setting_engine.dart';
+export 'src/api/media_engine.dart';
+export 'src/api/stats.dart';
 
 // SDP
-export 'sdp/parser.dart';
+export 'src/sdp/parser.dart';
 
-// ICE
-export 'ice/candidate.dart';
-export 'ice/state_machine.dart';
+// ICE (state_machine.dart re-exports candidate.dart)
+export 'src/ice/state_machine.dart';
 
-// SCTP
-export 'sctp/state_machine.dart';
-export 'sctp/dcep.dart';
+// SCTP (state_machine.dart re-exports dcep.dart)
+export 'src/sctp/state_machine.dart';
 
-// Crypto (for testing / advanced use)
-export 'crypto/csprng.dart';
-export 'crypto/hmac_sha1.dart';
-export 'crypto/sha1.dart';
-export 'crypto/sha256.dart';
-export 'crypto/hkdf.dart';
-export 'crypto/tls_prf.dart';
-export 'crypto/aes_cm.dart';
-export 'crypto/aes_gcm.dart';
-export 'crypto/chacha20_poly1305.dart';
-export 'crypto/ecdh.dart';
-export 'crypto/ecdsa.dart';
-
-// STUN
-export 'stun/message.dart';
-export 'stun/parser.dart';
-export 'stun/builder.dart';
-export 'stun/crc32.dart';
-
-// SRTP
-export 'srtp/context.dart';
-
-// RTP/RTCP
-export 'rtp/parser.dart';
-export 'rtp/rtp_transport.dart';
+// RTP packet types and payload packetizers — surfaced by the raw-RTP escape
+// hatches on the W3C API (`RtpReceiver.onRtp`, `RtpSender.sendRtp`,
+// `RtpSender.replacePacketSender`).
+export 'src/rtp/packet.dart';
+export 'src/rtp/packetizer.dart';
+export 'src/rtp/rtp_transport.dart' show RtpPacketSender;
 
 // Media (W3C Media Capture & Streams)
-export 'media/video_frame.dart';
-export 'media/audio_data.dart';
-export 'media/media_stream_track.dart';
-export 'media/receiver_track.dart';
-export 'media/receive_pipeline.dart';
-export 'media/media_stream.dart';
-export 'media/media_devices.dart';
-export 'media/fake_video_source.dart';
-export 'media/fake_audio_source.dart';
+export 'src/media/video_frame.dart';
+export 'src/media/audio_data.dart';
+export 'src/media/media_stream_track.dart';
+export 'src/media/receiver_track.dart';
+export 'src/media/receive_pipeline.dart';
+export 'src/media/media_stream.dart';
+export 'src/media/media_devices.dart';
+export 'src/media/fake_video_source.dart';
+export 'src/media/fake_audio_source.dart';
 
 // Codec (W3C WebCodecs)
-export 'codec/video_codec.dart';
-export 'codec/audio_codec.dart';
-export 'codec/codec_registry.dart';
-export 'codec/default_codecs.dart';
-export 'codec/vp8/vp8_codec.dart';
-export 'codec/vp9/vp9_codec.dart';
-export 'codec/h264/h264_encoder_backend.dart';
-export 'codec/opus/opus_codec.dart';
+export 'src/codec/video_codec.dart';
+export 'src/codec/audio_codec.dart';
+export 'src/codec/codec_registry.dart';
+export 'src/codec/default_codecs.dart';
+export 'src/codec/vp8/vp8_codec.dart';
+export 'src/codec/vp9/vp9_codec.dart';
+export 'src/codec/h264/h264_encoder_backend.dart';
+export 'src/codec/opus/opus_codec.dart';

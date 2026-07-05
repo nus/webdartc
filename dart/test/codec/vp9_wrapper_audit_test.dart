@@ -37,7 +37,7 @@ void main() {
       dylibBasename: 'libwebdartc_vp9',
       expectedExports: _expectedExports,
       foreignPrefix: 'vpx_',
-      bindingsPath: 'lib/codec/vp9/_libvpx9.dart',
+      bindingsPath: 'lib/src/codec/vp9/_libvpx9.dart',
     );
   });
 }
