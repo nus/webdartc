@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/crypto/aes_cm.dart';
 
 Uint8List hex(String s) {
   final h = s.replaceAll(' ', '');

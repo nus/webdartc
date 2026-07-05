@@ -17,9 +17,9 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/audio_codec.dart';
-import 'package:webdartc/codec/opus/opus_codec.dart';
-import 'package:webdartc/media/audio_data.dart';
+import 'package:webdartc/src/codec/audio_codec.dart';
+import 'package:webdartc/src/codec/opus/opus_codec.dart';
+import 'package:webdartc/src/media/audio_data.dart';
 
 const int _sampleRate = 48000;
 const int _channels = 2;

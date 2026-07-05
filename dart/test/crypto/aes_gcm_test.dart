@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/crypto/aes_gcm.dart';
 
 Uint8List hex(String s) => Uint8List.fromList(
     List.generate(s.replaceAll(' ', '').length ~/ 2,

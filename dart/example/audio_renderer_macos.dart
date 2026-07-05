@@ -13,8 +13,8 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:webdartc/media/macos/avf_audio_renderer.dart';
-import 'package:webdartc/media/macos/avf_media_devices.dart';
+import 'package:webdartc/src/media/macos/avf_audio_renderer.dart';
+import 'package:webdartc/src/media/macos/avf_media_devices.dart';
 import 'package:webdartc/webdartc.dart';
 
 Future<void> main(List<String> args) async {

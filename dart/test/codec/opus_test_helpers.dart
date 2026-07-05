@@ -5,7 +5,7 @@ library;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:webdartc/media/audio_data.dart';
+import 'package:webdartc/src/media/audio_data.dart';
 
 /// Generates an [AudioData] holding a sine wave at [freqHz] (default 440 Hz),
 /// signed 16-bit PCM, interleaved across [channels].

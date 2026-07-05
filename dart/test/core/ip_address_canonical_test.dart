@@ -6,7 +6,7 @@
 library;
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/ip_address.dart';
+import 'package:webdartc/src/core/ip_address.dart';
 
 void main() {
   group('IPv6 canonical form (RFC 5952 / BSD inet_ntop rules)', () {

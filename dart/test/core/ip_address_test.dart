@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/ip_address.dart';
+import 'package:webdartc/src/core/ip_address.dart';
 
 void main() {
   group('IpAddress.parse / tryParse', () {

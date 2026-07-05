@@ -1,9 +1,9 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/dtls/v13/cipher_suite.dart';
-import 'package:webdartc/dtls/v13/key_schedule.dart';
-import 'package:webdartc/dtls/v13/record_crypto.dart';
+import 'package:webdartc/src/dtls/v13/cipher_suite.dart';
+import 'package:webdartc/src/dtls/v13/key_schedule.dart';
+import 'package:webdartc/src/dtls/v13/record_crypto.dart';
 
 /// Record-layer tests for `TLS_CHACHA20_POLY1305_SHA256` (0x1303). Mirrors
 /// the AES-GCM coverage in `record_crypto_test.dart` so a regression in

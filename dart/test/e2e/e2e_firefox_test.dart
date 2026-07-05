@@ -173,7 +173,7 @@ void main() {
   //   4. Promote the pair to `_selectedPair` when the triggered check
   //      succeeds.
   // This is the path fixed by relaxing the state guard in
-  // lib/ice/state_machine.dart:_triggerPeerReflexiveCheck.
+  // lib/src/ice/state_machine.dart:_triggerPeerReflexiveCheck.
 
   group('Scenario 1b — data channel (Firefox offerer ↔ webdartc answerer)',
       () {
@@ -249,7 +249,7 @@ void main() {
   // Firefox's DTLS ClientHello use_srtp extension advertises profiles in the
   // order 0x0007 (GCM_128), 0x0008 (GCM_256), 0x0001 (CM_HMAC_SHA1_80),
   // 0x0002 (CM_HMAC_SHA1_32). webdartc's DTLS server selector in
-  // lib/dtls/state_machine.dart prefers 0x0001 when offered, so both Chrome
+  // lib/src/dtls/state_machine.dart prefers 0x0001 when offered, so both Chrome
   // (offers CM first) and Firefox (offers GCM first) converge on the
   // common-denominator SRTP_AES128_CM_HMAC_SHA1_80 profile.
 

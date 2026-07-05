@@ -5,20 +5,20 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/audio_codec.dart';
-import 'package:webdartc/codec/opus/opus_codec.dart';
-import 'package:webdartc/codec/video_codec.dart';
-import 'package:webdartc/codec/vp8/vp8_codec.dart';
-import 'package:webdartc/codec/vp9/vp9_codec.dart';
-import 'package:webdartc/media/audio_data.dart';
-import 'package:webdartc/media/fake_audio_source.dart';
-import 'package:webdartc/codec/codec_support.dart';
-import 'package:webdartc/media/fake_video_source.dart';
-import 'package:webdartc/media/receive_pipeline.dart';
-import 'package:webdartc/media/receiver_track.dart';
-import 'package:webdartc/media/video_frame.dart';
-import 'package:webdartc/rtp/packetizer.dart';
-import 'package:webdartc/rtp/parser.dart';
+import 'package:webdartc/src/codec/audio_codec.dart';
+import 'package:webdartc/src/codec/opus/opus_codec.dart';
+import 'package:webdartc/src/codec/video_codec.dart';
+import 'package:webdartc/src/codec/vp8/vp8_codec.dart';
+import 'package:webdartc/src/codec/vp9/vp9_codec.dart';
+import 'package:webdartc/src/media/audio_data.dart';
+import 'package:webdartc/src/media/fake_audio_source.dart';
+import 'package:webdartc/src/codec/codec_support.dart';
+import 'package:webdartc/src/media/fake_video_source.dart';
+import 'package:webdartc/src/media/receive_pipeline.dart';
+import 'package:webdartc/src/media/receiver_track.dart';
+import 'package:webdartc/src/media/video_frame.dart';
+import 'package:webdartc/src/rtp/packetizer.dart';
+import 'package:webdartc/src/rtp/parser.dart';
 
 /// Encode [n] frames with [codec] and return their packetized RTP payloads
 /// (with the marker flag) plus the source key/delta classification per frame.

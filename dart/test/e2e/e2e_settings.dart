@@ -3,7 +3,7 @@ library;
 
 import 'dart:io';
 
-import 'package:webdartc/api/setting_engine.dart';
+import 'package:webdartc/src/api/setting_engine.dart';
 
 /// Engine all e2e helpers register their PeerConnection against.
 ///

@@ -6,17 +6,17 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/state_machine.dart';
-import 'package:webdartc/crypto/csprng.dart';
-import 'package:webdartc/crypto/ecdh.dart';
-import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/crypto/hmac_sha256.dart';
-import 'package:webdartc/dtls/record.dart';
-import 'package:webdartc/dtls/state_machine.dart';
-import 'package:webdartc/dtls/v13/handshake.dart';
-import 'package:webdartc/dtls/v13/key_schedule.dart';
-import 'package:webdartc/dtls/v13/record_crypto.dart';
-import 'package:webdartc/dtls/v13/transcript.dart';
+import 'package:webdartc/src/core/state_machine.dart';
+import 'package:webdartc/src/crypto/csprng.dart';
+import 'package:webdartc/src/crypto/ecdh.dart';
+import 'package:webdartc/src/crypto/ecdsa.dart';
+import 'package:webdartc/src/crypto/hmac_sha256.dart';
+import 'package:webdartc/src/dtls/record.dart';
+import 'package:webdartc/src/dtls/state_machine.dart';
+import 'package:webdartc/src/dtls/v13/handshake.dart';
+import 'package:webdartc/src/dtls/v13/key_schedule.dart';
+import 'package:webdartc/src/dtls/v13/record_crypto.dart';
+import 'package:webdartc/src/dtls/v13/transcript.dart';
 
 void main() {
   Uint8List bytes(List<int> v) => Uint8List.fromList(v);

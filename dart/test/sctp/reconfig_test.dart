@@ -2,7 +2,7 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:webdartc/webdartc.dart';
-import 'package:webdartc/sctp/chunk.dart';
+import 'package:webdartc/src/sctp/chunk.dart';
 
 import 'sctp_test_helpers.dart';
 

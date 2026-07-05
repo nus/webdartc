@@ -44,12 +44,12 @@ dart run example/video_sender/server.dart --port=8080
 
 ## Architecture
 
-All protocol modules are pure state machines (`ProtocolStateMachine` in `lib/core/state_machine.dart`) with no I/O:
+All protocol modules are pure state machines (`ProtocolStateMachine` in `lib/src/core/state_machine.dart`) with no I/O:
 - **Input**: `processInput(Uint8List packet, remoteIp, remotePort) -> Result<ProcessResult, ProtocolError>`
 - **Timers**: `handleTimeout(TimerToken) -> Result<ProcessResult, ProtocolError>`
 - **Output**: `ProcessResult` contains `List<OutputPacket>` + optional `Timeout`
 
-`TransportController` (`lib/transport/`) is the **only** module that uses `dart:io` for UDP. All other modules must never import `dart:io` or perform network operations directly.
+`TransportController` (`lib/src/transport/`) is the **only** module that uses `dart:io` for UDP. All other modules must never import `dart:io` or perform network operations directly.
 
 ```
 PeerConnection (W3C API, no RTC prefix)
@@ -64,11 +64,11 @@ STUN   Crypto (CommonCrypto / BoringSSL / CNG via FFI)
 ## Key Conventions
 
 - **No RTC prefix**: W3C types use short names (`PeerConnection`, `DataChannel`, not `RTCPeerConnection`)
-- **Result type**: Protocol methods return `Result<T, ProtocolError>` (lib/core/result.dart), not exceptions
+- **Result type**: Protocol methods return `Result<T, ProtocolError>` (lib/src/core/result.dart), not exceptions
 - **Sealed error types**: `ParseError`, `ProtocolStateError`, `CryptoError`, `InternalError` (all extend `ProtocolError`)
 - **Timer tokens**: Each protocol has its own `TimerToken` subclass (e.g., `IceTimerToken`, `DtlsRetransmitToken`, `SctpT3RtxToken`)
-- **I/O isolation**: Verify with `grep -rn "RawDatagramSocket\|RawSocket" lib/crypto/ lib/media/ lib/codec/ lib/core/ lib/peer_connection/` (should produce no output)
-- **Receive media path (W3C)**: `onTrack` → `TrackEvent.track` is a decoded `MediaStreamTrack` (`onVideoFrame`/`onAudioData`). The decode pipeline (jitter buffer → depacketize → decode) lives in `lib/media/receive_pipeline.dart`, owned by `RtpReceiver`, pumped from PeerConnection's 100 ms RTCP tick. It builds lazily on the first track listener; the decoder's native lib loads only then. `PeerConnection` auto-registers bundled codec backends (`autoRegisterCodecs`, default true); `track` is null when the codec has no decoder+depacketizer, in which case use `RtpReceiver.onRtp` (raw RTP, always available regardless of codec registration).
+- **I/O isolation**: Verify with `grep -rn "RawDatagramSocket\|RawSocket" lib/src/crypto/ lib/src/media/ lib/src/codec/ lib/src/core/ lib/src/peer_connection/` (should produce no output)
+- **Receive media path (W3C)**: `onTrack` → `TrackEvent.track` is a decoded `MediaStreamTrack` (`onVideoFrame`/`onAudioData`). The decode pipeline (jitter buffer → depacketize → decode) lives in `lib/src/media/receive_pipeline.dart`, owned by `RtpReceiver`, pumped from PeerConnection's 100 ms RTCP tick. It builds lazily on the first track listener; the decoder's native lib loads only then. `PeerConnection` auto-registers bundled codec backends (`autoRegisterCodecs`, default true); `track` is null when the codec has no decoder+depacketizer, in which case use `RtpReceiver.onRtp` (raw RTP, always available regardless of codec registration).
 
 ## Analysis
 

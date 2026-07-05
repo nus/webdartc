@@ -21,11 +21,11 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:webdartc/core/ip_address.dart';
-import 'package:webdartc/core/state_machine.dart';
-import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/dtls/state_machine.dart';
-import 'package:webdartc/dtls/version_detect.dart';
+import 'package:webdartc/src/core/ip_address.dart';
+import 'package:webdartc/src/core/state_machine.dart';
+import 'package:webdartc/src/crypto/ecdsa.dart';
+import 'package:webdartc/src/dtls/state_machine.dart';
+import 'package:webdartc/src/dtls/version_detect.dart';
 
 void usage() {
   stderr.writeln('Usage: dart run tool/dtls13_echo_server.dart [--port PORT]');

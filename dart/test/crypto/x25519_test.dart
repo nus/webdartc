@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/crypto/x25519.dart';
+import 'package:webdartc/src/crypto/x25519.dart';
 
 void main() {
   Uint8List hex(String s) {

@@ -15,7 +15,7 @@ import 'dart:ffi' as ffi;
 
 import 'package:ffi/ffi.dart' as pkgffi;
 import 'package:test/test.dart';
-import 'package:webdartc/codec/vp8/_libvpx.dart' as vp8;
+import 'package:webdartc/src/codec/vp8/_libvpx.dart' as vp8;
 
 void main() {
   test('webdartc_vp8 reports the pinned libvpx version', () {

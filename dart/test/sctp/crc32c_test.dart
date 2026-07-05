@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
-import 'package:webdartc/sctp/crc32c.dart';
+import 'package:webdartc/src/stun/crc32.dart';
+import 'package:webdartc/src/sctp/crc32c.dart';
 
 void main() {
   group('SctpCrc32c', () {

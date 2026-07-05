@@ -8,9 +8,9 @@
 //   - Fail after [_maxHandshakeRetransmits] attempts.
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/types.dart';
-import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/dtls/v13/endpoint.dart';
+import 'package:webdartc/src/core/types.dart';
+import 'package:webdartc/src/crypto/ecdsa.dart';
+import 'package:webdartc/src/dtls/v13/endpoint.dart';
 
 void main() {
   // Helper: drain the server's handshake response from a fed CH packet.

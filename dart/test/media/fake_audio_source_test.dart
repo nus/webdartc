@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/media/audio_data.dart';
-import 'package:webdartc/media/fake_audio_source.dart';
+import 'package:webdartc/src/media/audio_data.dart';
+import 'package:webdartc/src/media/fake_audio_source.dart';
 
 void main() {
   group('FakeAudioSource', () {

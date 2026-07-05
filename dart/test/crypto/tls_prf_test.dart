@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/crypto/tls_prf.dart';
 
 void main() {
   group('TlsPrf.sha256 (RFC 5246 §5)', () {

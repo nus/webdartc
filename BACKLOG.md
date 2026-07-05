@@ -24,19 +24,19 @@ Each item:
 ### Shared dynamic-library loader helper
 
 - **Found:** 2026-05-04, in `opus-codec` /simplify
-- **Detail:** `_openLibvpx()` ([dart/lib/codec/vp8/vp8_encoder_backend.dart](dart/lib/codec/vp8/vp8_encoder_backend.dart)),
-  `_openLibOpenH264()` ([dart/lib/codec/h264/h264_encoder_backend.dart](dart/lib/codec/h264/h264_encoder_backend.dart)),
-  `_open()` in [_libopus.dart](dart/lib/codec/opus/_libopus.dart), and `OpenSsl._loadLibcrypto()`
-  ([dart/lib/crypto/openssl.dart](dart/lib/crypto/openssl.dart)) all implement the same
+- **Detail:** `_openLibvpx()` ([dart/lib/src/codec/vp8/vp8_encoder_backend.dart](dart/lib/src/codec/vp8/vp8_encoder_backend.dart)),
+  `_openLibOpenH264()` ([dart/lib/src/codec/h264/h264_encoder_backend.dart](dart/lib/src/codec/h264/h264_encoder_backend.dart)),
+  `_open()` in [_libopus.dart](dart/lib/src/codec/opus/_libopus.dart), and `OpenSsl._loadLibcrypto()`
+  ([dart/lib/src/crypto/openssl.dart](dart/lib/src/crypto/openssl.dart)) all implement the same
   `Platform.is{macOS,Windows,Linux}` candidate-loop pattern. Four copies of
   effectively identical code.
 - **Why deferred:** Cross-cuts four modules; out of scope for the Opus branch.
-- **Acceptance:** New `dart/lib/codec/native_loader.dart` (or a more general
+- **Acceptance:** New `dart/lib/src/codec/native_loader.dart` (or a more general
   shared util) exposing `openNativeLibrary({macos, linux, windows, label})`.
   All four callers reduce to one-liners. Apple-framework absolute-path loaders
   in `crypto/macos_backend.dart` and `crypto/security_framework.dart` stay as
   they are. The platform-dispatch half of this shape already exists as
-  `forPlatform` in [dart/lib/core/platform_dispatch.dart](dart/lib/core/platform_dispatch.dart)
+  `forPlatform` in [dart/lib/src/core/platform_dispatch.dart](dart/lib/src/core/platform_dispatch.dart)
   (landed with the 2026-07-04 crypto-factory dedup) — build the loader on top
   of or alongside it rather than adding a second dispatch helper.
 
@@ -52,7 +52,7 @@ Each item:
   - Synchronous buffer API (dequeue/queueInputBuffer), so **no C shim** unlike
     the callback-based VideoToolbox helper; multistream works because each
     track gets its own `AMediaCodec`, all driven on the isolate thread.
-    [dart/lib/codec/h264/mediacodec/mediacodec_helper.dart](dart/lib/codec/h264/mediacodec/mediacodec_helper.dart)
+    [dart/lib/src/codec/h264/mediacodec/mediacodec_helper.dart](dart/lib/src/codec/h264/mediacodec/mediacodec_helper.dart)
     + `mediacodec_{encoder,decoder}_backend.dart`; `registerH264Codec()` gains
     an `Platform.isAndroid` branch; the example negotiates H.264 everywhere.
   - Colour as packed I420 (encoder converts straight into the native input
@@ -76,7 +76,7 @@ Each item:
 
 - **Found:** 2026-05-04, codec-status review
 - **Detail:** No AV1 backend; libaom / dav1d are not wired up. (VP9 has since
-  landed under `dart/lib/codec/vp9/`.)
+  landed under `dart/lib/src/codec/vp9/`.)
 - **Why deferred:** Not required for the current target Chrome / Firefox
   interop story.
 - **Acceptance:** AV1 encoder + decoder registered, basic round-trip test
@@ -110,7 +110,7 @@ Each item:
 ### `SettingEngine.udpPortRange` is not plumbed
 
 - **Found:** 2026-05-04, post-multi-bind branch summary
-- **Detail:** [dart/lib/api/setting_engine.dart](dart/lib/api/setting_engine.dart)
+- **Detail:** [dart/lib/src/api/setting_engine.dart](dart/lib/src/api/setting_engine.dart)
   declares `udpPortRange: (int, int)?` as a public-API knob, but
   `TransportController.start()` always binds via `bind(addr, 0)` (random
   ephemeral). The field is dead state.
@@ -162,8 +162,8 @@ Each item:
   `addIceCandidate(null)` / `a=end-of-candidates` handling. The controlled
   agent can't learn the remote trickle stream is finished, so it can't declare
   `failed` early — an agent waiting for candidates that never arrive hangs.
-  Suspected sites: [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart),
-  [dart/lib/ice/state_machine.dart](dart/lib/ice/state_machine.dart).
+  Suspected sites: [dart/lib/src/peer_connection/peer_connection.dart](dart/lib/src/peer_connection/peer_connection.dart),
+  [dart/lib/src/ice/state_machine.dart](dart/lib/src/ice/state_machine.dart).
 - **Why deferred:** Out of scope for the audit pass; needs SDP-parser + ICE-FSM
   changes plus an E2E hang-recovery test.
 - **Acceptance:** Parse `a=end-of-candidates`, expose an
@@ -177,7 +177,7 @@ Each item:
   only `REQUESTED-TRANSPORT`; `REQUESTED-ADDRESS-FAMILY` (0x0017) and
   `ADDITIONAL-ADDRESS-FAMILY` (0x8000) are neither defined in `attributes.dart`
   nor emitted, so an IPv6 relay can't be requested.
-  [dart/lib/turn/state_machine.dart](dart/lib/turn/state_machine.dart).
+  [dart/lib/src/turn/state_machine.dart](dart/lib/src/turn/state_machine.dart).
 - **Why deferred:** No IPv6 relay test target yet; the IPv4 path works.
 - **Acceptance:** Add + parse/encode both attributes, expose an address-family
   knob on the allocation, and cover an IPv6 relay request in a test.
@@ -207,10 +207,10 @@ Each item:
 - **Found:** 2026-05-29, RFC/W3C divergence audit. **Verified 2026-06; very low
   value — likely won't ship.**
 - **Detail:** The DTLS 1.2 ClientHello
-  ([dart/lib/dtls/handshake.dart](dart/lib/dtls/handshake.dart) `_buildClientHelloBody`)
+  ([dart/lib/src/dtls/handshake.dart](dart/lib/src/dtls/handshake.dart) `_buildClientHelloBody`)
   emits only extended_master_secret / supported_groups / signature_algorithms /
   use_srtp — no ALPN (0x0010). The `alpn = 0x0010` constant
-  ([dart/lib/dtls/v13/handshake.dart](dart/lib/dtls/v13/handshake.dart)) is
+  ([dart/lib/src/dtls/v13/handshake.dart](dart/lib/src/dtls/v13/handshake.dart)) is
   unused.
 - **Why deferred — no practical payoff:**
   - **RFC 8833 makes ALPN optional**, not mandatory: a peer that omits it is
@@ -235,10 +235,10 @@ Each item:
 
 - **Found:** 2026-05-29, RFC/W3C divergence audit. **Verified 2026-05-30.**
 - **Detail:** RFC 7742 §6.1 wants both ECDSA- and RSA-cert support. The
-  `CipherSuite` enum ([dart/lib/dtls/cipher_suite.dart](dart/lib/dtls/cipher_suite.dart))
+  `CipherSuite` enum ([dart/lib/src/dtls/cipher_suite.dart](dart/lib/src/dtls/cipher_suite.dart))
   only has the two ECDHE-**ECDSA** suites (0xC02B, 0xC009), and the client
   ServerKeyExchange handler hardcodes `EcdsaVerify.verifyP256Sha256`
-  ([dart/lib/dtls/state_machine.dart](dart/lib/dtls/state_machine.dart) ~L665).
+  ([dart/lib/src/dtls/state_machine.dart](dart/lib/src/dtls/state_machine.dart) ~L665).
   So a peer that presents an RSA certificate (e.g. an app that called
   `RTCPeerConnection.generateCertificate({name:'RSASSA-PKCS1-v1_5'})`)
   fails the handshake. **Not just a missing cipher-suite constant** — making
@@ -268,14 +268,14 @@ Each item:
 - **Detail:** RFC 5764 §4.1.1. `use_srtp` advertises only
   `SRTP_AES128_CM_HMAC_SHA1_80` (0x0001) even though the SRTP context supports
   0x0001/0x0002/0x0007/0x0008. Negotiation can't reach the other profiles.
-  [dart/lib/dtls/handshake.dart](dart/lib/dtls/handshake.dart),
-  [dart/lib/srtp/context.dart](dart/lib/srtp/context.dart).
+  [dart/lib/src/dtls/handshake.dart](dart/lib/src/dtls/handshake.dart),
+  [dart/lib/src/srtp/context.dart](dart/lib/src/srtp/context.dart).
 - **Why deferred:** The 80-bit profile is the common case and works.
 - **Acceptance:** Advertise the full set the SRTP layer supports; an SRTP-GCM
   interop path is exercised by a test. While here, settle the server-side
   preference-order divergence now centralized (2026-07-04) as
   `SrtpProfileNegotiation.v12Preference` (AES-CM first) vs `v13Preference`
-  (GCM first) in [dart/lib/dtls/srtp_profiles.dart](dart/lib/dtls/srtp_profiles.dart)
+  (GCM first) in [dart/lib/src/dtls/srtp_profiles.dart](dart/lib/src/dtls/srtp_profiles.dart)
   — unifying the order changes negotiation results, so it was deliberately
   left as-is by the profile-table dedup.
 
@@ -289,7 +289,7 @@ Each item:
 - **Detail:** RFC 4960 §5. `_handleData` now discards chunks received before
   the association is `established`, but the sibling handlers `_handleSack`,
   `_handleHeartbeat`, and `_handleReconfig`
-  ([dart/lib/sctp/state_machine.dart](dart/lib/sctp/state_machine.dart)) still
+  ([dart/lib/src/sctp/state_machine.dart](dart/lib/src/sctp/state_machine.dart)) still
   run in any state — e.g. a SACK in `cookieWait`/`cookieEchoed` would mutate
   `_remoteRwnd` / drain the retransmit queue before establishment. pion gates
   all of these on state. Latent (a conformant peer won't send them
@@ -312,7 +312,7 @@ Each item:
 - **Detail:** RFC 5104 §4.3.1. Every FIR uses seq number 1, so repeated FIRs are
   treated as duplicates and ignored by the receiver; should increment mod 256
   per target SSRC.
-  [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart).
+  [dart/lib/src/peer_connection/peer_connection.dart](dart/lib/src/peer_connection/peer_connection.dart).
 - **Why deferred:** Keyframe-on-demand mostly relies on PLI today.
 - **Acceptance:** Per-SSRC FIR counter incremented mod 256; a second FIR
   triggers a fresh keyframe. While here, extract the inline raw-byte FIR
@@ -325,7 +325,7 @@ Each item:
 - **Detail:** RFC 3550 §6.2 / RFC 4585 §3.5. A fixed 100 ms RR interval ignores
   the RTCP bandwidth budget (≈5 % of session bandwidth); on an audio-only Opus
   session (~32 kbps) it consumes a large fraction of the link.
-  [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart).
+  [dart/lib/src/peer_connection/peer_connection.dart](dart/lib/src/peer_connection/peer_connection.dart).
 - **Why deferred:** Works for the short-lived e2e tests; matters for real,
   bandwidth-constrained calls.
 - **Acceptance:** Implement the RFC 3550 §6.3 timing algorithm with the AVPF
@@ -336,7 +336,7 @@ Each item:
 - **Found:** 2026-05-29, RFC/W3C divergence audit. **Unverified.**
 - **Detail:** RFC 4585 §6.2.1. `RtcpNack` decodes on receive but has no
   `build()`, so webdartc can't request retransmission.
-  [dart/lib/rtp/packet.dart](dart/lib/rtp/packet.dart).
+  [dart/lib/src/rtp/packet.dart](dart/lib/src/rtp/packet.dart).
 - **Why deferred:** Loss recovery via RTX isn't wired up yet.
 - **Acceptance:** `RtcpNack.build()` produces a PT=205 FMT=1 packet with
   `(PID, BLP)` FCI entries; decoded correctly by Chrome.
@@ -368,15 +368,15 @@ Each item:
     `onIceCandidateError` (STUN gather timeout → 701, or server error code).
   - `PeerConnectionState` now starts in `newState` (the spec `new`; `new` is a
     Dart keyword so the value mirrors `IceConnectionState.iceNew`).
-  [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart),
-  [dart/lib/peer_connection/events.dart](dart/lib/peer_connection/events.dart).
+  [dart/lib/src/peer_connection/peer_connection.dart](dart/lib/src/peer_connection/peer_connection.dart),
+  [dart/lib/src/peer_connection/events.dart](dart/lib/src/peer_connection/events.dart).
 
 ### DataChannel: `binaryType` + internal send flow control
 
 - **Found:** 2026-05-29, RFC/W3C divergence audit. bufferedAmount shipped 2026-06.
 - **Detail:** W3C §6.2. `bufferedAmount` / `bufferedAmountLowThreshold` /
   `onBufferedAmountLow` and `onClosing` are now implemented
-  ([dart/lib/peer_connection/data_channel.dart](dart/lib/peer_connection/data_channel.dart));
+  ([dart/lib/src/peer_connection/data_channel.dart](dart/lib/src/peer_connection/data_channel.dart));
   `bufferedAmount` tracks un-acked application bytes, decremented from SCTP
   SACKs. Still open:
   - **`binaryType`** — a browser Blob/ArrayBuffer distinction with no Dart
@@ -386,7 +386,7 @@ Each item:
     back-pressure (a cooperating caller paces on it), but `sendData` still
     blasts every chunk to the transport immediately, ignoring the remote
     `a_rwnd` (read from SACK at
-    [state_machine.dart](dart/lib/sctp/state_machine.dart) but never
+    [state_machine.dart](dart/lib/src/sctp/state_machine.dart) but never
     enforced) and any congestion window — so a non-cooperating sender can
     still overrun a slow receiver.
 - **Acceptance:** `sendData` holds chunks when the peer's rwnd (and ideally a
@@ -408,7 +408,7 @@ Each item:
   `transactionId` is single-use and validated per spec.
   Still missing: sender `getStats`; receiver `getContributingSources` /
   `getSynchronizationSources` / `getStats`.
-  [dart/lib/peer_connection/events.dart](dart/lib/peer_connection/events.dart).
+  [dart/lib/src/peer_connection/events.dart](dart/lib/src/peer_connection/events.dart).
 - **Why deferred:** Surface-area work behind the negotiation core. The receiver
   source methods need CSRC/SSRC arrival tracking on the receive path.
 - **Acceptance:** ~~`getParameters` / `setParameters` on the sender (at least
@@ -420,7 +420,7 @@ Each item:
 - **Found:** 2026-05-29, RFC/W3C divergence audit. Partially shipped 2026-06.
 - **Detail:** W3C Media Capture §4.3. `getSettings()`, `muted`,
   `onMute`/`onUnmute`/`onEnded` are now implemented on
-  [dart/lib/media/media_stream_track.dart](dart/lib/media/media_stream_track.dart)
+  [dart/lib/src/media/media_stream_track.dart](dart/lib/src/media/media_stream_track.dart)
   (capture tracks populate `MediaTrackSettings`; `stop()` fires `onEnded`).
   Still missing: `getCapabilities()`, `getConstraints()`,
   `applyConstraints()`.
@@ -445,8 +445,8 @@ Each item:
   - `InboundRtpStats` *has* `kind`, `packetsReceived`, `bytesReceived`,
     `packetsLost` (cumulativeLost), `jitter` (jitterSeconds), `codecId` — all
     populated with real values in `getStats()`.
-  [dart/lib/api/stats.dart](dart/lib/api/stats.dart),
-  [dart/lib/peer_connection/peer_connection.dart](dart/lib/peer_connection/peer_connection.dart).
+  [dart/lib/src/api/stats.dart](dart/lib/src/api/stats.dart),
+  [dart/lib/src/peer_connection/peer_connection.dart](dart/lib/src/peer_connection/peer_connection.dart).
 - **Acceptance (met):** `remote-outbound-rtp` and the inbound fields are
   asserted on a loopback flow in
   [dart/test/api/stats_test.dart](dart/test/api/stats_test.dart) (remote-outbound
@@ -480,8 +480,8 @@ Each item:
   render plugin + visual frame display):
   - **Crypto** — initially via the platform JCA (`package:jni`), but that made
     `webdartc` require the Flutter SDK and broke the pure-Dart `dart` CI (PR #54).
-    **Reworked 2026-06-17** to BoringSSL: [boringssl_backend.dart](dart/lib/crypto/boringssl_backend.dart)
-    (shared by Linux + Android) over [openssl.dart](dart/lib/crypto/openssl.dart)'s
+    **Reworked 2026-06-17** to BoringSSL: [boringssl_backend.dart](dart/lib/src/crypto/boringssl_backend.dart)
+    (shared by Linux + Android) over [openssl.dart](dart/lib/src/crypto/openssl.dart)'s
     `@Native` bindings to the `webdartc_crypto` wrapper, which statically links
     vcpkg-built `libcrypto.a` ([dart/src/webdartc_crypto.c](dart/src/webdartc_crypto.c),
     [hook/build.dart](dart/hook/build.dart) `_buildBoringSslCrypto`). `jca.dart`,
@@ -618,15 +618,3 @@ Each item:
 - **Acceptance:** Opportunistic, method-by-method — split into phase-named
   private helpers (no behavior change) when a branch touches the file; strike
   through as they land. Not a single-PR item.
-
-### Public barrel exports internal protocol types
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [webdartc.dart](dart/lib/webdartc.dart) (~L41–66) exports
-  crypto/stun/srtp/rtp internals ("for testing / advanced use") alongside the
-  W3C surface, so protocol internals are part of the public contract.
-- **Why deferred:** Needs an API-surface decision, and is breaking for any
-  caller importing internals through the main barrel.
-- **Acceptance:** Internals move to a separate `webdartc_internal.dart` barrel
-  (or under `src/` with tests importing relatively); `webdartc.dart` keeps
-  only the W3C-facing surface.

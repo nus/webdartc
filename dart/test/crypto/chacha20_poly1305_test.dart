@@ -1,13 +1,13 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/crypto/chacha20_poly1305.dart';
 // Direct import of the pure-Dart core so we can validate the RFC 8439
 // algorithm even on Linux (where the public API is wired to OpenSSL).
-// The pure-Dart implementation lives under lib/crypto/ but is not part of
+// The pure-Dart implementation lives under lib/src/crypto/ but is not part of
 // the public surface area; we reach into it here to exercise the RFC
 // reference algorithm and the macOS code path.
-import 'package:webdartc/crypto/chacha20_poly1305_pure.dart' as pure;
+import 'package:webdartc/src/crypto/chacha20_poly1305_pure.dart' as pure;
 
 Uint8List _hex(String s) {
   final h = s.replaceAll(RegExp(r'[\s:]'), '');

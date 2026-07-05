@@ -629,7 +629,7 @@ Map<String, String> _androidLibvpxEnv(BuildInput input, Architecture arch) {
 //
 // vcpkg source-builds BoringSSL's static `libcrypto.a` per triplet; the
 // `webdartc_crypto` wrapper statically links it and exports only the `wd_*`
-// passthroughs (src/webdartc_crypto.{h,c}), which `lib/crypto/openssl.dart`
+// passthroughs (src/webdartc_crypto.{h,c}), which `lib/src/crypto/openssl.dart`
 // binds via `@Native`. Same hide-the-static-lib shape as the libvpx/libopus
 // wrappers. vcpkg is located via `VCPKG_ROOT` / PATH, else cloned + bootstrapped
 // into the shared cache (so end users need no manual vcpkg setup). Requires a C

@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
-import 'package:webdartc/rtp/jitter_buffer.dart';
-import 'package:webdartc/rtp/parser.dart';
+import 'package:webdartc/src/rtp/jitter_buffer.dart';
+import 'package:webdartc/src/rtp/parser.dart';
 import 'package:test/test.dart';
 
 RtpPacket _pkt(int seq, {int ts = 0}) => RtpPacket(

@@ -7,13 +7,13 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/core/state_machine.dart';
-import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/dtls/record.dart' show DtlsContentType;
-import 'package:webdartc/dtls/v13/endpoint.dart';
-import 'package:webdartc/dtls/v13/handshake.dart';
-import 'package:webdartc/dtls/v13/key_schedule.dart';
-import 'package:webdartc/dtls/v13/record_crypto.dart';
+import 'package:webdartc/src/core/state_machine.dart';
+import 'package:webdartc/src/crypto/ecdsa.dart';
+import 'package:webdartc/src/dtls/record.dart' show DtlsContentType;
+import 'package:webdartc/src/dtls/v13/endpoint.dart';
+import 'package:webdartc/src/dtls/v13/handshake.dart';
+import 'package:webdartc/src/dtls/v13/key_schedule.dart';
+import 'package:webdartc/src/dtls/v13/record_crypto.dart';
 
 void main() {
   group('ACK wire format', () {

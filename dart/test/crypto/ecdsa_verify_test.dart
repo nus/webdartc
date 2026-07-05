@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/crypto/ecdsa.dart';
-import 'package:webdartc/crypto/x509_der.dart';
+import 'package:webdartc/src/crypto/ecdsa.dart';
+import 'package:webdartc/src/crypto/x509_der.dart';
 
 void main() {
   group('EcdsaVerify.verifyP256Sha256', () {

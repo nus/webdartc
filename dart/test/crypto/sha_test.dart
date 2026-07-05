@@ -1,7 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/webdartc.dart';
+import 'package:webdartc/src/crypto/sha256.dart';
+import 'package:webdartc/src/crypto/sha1.dart';
 
 void main() {
   group('Sha256', () {

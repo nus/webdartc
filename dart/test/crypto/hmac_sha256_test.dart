@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/crypto/hmac_sha256.dart';
+import 'package:webdartc/src/crypto/hmac_sha256.dart';
 
 void main() {
   Uint8List bytes(List<int> v) => Uint8List.fromList(v);

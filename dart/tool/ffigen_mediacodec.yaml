@@ -23,7 +23,7 @@ description: |
   backend (H.264, VP8, Opus) — the C API is codec-agnostic (MIME-driven).
 # Paths in this config are resolved relative to the config file (tool/), so the
 # generated copy must also live in tool/ for this `output` to resolve.
-output: '../lib/codec/mediacodec/bindings.g.dart'
+output: '../lib/src/codec/mediacodec/bindings.g.dart'
 # Use the NDK's own libclang so the bionic sysroot headers (which need a
 # matching clang resource dir + __BIONIC_AVAILABILITY_GUARD) parse cleanly
 # instead of leaking the host macOS SDK.

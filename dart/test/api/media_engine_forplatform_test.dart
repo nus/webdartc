@@ -5,8 +5,8 @@
 library;
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/platform_codecs.dart';
-import 'package:webdartc/api/media_engine.dart';
+import 'package:webdartc/src/codec/platform_codecs.dart';
+import 'package:webdartc/src/api/media_engine.dart';
 
 void main() {
   tearDown(() {

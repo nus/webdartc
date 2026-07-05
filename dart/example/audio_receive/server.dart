@@ -16,7 +16,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:webdartc/media/macos/avf_audio_renderer.dart';
+import 'package:webdartc/src/media/macos/avf_audio_renderer.dart';
 import 'package:webdartc/webdartc.dart';
 
 int _port = 8080;

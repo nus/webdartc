@@ -1,5 +1,5 @@
 import 'package:test/test.dart';
-import 'package:webdartc/turn/state_machine.dart';
+import 'package:webdartc/src/turn/state_machine.dart';
 
 void main() {
   group('TurnServer.parse', () {

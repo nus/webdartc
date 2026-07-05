@@ -1,5 +1,5 @@
 import 'package:test/test.dart';
-import 'package:webdartc/rtp/receive_stats.dart';
+import 'package:webdartc/src/rtp/receive_stats.dart';
 
 void main() {
   group('RtpReceptionTracker — loss (RFC 3550 §A.3)', () {

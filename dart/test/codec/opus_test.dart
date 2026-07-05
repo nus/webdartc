@@ -4,9 +4,9 @@ library;
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/codec/audio_codec.dart';
-import 'package:webdartc/codec/opus/opus_codec.dart';
-import 'package:webdartc/media/audio_data.dart';
+import 'package:webdartc/src/codec/audio_codec.dart';
+import 'package:webdartc/src/codec/opus/opus_codec.dart';
+import 'package:webdartc/src/media/audio_data.dart';
 
 import 'opus_test_helpers.dart';
 

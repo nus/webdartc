@@ -10,7 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
-import 'package:webdartc/media/fake_video_source.dart';
+import 'package:webdartc/webdartc.dart';
 import 'package:webdartc_flutter/webdartc_flutter.dart';
 
 void main() {

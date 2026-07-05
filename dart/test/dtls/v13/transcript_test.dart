@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/crypto/sha256.dart';
-import 'package:webdartc/dtls/v13/transcript.dart';
+import 'package:webdartc/src/crypto/sha256.dart';
+import 'package:webdartc/src/dtls/v13/transcript.dart';
 
 void main() {
   Uint8List bytes(List<int> v) => Uint8List.fromList(v);

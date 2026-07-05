@@ -1,5 +1,5 @@
 import 'package:test/test.dart';
-import 'package:webdartc/dtls/v13/cipher_suite.dart';
+import 'package:webdartc/src/dtls/v13/cipher_suite.dart';
 
 void main() {
   group('TlsV13CipherSuite', () {
