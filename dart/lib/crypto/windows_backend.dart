@@ -431,13 +431,10 @@ final class WindowsEcdsaBackend implements EcdsaBackend, Finalizable {
     final pubBlob = api.exportKey(priv, blobEccPublic);
     final pubPoint = _uncompressedFromEccPublicBlob(pubBlob);
 
-    final tbs = X509Der.buildTbsCertificate(pubPoint);
-    final sigDer = _rsToDer(api.signHash(priv, Sha256.hash(tbs)));
-    final cert = X509Der.buildCertificate(tbs, sigDer);
-
-    final fp = Sha256.fingerprint(cert);
+    final cert = X509Der.buildSelfSignedCert(
+        pubPoint, (tbs) => _rsToDer(api.signHash(priv, Sha256.hash(tbs))));
     return WindowsEcdsaBackend._(
-        derBytes: cert, sha256Fingerprint: fp, priv: priv);
+        derBytes: cert.der, sha256Fingerprint: cert.sha256Fingerprint, priv: priv);
   }
 
   @override

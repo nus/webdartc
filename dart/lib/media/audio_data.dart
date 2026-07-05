@@ -33,6 +33,19 @@ final class AudioData {
     required this.data,
   });
 
+  /// Silence with the same shape as [src] — identical format, rate, layout
+  /// and timestamp with zeroed samples. What a disabled audio track emits
+  /// in place of its frames (W3C: silence, not gaps) so downstream
+  /// packetizers/playout keep their cadence.
+  factory AudioData.silenceLike(AudioData src) => AudioData(
+        format: src.format,
+        sampleRate: src.sampleRate,
+        numberOfChannels: src.numberOfChannels,
+        numberOfFrames: src.numberOfFrames,
+        timestamp: src.timestamp,
+        data: Uint8List(src.data.length),
+      );
+
   /// Copy sample data to a new buffer.
   Uint8List copyTo() => Uint8List.fromList(data);
 

@@ -592,101 +592,17 @@ Each item:
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
 
-### Media layer: track-class duplication
+### SdpParser.parse returns Result but has no Err path
 
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** `ReceiverTrack` and `_AvfCaptureTrack` duplicate the
-  id/enabled/broadcast-controller/`stop()` base and the "same-shape silence
-  when disabled" audio logic
-  ([receiver_track.dart](dart/lib/media/receiver_track.dart#L138),
-  [avf_capture_track.dart](dart/lib/media/macos/avf_capture_track.dart#L207)).
-  A future W3C send path will need a third, source-side track class — extract
-  the common base first so it lands on top instead of as another copy.
-- **Why deferred:** Small today (two copies); becomes three the moment a send
-  path lands, so fix it before or with that work.
-- **Acceptance:** A common stream-backed track base class;
-  `AudioData.silenceLike(src)` replaces the inline silence builders.
-
-### Duplicate small utilities → lib/core
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** Three utilities are re-implemented across modules:
-  - **Exponential backoff** (`base * 2^n`, clamped): ICE, DTLS 1.2, v13
-    client, v13 server, SCTP (T3-rtx) — 5 sites.
-  - **hex encoding** (`toRadixString(16).padLeft(2,'0')` join, with
-    case/separator variants): 10+ sites across crypto/ice/pc/transport.
-  - **Constant-time byte compare:** srtp/context (×2 identical),
-    macos_backend, windows_backend, vt_helper `_bytesEqual`.
-- **Why deferred:** Trivial individually; batched here so they land as one
-  sweep.
-- **Acceptance:** `ExponentialBackoff`, `hex()`, and `constantTimeEquals()`
-  defined once (core / crypto) and all call sites converted.
-
-### SRTP context: cipher-path duplication
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [srtp/context.dart](dart/lib/srtp/context.dart): four IV
-  builders (`_computeIv`/`_computeRtcpIv`/`_computeGcmRtpIv`/`_computeGcmRtcpIv`)
-  share one skeleton (copy salt → XOR SSRC → XOR index, offsets differ);
-  GCM-vs-CM branching and the `authTagLen = …? 10 : 4` ternary repeat across
-  all four encrypt/decrypt methods.
-- **Why deferred:** Crypto code — wants the fuzz/vector tests run per step.
-- **Acceptance:** `_isGcm`/tag-length as profile-derived getters, one
-  XOR-salt IV helper (or a per-profile cipher strategy object); adding a new
-  profile touches one place.
-
-### SDP parser/builder cleanups
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [sdp/parser.dart](dart/lib/sdp/parser.dart):
-  (a) the transport-attrs map + session-header block is copy-pasted across
-  `buildDataChannelSdp` / `buildMediaSdp` / `buildAnswerFromOffer` (×2);
-  (b) `buildAnswerFromOffer` is ~160 lines; (c) session/media attribute
-  dispatch is duplicated in the parse loop (~L51–86); (d) `SdpParser.parse`
-  returns `Result` but has no `Err` path — broken input parses as `Ok`
-  (a decision-shaped contract fix, shippable separately from the dedup items).
-- **Why deferred:** Builder output must stay byte-compatible for e2e interop.
-- **Acceptance:** Shared `_baseTransportAttrs`/`_wrapSession` helpers; answer
-  builder split by media kind; `parse` either validates (missing `v=`/`m=` →
-  `Err`) or drops the `Result` wrapper.
-
-### DTLS v1.2 SM hand-parses extension blocks v13/handshake.dart covers
-
-- **Found:** 2026-07-03, refactoring audit (v13-client half shipped 2026-07-04
-  with the v13 client/server merge — ClientHello builders now live in
-  [v13/handshake.dart](dart/lib/dtls/v13/handshake.dart))
-- **Detail:** The v1.2 SM hand-parses extension blocks that
-  `parseTlsExtensionsBlock` / `parseUseSrtpExtData` already cover.
-- **Why deferred:** Touches v1.2 SRTP-profile selection code, which also has
-  the preference-order divergence tracked in "SRTP profile tables defined
-  thrice" — coordinate with that entry.
-- **Acceptance:** v1.2 reuses the shared extension parser at least for
-  use_srtp.
-
-### STUN transaction bookkeeping duplicated between ICE and TURN
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** ICE keys txIds as hex (`_txIdString`,
-  [ice/state_machine.dart](dart/lib/ice/state_machine.dart) ~L1200) while TURN
-  uses `String.fromCharCodes` (`_txIdKey`); both keep the same
-  "pending request with sentAt + retransmit budget/TTL pruning" table shape
-  (`_PendingCheck`/`_StunServerRequest` vs `_PendingRequest`).
-- **Why deferred:** Behavior-neutral consolidation, but touches two FSMs.
-- **Acceptance:** A `StunTransactionTable` in `lib/stun/` (txId normalization,
-  sentAt, pruning) used by both. (`StunMessageBuilder` is already shared —
-  only the pending-table is missing.)
-
-### ECDSA self-signed cert sequence duplicated across 3 crypto backends
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** `buildTbsCertificate → sign → buildCertificate → fingerprint`
-  appears in [macos_backend.dart](dart/lib/crypto/macos_backend.dart) (~L351),
-  [windows_backend.dart](dart/lib/crypto/windows_backend.dart) (~L434),
-  [boringssl_backend.dart](dart/lib/crypto/boringssl_backend.dart) (~L342);
-  only the TBS-signing step differs.
-- **Why deferred:** Small; batch with other crypto cleanups.
-- **Acceptance:** `X509Der.buildSelfSignedCert(pub, signTbs)` takes a signing
-  closure; backends shrink to one call each.
+- **Found:** 2026-07-03, refactoring audit (remainder of "SDP parser/builder
+  cleanups" — the dedup items (a)–(c) shipped 2026-07-05 with snapshot tests)
+- **Detail:** `SdpParser.parse` returns `Result` but never `Err` — broken
+  input parses as `Ok`. Decision-shaped contract fix: either validate
+  (missing `v=`/`m=` → `Err`) or drop the `Result` wrapper. Needs an owner
+  decision on which contract the callers want.
+- **Why deferred:** API-contract decision, shippable separately.
+- **Acceptance:** `parse` validates or loses the `Result` wrapper; callers
+  updated accordingly.
 
 ### Over-long methods (>80 lines) to split
 

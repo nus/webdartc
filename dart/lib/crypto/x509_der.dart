@@ -2,10 +2,24 @@
 import 'dart:typed_data';
 
 import 'csprng.dart';
+import 'sha256.dart';
 
 /// Minimal DER encoding for self-signed X.509 certificates.
 abstract final class X509Der {
   X509Der._();
+
+  /// Build a self-signed EC P-256 certificate: TBS from [pubKeyBytes],
+  /// ECDSA-SHA256 signature via the backend-supplied [signTbs] closure
+  /// (DER-encoded signature over the TBS bytes), plus the RFC 8122
+  /// fingerprint of the resulting DER.
+  static ({Uint8List der, String sha256Fingerprint}) buildSelfSignedCert(
+    Uint8List pubKeyBytes,
+    Uint8List Function(Uint8List tbs) signTbs,
+  ) {
+    final tbs = buildTbsCertificate(pubKeyBytes);
+    final cert = buildCertificate(tbs, signTbs(tbs));
+    return (der: cert, sha256Fingerprint: Sha256.fingerprint(cert));
+  }
 
   /// Build a TBSCertificate with EC P-256 public key.
   static Uint8List buildTbsCertificate(Uint8List pubKeyBytes) {

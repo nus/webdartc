@@ -48,41 +48,31 @@ abstract final class SdpParser {
       final type = line[0];
       final value = line.substring(2);
 
-      if (currentMedia == null) {
-        // Session level
-        switch (type) {
-          case 'o':
-            origin = 'o=$value';
-          case 's':
-            sessionName = value;
-          case 'a':
-            final kv = _parseAttr(value);
+      // One dispatch for both levels: `m=` always opens a new media
+      // section; `o=`/`s=` only count at session level; `a=` lands in the
+      // session or current-media attribute set.
+      switch (type) {
+        case 'm':
+          flushMedia();
+          currentMedia = _parseMediaLine(value);
+          currentAttrs = {};
+          currentAllAttrs = [];
+          currentCandidates = [];
+        case 'o' when currentMedia == null:
+          origin = 'o=$value';
+        case 's' when currentMedia == null:
+          sessionName = value;
+        case 'a':
+          final kv = _parseAttr(value);
+          if (currentMedia == null) {
             sessionAttrs[kv.$1] = kv.$2;
-          case 'm':
-            flushMedia();
-            currentMedia = _parseMediaLine(value);
-            currentAttrs = {};
-            currentAllAttrs = [];
-            currentCandidates = [];
-        }
-      } else {
-        switch (type) {
-          case 'm':
-            flushMedia();
-            currentMedia = _parseMediaLine(value);
-            currentAttrs = {};
-            currentAllAttrs = [];
-            currentCandidates = [];
-          case 'a':
-            final kv = _parseAttr(value);
-            if (kv.$1 == 'candidate') {
-              final cand = _parseCandidate(kv.$2);
-              if (cand != null) currentCandidates.add(cand);
-            } else {
-              currentAttrs![kv.$1] = kv.$2;
-              currentAllAttrs!.add(kv);
-            }
-        }
+          } else if (kv.$1 == 'candidate') {
+            final cand = _parseCandidate(kv.$2);
+            if (cand != null) currentCandidates.add(cand);
+          } else {
+            currentAttrs![kv.$1] = kv.$2;
+            currentAllAttrs!.add(kv);
+          }
       }
     }
     flushMedia();
@@ -181,6 +171,45 @@ abstract final class SdpParser {
 abstract final class SdpBuilder {
   SdpBuilder._();
 
+
+  /// The per-m-line transport attribute block every builder repeats —
+  /// mid, ICE credentials, DTLS fingerprint and role — in the emission
+  /// order the snapshot tests pin down.
+  static Map<String, String> _baseTransportAttrs({
+    required String mid,
+    required String ufrag,
+    required String password,
+    required String fingerprint,
+    required String setup,
+  }) =>
+      {
+        'mid': mid,
+        'ice-ufrag': ufrag,
+        'ice-pwd': password,
+        'ice-options': 'trickle',
+        'fingerprint': 'sha-256 $fingerprint',
+        'setup': setup,
+      };
+
+  /// Wrap built m-lines in the standard JSEP session header (v/o/s/t plus
+  /// BUNDLE group and WMS semantic).
+  static SdpSessionDescription _wrapSession({
+    required List<SdpMediaDescription> media,
+    required String bundleMids,
+  }) =>
+      SdpSessionDescription(
+        origin:
+            'o=- ${DateTime.now().millisecondsSinceEpoch} 2 IN IP4 127.0.0.1',
+        sessionName: '-',
+        media: media,
+        sessionAttributes: {
+          'group': 'BUNDLE $bundleMids',
+          'extmap-allow-mixed': '',
+          'msid-semantic': ' WMS',
+        },
+      );
+
+
   /// Build an SDP offer/answer for a data channel session. Pass `null`
   /// for [localIp]/[localPort] to skip the inline host candidate (used
   /// when `IceTransportPolicy.relay` is in effect — relay candidates
@@ -195,17 +224,15 @@ abstract final class SdpBuilder {
     int? localPort,
     String mid = '0',
   }) {
-    final setup = isOffer ? 'actpass' : 'active';
-    final attrs = <String, String>{
-      'mid': mid,
-      'ice-ufrag': ufrag,
-      'ice-pwd': password,
-      'ice-options': 'trickle',
-      'fingerprint': 'sha-256 $fingerprint',
-      'setup': setup,
-      'sctp-port': '$sctpPort',
-      'max-message-size': '262144',
-    };
+    final attrs = _baseTransportAttrs(
+      mid: mid,
+      ufrag: ufrag,
+      password: password,
+      fingerprint: fingerprint,
+      setup: isOffer ? 'actpass' : 'active',
+    )
+      ..['sctp-port'] = '$sctpPort'
+      ..['max-message-size'] = '262144';
 
     final candidates = <IceCandidate>[];
     if (localIp != null && localPort != null) {
@@ -221,16 +248,7 @@ abstract final class SdpBuilder {
       candidates: candidates,
     );
 
-    return SdpSessionDescription(
-      origin: 'o=- ${DateTime.now().millisecondsSinceEpoch} 2 IN IP4 127.0.0.1',
-      sessionName: '-',
-      media: [media],
-      sessionAttributes: {
-        'group': 'BUNDLE $mid',
-        'extmap-allow-mixed': '',
-        'msid-semantic': ' WMS',
-      },
-    );
+    return _wrapSession(media: [media], bundleMids: mid);
   }
 
   /// Build an SDP offer/answer for an audio/video session.
@@ -250,16 +268,15 @@ abstract final class SdpBuilder {
     for (var i = 0; i < tracks.length; i++) {
       final track = tracks[i];
       final trackMid = i == 0 ? mid : '$i';
-      final attrs = <String, String>{
-        'mid': trackMid,
-        'ice-ufrag': ufrag,
-        'ice-pwd': password,
-        'ice-options': 'trickle',
-        'fingerprint': 'sha-256 $fingerprint',
-        'setup': setup,
-        track.direction: '',
-        'rtcp-mux': '',
-      };
+      final attrs = _baseTransportAttrs(
+        mid: trackMid,
+        ufrag: ufrag,
+        password: password,
+        fingerprint: fingerprint,
+        setup: setup,
+      )
+        ..[track.direction] = ''
+        ..['rtcp-mux'] = '';
 
       // Build rtpmap / fmtp as rawAttributes (multiple lines allowed)
       final rawAttrs = <String>[];
@@ -300,15 +317,10 @@ abstract final class SdpBuilder {
       ));
     }
 
-    return SdpSessionDescription(
-      origin: 'o=- ${DateTime.now().millisecondsSinceEpoch} 2 IN IP4 127.0.0.1',
-      sessionName: '-',
+    return _wrapSession(
       media: mediaDescriptions,
-      sessionAttributes: {
-        'group': 'BUNDLE ${tracks.asMap().keys.map((i) => i == 0 ? mid : '$i').join(' ')}',
-        'extmap-allow-mixed': '',
-        'msid-semantic': ' WMS',
-      },
+      bundleMids:
+          tracks.asMap().keys.map((i) => i == 0 ? mid : '$i').join(' '),
     );
   }
 
@@ -336,148 +348,185 @@ abstract final class SdpBuilder {
     for (final rm in remoteOffer.media) {
       final remoteMid = rm.mid ?? '${mediaDescriptions.length}';
       mids.add(remoteMid);
+      final setup = _answerSetup(rm, remoteOffer);
+      mediaDescriptions.add(rm.type == 'application'
+          ? _answerDataChannelMedia(
+              rm,
+              mid: remoteMid,
+              ufrag: ufrag,
+              password: password,
+              fingerprint: fingerprint,
+              setup: setup,
+              hostCandidates: hostCandidates,
+            )
+          : _answerAvMedia(
+              rm,
+              mid: remoteMid,
+              mediaIndex: mediaDescriptions.length,
+              ufrag: ufrag,
+              password: password,
+              fingerprint: fingerprint,
+              setup: setup,
+              supported: rm.type == 'audio'
+                  ? supportedAudioCodecs
+                  : supportedVideoCodecs,
+              localSenderSsrc: localSenderSsrcs[rm.type],
+              hostCandidates: hostCandidates,
+            ));
+    }
 
-      if (rm.type == 'application') {
-        // Data channel — accept as-is
-        final attrs = <String, String>{
-          'mid': remoteMid,
-          'ice-ufrag': ufrag,
-          'ice-pwd': password,
-          'ice-options': 'trickle',
-          'fingerprint': 'sha-256 $fingerprint',
-          'setup': _answerSetup(rm, remoteOffer),
-          'sctp-port': rm.sctpPort ?? '5000',
-          'max-message-size': '262144',
-        };
-        mediaDescriptions.add(SdpMediaDescription(
-          type: 'application',
-          port: 9,
-          proto: rm.proto,
-          formats: rm.formats,
-          attributes: attrs,
-          candidates: hostCandidates,
-        ));
-      } else {
-        // Audio or video — select supported codecs from offer
-        final supported = rm.type == 'audio'
-            ? supportedAudioCodecs
-            : supportedVideoCodecs;
+    // Mirror the BUNDLE group from the offer.
+    return _wrapSession(media: mediaDescriptions, bundleMids: mids.join(' '));
+  }
 
-        // Parse rtpmap lines from the offer to find matching codecs
-        final rtpmaps = rm.getAll('rtpmap');
-        final selectedFormats = <String>[];
-        final rawAttrs = <String>[];
+  /// Answer m-line for a data-channel offer — accepted as-is.
+  static SdpMediaDescription _answerDataChannelMedia(
+    SdpMediaDescription rm, {
+    required String mid,
+    required String ufrag,
+    required String password,
+    required String fingerprint,
+    required String setup,
+    required List<IceCandidate> hostCandidates,
+  }) {
+    final attrs = _baseTransportAttrs(
+      mid: mid,
+      ufrag: ufrag,
+      password: password,
+      fingerprint: fingerprint,
+      setup: setup,
+    )
+      ..['sctp-port'] = rm.sctpPort ?? '5000'
+      ..['max-message-size'] = '262144';
+    return SdpMediaDescription(
+      type: 'application',
+      port: 9,
+      proto: rm.proto,
+      formats: rm.formats,
+      attributes: attrs,
+      candidates: hostCandidates,
+    );
+  }
 
-        final fmtpByPt = rm.fmtpByPayloadType();
-        for (final rtpmap in rtpmaps) {
-          // rtpmap value: "PT codec/clockRate[/channels]"
-          final spaceIdx = rtpmap.indexOf(' ');
-          if (spaceIdx < 0) continue;
-          final pt = rtpmap.substring(0, spaceIdx);
-          final codecInfo = rtpmap.substring(spaceIdx + 1);
-          final codecName = codecInfo.split('/').first;
+  /// Answer m-line for an audio/video offer: select the codecs we support,
+  /// mirror extmaps, reverse the direction (downgrading when we have no
+  /// local sender), and signal our sender SSRC. Produces a rejected
+  /// (port 0) m-line when no offered codec is supported.
+  static SdpMediaDescription _answerAvMedia(
+    SdpMediaDescription rm, {
+    required String mid,
+    required int mediaIndex,
+    required String ufrag,
+    required String password,
+    required String fingerprint,
+    required String setup,
+    required List<String> supported,
+    required int? localSenderSsrc,
+    required List<IceCandidate> hostCandidates,
+  }) {
+    final (selectedFormats, rawAttrs) = _selectAnswerCodecs(rm, supported);
 
-          // Case-insensitive match, canonical write-back: `supported`
-          // carries the IANA-canonical spelling (`'VP8'`, `'opus'`)
-          // from MediaEngine, so a non-conforming offer like `vp8` is
-          // answered with `VP8`. Matches libwebrtc / Pion / aiortc /
-          // Firefox behaviour. The `isNotEmpty` gate doubles as a
-          // codecName-empty filter (malformed rtpmap "PT /...") since
-          // an empty needle can't match any non-empty `supported`
-          // entry.
-          final canonical = supported.firstWhere(
-            (s) => s.toLowerCase() == codecName.toLowerCase(),
-            orElse: () => '',
-          );
-          if (canonical.isNotEmpty) {
-            selectedFormats.add(pt);
-            final tail = codecInfo.substring(codecName.length);
-            rawAttrs.add('rtpmap:$pt $canonical$tail');
-            final ptInt = int.tryParse(pt);
-            final fmtp = ptInt == null ? null : fmtpByPt[ptInt];
-            if (fmtp != null) rawAttrs.add('fmtp:$pt $fmtp');
-            // Copy rtcp-fb for this PT (including transport-cc).
-            for (final fb in rm.getAll('rtcp-fb')) {
-              if (fb.startsWith('$pt ')) {
-                rawAttrs.add('rtcp-fb:$fb');
-              }
-            }
-          }
-        }
+    if (selectedFormats.isEmpty) {
+      // Reject this m-line (port=0)
+      return SdpMediaDescription(
+        type: rm.type,
+        port: 0,
+        proto: rm.proto,
+        formats: rm.formats,
+      );
+    }
 
-        // Copy extmap lines from offer (including transport-wide-cc).
-        for (final extmap in rm.getAll('extmap')) {
-          rawAttrs.add('extmap:$extmap');
-        }
-
-        if (selectedFormats.isEmpty) {
-          // Reject this m-line (port=0)
-          mediaDescriptions.add(SdpMediaDescription(
-            type: rm.type,
-            port: 0,
-            proto: rm.proto,
-            formats: rm.formats,
-          ));
-          continue;
-        }
-
-        // Reverse direction; then downgrade if we have no sender for this
-        // kind. Telling the remote `sendrecv` while we never produce RTP
-        // confuses Chrome enough to stop routing its own media over the
-        // same BUNDLE.
-        var answerDir = _reverseDirection(rm.direction);
-        final hasLocalSender = localSenderSsrcs.containsKey(rm.type);
-        if (!hasLocalSender) {
-          if (answerDir == 'sendrecv') {
-            answerDir = 'recvonly';
-          } else if (answerDir == 'sendonly') {
-            answerDir = 'inactive';
-          }
-        }
-
-        final attrs = <String, String>{
-          'mid': remoteMid,
-          'ice-ufrag': ufrag,
-          'ice-pwd': password,
-          'ice-options': 'trickle',
-          'fingerprint': 'sha-256 $fingerprint',
-          'setup': _answerSetup(rm, remoteOffer),
-          answerDir: '',
-          'rtcp-mux': '',
-        };
-
-        final ssrc = localSenderSsrcs[rm.type];
-        if (ssrc != null) {
-          final mediaIdx = mediaDescriptions.length;
-          rawAttrs.add('ssrc:$ssrc cname:webdartc');
-          rawAttrs.add('ssrc:$ssrc msid:webdartc-stream webdartc-track-$mediaIdx');
-        }
-
-        mediaDescriptions.add(SdpMediaDescription(
-          type: rm.type,
-          port: 9,
-          proto: rm.proto,
-          formats: selectedFormats,
-          attributes: attrs,
-          allAttributes: _allAttrsFrom(attrs, rawAttrs),
-          rawAttributes: rawAttrs,
-          candidates: hostCandidates,
-        ));
+    // Reverse direction; then downgrade if we have no sender for this
+    // kind. Telling the remote `sendrecv` while we never produce RTP
+    // confuses Chrome enough to stop routing its own media over the
+    // same BUNDLE.
+    var answerDir = _reverseDirection(rm.direction);
+    if (localSenderSsrc == null) {
+      if (answerDir == 'sendrecv') {
+        answerDir = 'recvonly';
+      } else if (answerDir == 'sendonly') {
+        answerDir = 'inactive';
       }
     }
 
-    // Mirror the BUNDLE group from the offer
-    final bundleGroup = mids.join(' ');
-    return SdpSessionDescription(
-      origin: 'o=- ${DateTime.now().millisecondsSinceEpoch} 2 IN IP4 127.0.0.1',
-      sessionName: '-',
-      media: mediaDescriptions,
-      sessionAttributes: {
-        'group': 'BUNDLE $bundleGroup',
-        'extmap-allow-mixed': '',
-        'msid-semantic': ' WMS',
-      },
+    final attrs = _baseTransportAttrs(
+      mid: mid,
+      ufrag: ufrag,
+      password: password,
+      fingerprint: fingerprint,
+      setup: setup,
+    )
+      ..[answerDir] = ''
+      ..['rtcp-mux'] = '';
+
+    if (localSenderSsrc != null) {
+      rawAttrs.add('ssrc:$localSenderSsrc cname:webdartc');
+      rawAttrs.add(
+          'ssrc:$localSenderSsrc msid:webdartc-stream webdartc-track-$mediaIndex');
+    }
+
+    return SdpMediaDescription(
+      type: rm.type,
+      port: 9,
+      proto: rm.proto,
+      formats: selectedFormats,
+      attributes: attrs,
+      allAttributes: _allAttrsFrom(attrs, rawAttrs),
+      rawAttributes: rawAttrs,
+      candidates: hostCandidates,
     );
+  }
+
+  /// Selected payload types plus the rtpmap/fmtp/rtcp-fb/extmap attribute
+  /// lines answering [rm] with the codecs in [supported].
+  static (List<String>, List<String>) _selectAnswerCodecs(
+      SdpMediaDescription rm, List<String> supported) {
+    final selectedFormats = <String>[];
+    final rawAttrs = <String>[];
+
+    final fmtpByPt = rm.fmtpByPayloadType();
+    for (final rtpmap in rm.getAll('rtpmap')) {
+      // rtpmap value: "PT codec/clockRate[/channels]"
+      final spaceIdx = rtpmap.indexOf(' ');
+      if (spaceIdx < 0) continue;
+      final pt = rtpmap.substring(0, spaceIdx);
+      final codecInfo = rtpmap.substring(spaceIdx + 1);
+      final codecName = codecInfo.split('/').first;
+
+      // Case-insensitive match, canonical write-back: `supported`
+      // carries the IANA-canonical spelling (`'VP8'`, `'opus'`)
+      // from MediaEngine, so a non-conforming offer like `vp8` is
+      // answered with `VP8`. Matches libwebrtc / Pion / aiortc /
+      // Firefox behaviour. The `isNotEmpty` gate doubles as a
+      // codecName-empty filter (malformed rtpmap "PT /...") since
+      // an empty needle can't match any non-empty `supported`
+      // entry.
+      final canonical = supported.firstWhere(
+        (s) => s.toLowerCase() == codecName.toLowerCase(),
+        orElse: () => '',
+      );
+      if (canonical.isNotEmpty) {
+        selectedFormats.add(pt);
+        final tail = codecInfo.substring(codecName.length);
+        rawAttrs.add('rtpmap:$pt $canonical$tail');
+        final ptInt = int.tryParse(pt);
+        final fmtp = ptInt == null ? null : fmtpByPt[ptInt];
+        if (fmtp != null) rawAttrs.add('fmtp:$pt $fmtp');
+        // Copy rtcp-fb for this PT (including transport-cc).
+        for (final fb in rm.getAll('rtcp-fb')) {
+          if (fb.startsWith('$pt ')) {
+            rawAttrs.add('rtcp-fb:$fb');
+          }
+        }
+      }
+    }
+
+    // Copy extmap lines from offer (including transport-wide-cc).
+    for (final extmap in rm.getAll('extmap')) {
+      rawAttrs.add('extmap:$extmap');
+    }
+
+    return (selectedFormats, rawAttrs);
   }
 
   /// Mirror what SdpParser would produce when round-tripping

@@ -7,7 +7,6 @@
 library;
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import '../../crypto/csprng.dart';
 import '../audio_data.dart';
@@ -15,23 +14,14 @@ import '../media_stream_track.dart';
 import '../video_frame.dart';
 import 'avf_media.dart';
 
-abstract base class _AvfCaptureTrack<TEvent> extends MediaStreamTrack {
-  final String _id;
-  final String _label;
+abstract base class _AvfCaptureTrack<TEvent> extends StreamBackedTrack<TEvent> {
   final Duration _pollInterval;
   final MediaTrackSettings _settings;
-  bool _enabled = true;
-  // Eagerly constructed so the `close_sinks` lint can trace the
-  // controller's lifetime through [stop]. Polling starts when a listener
-  // attaches (onListen) and ends when the last one detaches.
-  late final StreamController<TEvent> _events =
-      StreamController<TEvent>.broadcast(
-    onListen: _ensureTimer,
-    onCancel: _maybeStopTimer,
-  );
   Timer? _timer;
 
-  _AvfCaptureTrack(this._id, this._label, this._pollInterval, this._settings);
+  _AvfCaptureTrack(
+      String id, String label, this._pollInterval, this._settings)
+      : super(id: id, label: label);
 
   @override
   MediaTrackSettings getSettings() => _settings;
@@ -44,49 +34,31 @@ abstract base class _AvfCaptureTrack<TEvent> extends MediaStreamTrack {
   void _disposeNativeCapture();
 
   @override
-  String get id => _id;
-
-  @override
-  String get label => _label;
-
-  @override
-  bool get enabled => _enabled;
-
-  @override
-  set enabled(bool value) => _enabled = value;
-
-  @override
-  MediaStreamTrackState get readyState => _events.isClosed
-      ? MediaStreamTrackState.ended
-      : MediaStreamTrackState.live;
-
-  @override
   MediaStreamTrack clone() =>
       throw UnsupportedError('AvfCaptureTrack.clone is not implemented');
 
+  // Polling starts when a listener attaches and ends when the last one
+  // detaches.
   @override
-  void stop() {
-    if (_events.isClosed) return;
-    _timer?.cancel();
-    _timer = null;
-    _disposeNativeCapture();
-    unawaited(_events.close());
-    notifyEnded();
-  }
-
-  void _ensureTimer() {
+  void onFirstListener() {
     _timer ??= Timer.periodic(_pollInterval, (_) => _drain());
   }
 
-  void _maybeStopTimer() {
-    if (!_events.hasListener) {
-      _timer?.cancel();
-      _timer = null;
-    }
+  @override
+  void onLastListenerGone() {
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  @override
+  void onStop() {
+    _timer?.cancel();
+    _timer = null;
+    _disposeNativeCapture();
   }
 
   void _drain() {
-    if (_events.isClosed) return;
+    if (events.isClosed) return;
     while (_drainOne()) {}
   }
 }
@@ -130,7 +102,7 @@ final class AvfCaptureVideoTrack extends _AvfCaptureTrack<VideoFrame> {
   String get kind => 'video';
 
   @override
-  Stream<VideoFrame> get onVideoFrame => _events.stream;
+  Stream<VideoFrame> get onVideoFrame => events.stream;
 
   @override
   Stream<AudioData> get onAudioData =>
@@ -140,8 +112,8 @@ final class AvfCaptureVideoTrack extends _AvfCaptureTrack<VideoFrame> {
   bool _drainOne() {
     final frame = _capture.popFrame();
     if (frame == null) return false;
-    if (_enabled) {
-      _events.add(VideoFrame(
+    if (enabled) {
+      events.add(VideoFrame(
         format: VideoPixelFormat.i420,
         codedWidth: frame.width,
         codedHeight: frame.height,
@@ -192,7 +164,7 @@ final class AvfCaptureAudioTrack extends _AvfCaptureTrack<AudioData> {
   String get kind => 'audio';
 
   @override
-  Stream<AudioData> get onAudioData => _events.stream;
+  Stream<AudioData> get onAudioData => events.stream;
 
   @override
   Stream<VideoFrame> get onVideoFrame =>
@@ -202,17 +174,17 @@ final class AvfCaptureAudioTrack extends _AvfCaptureTrack<AudioData> {
   bool _drainOne() {
     final frame = _capture.popFrame();
     if (frame == null) return false;
-    // W3C: when disabled, audio tracks emit silent frames (not gaps) so
-    // downstream packetisers keep their cadence.
-    final data = _enabled ? frame.data : Uint8List(frame.data.length);
-    _events.add(AudioData(
+    final audio = AudioData(
       format: AudioSampleFormat.s16,
       sampleRate: frame.sampleRate,
       numberOfChannels: frame.channels,
       numberOfFrames: frame.numFrames,
       timestamp: frame.ptsUs,
-      data: data,
-    ));
+      data: frame.data,
+    );
+    // W3C: when disabled, audio tracks emit silent frames (not gaps) so
+    // downstream packetisers keep their cadence.
+    events.add(enabled ? audio : AudioData.silenceLike(audio));
     return true;
   }
 

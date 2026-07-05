@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as pkg_crypto;
 
+import 'constant_time.dart';
+
 /// HMAC-SHA256 using package:crypto.
 ///
 /// Used for TLS 1.3 Finished verify_data
@@ -20,12 +22,6 @@ abstract final class HmacSha256 {
 
   /// Constant-time comparison of an HMAC tag.
   static bool verify(Uint8List key, Uint8List data, Uint8List mac) {
-    final expected = compute(key, data);
-    if (expected.length != mac.length) return false;
-    var diff = 0;
-    for (var i = 0; i < expected.length; i++) {
-      diff |= expected[i] ^ mac[i];
-    }
-    return diff == 0;
+    return constantTimeEquals(compute(key, data), mac);
   }
 }

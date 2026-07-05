@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../core/backoff.dart';
 import '../core/byte_io.dart';
 import '../core/log.dart';
 import '../core/state_machine.dart';
@@ -88,6 +89,9 @@ final class SctpStateMachine implements ProtocolStateMachine {
   static const int _t3RtxMs = 3000;
   // RFC 4960 §8.1: Association.Max.Retrans default = 10
   static const int _maxRetransmit = 10;
+  // T3-rtx backoff: base RTO * 2^count, capped at 60s (RFC 4960 §6.3.1)
+  static const _t3RtxBackoff =
+      ExponentialBackoff(baseMs: _t3RtxMs, maxMs: 60000);
 
   // Remote address
   IpAddress _remoteIp = IpAddress.parse('0.0.0.0');
@@ -740,8 +744,8 @@ final class SctpStateMachine implements ProtocolStateMachine {
   }
 
   Timeout _reconfigTimeout(int retransmitCount) => Timeout(
-        at: DateTime.now().add(Duration(
-            milliseconds: (_t3RtxMs * (1 << retransmitCount)).clamp(0, 60000))),
+        at: DateTime.now().add(
+            Duration(milliseconds: _t3RtxBackoff.delayMs(retransmitCount))),
         token: SctpReconfigToken(),
       );
 
@@ -901,7 +905,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
       packets.add(_buildPacket([chunk]));
     }
     // Exponential backoff per RFC 4960 §6.3.3: double RTO each retry, cap 60s
-    final delayMs = (_t3RtxMs * (1 << _retransmitCount)).clamp(0, 60000);
+    final delayMs = _t3RtxBackoff.delayMs(_retransmitCount);
     final timeout = Timeout(
       at: DateTime.now().add(Duration(milliseconds: delayMs)),
       token: SctpT3RtxToken(firstTsn ?? tsn),

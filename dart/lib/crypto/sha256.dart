@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as pkg_crypto;
 
+import '../core/hex.dart';
+
 /// SHA-256 using package:crypto.
 abstract final class Sha256 {
   Sha256._();
@@ -14,16 +16,11 @@ abstract final class Sha256 {
   }
 
   /// Returns a lowercase hex string of the SHA-256 digest.
-  static String hashHex(Uint8List data) {
-    return hash(data).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-  }
+  static String hashHex(Uint8List data) => hex(hash(data));
 
   /// Uppercase, colon-separated hex of the SHA-256 digest — the format DTLS
   /// uses for certificate fingerprints (`a=fingerprint`, RFC 8122). Every
   /// ECDSA backend reports its self-signed cert fingerprint this way.
-  static String fingerprint(Uint8List data) {
-    return hash(data)
-        .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
-        .join(':');
-  }
+  static String fingerprint(Uint8List data) =>
+      hex(hash(data), separator: ':', upperCase: true);
 }

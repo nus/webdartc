@@ -640,7 +640,7 @@ final class DtlsV13ClientStateMachine extends DtlsV13Endpoint {
         const core.CryptoError('DTLS 1.3: server Finished wrong length'),
       );
     }
-    if (!DtlsV13Endpoint._constantTimeEquals(expected, body)) {
+    if (!constantTimeEquals(expected, body)) {
       return core.Err(
         const core.CryptoError('DTLS 1.3: server Finished verify_data mismatch'),
       );

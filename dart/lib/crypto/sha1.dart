@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as pkg_crypto;
 
+import '../core/hex.dart';
+
 /// SHA-1 using package:crypto.
 abstract final class Sha1 {
   Sha1._();
@@ -13,7 +15,5 @@ abstract final class Sha1 {
     return Uint8List.fromList(digest.bytes);
   }
 
-  static String hashHex(Uint8List data) {
-    return hash(data).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-  }
+  static String hashHex(Uint8List data) => hex(hash(data));
 }

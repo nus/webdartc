@@ -1,9 +1,11 @@
 import 'dart:collection';
 import 'dart:typed_data';
 
+import '../core/backoff.dart';
 import '../core/state_machine.dart';
 import '../crypto/csprng.dart';
 import '../stun/builder.dart';
+import '../stun/transaction_table.dart';
 import '../stun/message.dart';
 import '../stun/parser.dart';
 import 'candidate.dart';
@@ -86,10 +88,10 @@ final class IceStateMachine implements ProtocolStateMachine {
   final int _tieBreaker;
 
   // Ongoing connectivity checks keyed by transaction ID.
-  final Map<String, _PendingCheck> _pendingChecks = {};
+  final _pendingChecks = StunTransactionTable<_PendingCheck>();
 
   // Pending STUN server gathering requests keyed by transaction ID.
-  final Map<String, _StunServerRequest> _stunServerRequests = {};
+  final _stunServerRequests = StunTransactionTable<_StunServerRequest>();
 
   // STUN servers to query for srflx candidates.
   final List<StunServer> _stunServers;
@@ -107,8 +109,12 @@ final class IceStateMachine implements ProtocolStateMachine {
   static const int _maxMissedConsentChecks = 6;
   int _missedConsentChecks = 0;
 
-  // Connectivity check retransmit timeout: 500ms base (RFC 8445 §14.3)
-  static const Duration _checkTimeout = Duration(milliseconds: 500);
+  // Connectivity check RTO base (RFC 8445 §14.3): first retransmit tick
+  // and backoff share it — 500ms * 2^Rc, capped at 16s.
+  static const int _checkRtoMs = 500;
+  static const Duration _checkTimeout = Duration(milliseconds: _checkRtoMs);
+  static const _checkBackoff =
+      ExponentialBackoff(baseMs: _checkRtoMs, maxMs: 16000);
 
   // STUN server gathering timeout
   static const Duration _stunGatherTimeout = Duration(seconds: 3);
@@ -221,12 +227,12 @@ final class IceStateMachine implements ProtocolStateMachine {
           remotePort: server.port,
           localIp: firstHost.ip,
         ));
-        _stunServerRequests[_txIdString(txId)] = _StunServerRequest(
+        _stunServerRequests.insert(txId, _StunServerRequest(
           server: server,
           sentAt: DateTime.now(),
           localIp: firstHost.ip,
           localPort: firstHost.port,
-        );
+        ));
       }
       // Schedule a gathering timeout
       final timeout = Timeout(
@@ -448,15 +454,14 @@ final class IceStateMachine implements ProtocolStateMachine {
       return _handleBindingRequest(msg, remoteIp, remotePort, packet, localIp);
     } else if (msg.type == StunMessageType.bindingSuccessResponse) {
       // Check if this is a response to a STUN server gathering request.
-      final txId = _txIdString(msg.transactionId);
-      if (_stunServerRequests.containsKey(txId)) {
-        return _handleStunServerResponse(msg, txId);
+      final gatherReq = _stunServerRequests.take(msg.transactionId);
+      if (gatherReq != null) {
+        return _handleStunServerResponse(msg, gatherReq);
       }
       return _handleBindingResponse(msg, remoteIp, remotePort, packet);
     } else if (msg.type == StunMessageType.bindingErrorResponse) {
       // Also check STUN server responses.
-      final txId = _txIdString(msg.transactionId);
-      final req = _stunServerRequests.remove(txId);
+      final req = _stunServerRequests.take(msg.transactionId);
       if (req != null) {
         // A gathering request was rejected by the server (W3C
         // `icecandidateerror`); report it and complete gathering if it was
@@ -627,8 +632,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     int remotePort,
     Uint8List rawPacket,
   ) {
-    final txId = _txIdString(msg.transactionId);
-    final check = _pendingChecks[txId];
+    final check = _pendingChecks.lookup(msg.transactionId);
     if (check == null) return const Ok(ProcessResult.empty);
 
     // Verify MESSAGE-INTEGRITY before acting on the response. We signed
@@ -642,7 +646,7 @@ final class IceStateMachine implements ProtocolStateMachine {
         !StunMessageBuilder.verifyMessageIntegrity(rawPacket, remoteKey)) {
       return const Ok(ProcessResult.empty);
     }
-    _pendingChecks.remove(txId);
+    _pendingChecks.take(msg.transactionId);
 
     // Any valid authenticated response on the selected pair refreshes
     // consent (RFC 7675 §5.1) — including the periodic consent checks.
@@ -686,8 +690,7 @@ final class IceStateMachine implements ProtocolStateMachine {
   }
 
   Result<ProcessResult, ProtocolError> _handleBindingError(StunMessage msg) {
-    final txId = _txIdString(msg.transactionId);
-    final check = _pendingChecks.remove(txId);
+    final check = _pendingChecks.take(msg.transactionId);
 
     // 487 Role Conflict (RFC 8445 §7.2.5.1): the peer kept its role and
     // told us to switch. Flip our role and re-issue the check on the same
@@ -775,12 +778,12 @@ final class IceStateMachine implements ProtocolStateMachine {
 
     final raw = StunMessageBuilder.buildWithIntegrity(msg, _remoteKey!);
 
-    _pendingChecks[_txIdString(txId)] = _PendingCheck(
+    _pendingChecks.insert(txId, _PendingCheck(
       pair: pair,
       nominated: nominated,
       sentAt: DateTime.now(),
       retransmitCount: retransmitCount,
-    );
+    ));
 
     return [
       OutputPacket(
@@ -980,17 +983,16 @@ final class IceStateMachine implements ProtocolStateMachine {
     // Retransmit in-progress checks that have exceeded their timeout.
     // Exponential backoff per RFC 8445 §14.3: 500ms * 2^retransmitCount.
     final now = DateTime.now();
-    for (final txId in _pendingChecks.keys.toList()) {
-      final check = _pendingChecks[txId]!;
-      final rtoMs = (500 * (1 << check.retransmitCount)).clamp(0, 16000);
+    for (final (txId, check) in _pendingChecks.entries) {
+      final rtoMs = _checkBackoff.delayMs(check.retransmitCount);
       if (now.difference(check.sentAt) >= Duration(milliseconds: rtoMs)) {
         if (check.retransmitCount >= 7) {
           // RFC 8445 §14.3: max Rc=7 retransmits — fail the pair
-          _pendingChecks.remove(txId);
+          _pendingChecks.takeKey(txId);
           check.pair.state = CandidatePairState.failed;
         } else {
           // Remove old entry; _sendCheck will register the new txId
-          _pendingChecks.remove(txId);
+          _pendingChecks.takeKey(txId);
           packets.addAll(_sendCheck(check.pair,
               nominated: check.nominated,
               retransmitCount: check.retransmitCount + 1));
@@ -1015,7 +1017,7 @@ final class IceStateMachine implements ProtocolStateMachine {
         minRc = check.retransmitCount;
       }
     }
-    final delayMs = (500 * (1 << minRc)).clamp(0, 16000);
+    final delayMs = _checkBackoff.delayMs(minRc);
     final nextTimeout = Timeout(
       at: DateTime.now().add(Duration(milliseconds: delayMs)),
       token: IceTimerToken(++_timerIdCounter),
@@ -1064,10 +1066,7 @@ final class IceStateMachine implements ProtocolStateMachine {
   // ── STUN server gathering ─────────────────────────────────────────────────
 
   Result<ProcessResult, ProtocolError> _handleStunServerResponse(
-      StunMessage msg, String txId) {
-    final req = _stunServerRequests.remove(txId);
-    if (req == null) return const Ok(ProcessResult.empty);
-
+      StunMessage msg, _StunServerRequest req) {
     final xma = msg.attribute<XorMappedAddress>();
     if (xma != null) {
       // Avoid duplicate srflx candidates.
@@ -1197,13 +1196,12 @@ final class IceStateMachine implements ProtocolStateMachine {
     onStateChange?.call(newState);
   }
 
-  static String _txIdString(Uint8List id) =>
-      id.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 }
 
-class _PendingCheck {
+class _PendingCheck implements StunPendingRequest {
   final CandidatePair pair;
   final bool nominated;
+  @override
   final DateTime sentAt;
   final int retransmitCount;
   _PendingCheck({
@@ -1214,8 +1212,9 @@ class _PendingCheck {
   });
 }
 
-class _StunServerRequest {
+class _StunServerRequest implements StunPendingRequest {
   final StunServer server;
+  @override
   final DateTime sentAt;
   final IpAddress localIp;
   final int localPort;

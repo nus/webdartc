@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import '../core/state_machine.dart';
 import '../crypto/csprng.dart';
 import '../stun/builder.dart';
+import '../stun/transaction_table.dart';
 import '../stun/message.dart';
 import '../stun/parser.dart';
 import 'channel_data.dart';
@@ -99,9 +100,10 @@ const int turnRequestedTransportUdp = 17;
 /// grant a different value in the Allocate success response.
 const int turnDefaultLifetimeSeconds = 600;
 
-final class _PendingRequest {
+final class _PendingRequest implements StunPendingRequest {
   final int method;
   final Object? context;
+  @override
   final DateTime sentAt;
   _PendingRequest({required this.method, this.context, DateTime? sentAt})
       : sentAt = sentAt ?? DateTime.now();
@@ -136,7 +138,7 @@ final class TurnAllocation implements ProtocolStateMachine {
   Uint8List? _key;
   int _grantedLifetime = 0;
 
-  final Map<String, _PendingRequest> _pending = {};
+  final _pending = StunTransactionTable<_PendingRequest>(ttl: _pendingTtl);
 
   final Set<IpAddress> _permissions = {};
 
@@ -185,7 +187,7 @@ final class TurnAllocation implements ProtocolStateMachine {
     }
     _state = TurnState.allocating;
     final txId = Csprng.randomTransactionId();
-    _registerPending(
+    _pending.insert(
         txId, _PendingRequest(method: StunMessageType.allocateRequest));
     final msg = StunMessage(
       type: StunMessageType.allocateRequest,
@@ -315,7 +317,7 @@ final class TurnAllocation implements ProtocolStateMachine {
     Timeout? nextTimeout,
   }) {
     final txId = Csprng.randomTransactionId();
-    _registerPending(
+    _pending.insert(
         txId, _PendingRequest(method: method, context: context));
     final msg = StunMessage(type: method, transactionId: txId, attributes: attrs);
     return ProcessResult(
@@ -387,20 +389,11 @@ final class TurnAllocation implements ProtocolStateMachine {
     return channel;
   }
 
-  void _registerPending(Uint8List txId, _PendingRequest req) {
-    // Prune so a dropped server response can't leak the entry forever.
-    if (_pending.isNotEmpty) {
-      final cutoff = DateTime.now().subtract(_pendingTtl);
-      _pending.removeWhere((_, e) => e.sentAt.isBefore(cutoff));
-    }
-    _pending[_txIdKey(txId)] = req;
-  }
-
   // ── Internal: response handling ────────────────────────────────────────
 
   Result<ProcessResult, ProtocolError> _handleStun(StunMessage msg) {
     if (msg.isIndication) return _handleIndication(msg);
-    final pending = _pending.remove(_txIdKey(msg.transactionId));
+    final pending = _pending.take(msg.transactionId);
     if (pending == null) return Ok(ProcessResult.empty);
     return switch (pending.method) {
       StunMessageType.allocateRequest => _handleAllocateResponse(msg),
@@ -582,9 +575,4 @@ final class TurnAllocation implements ProtocolStateMachine {
   static const int _refreshDivisor = 2;
   static const int _minRefreshIntervalSeconds = 10;
 
-  /// Map key for transaction IDs. 12 bytes (each 0–255) round-trip through
-  /// `String.fromCharCodes` losslessly and yield a single 12-char string
-  /// with value equality — cheaper than a hex encode that would allocate
-  /// 12 substrings plus the join buffer per call.
-  static String _txIdKey(Uint8List bytes) => String.fromCharCodes(bytes);
 }

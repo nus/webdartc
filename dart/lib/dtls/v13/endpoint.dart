@@ -17,9 +17,11 @@ library;
 
 import 'dart:typed_data';
 
+import '../../core/backoff.dart';
 import '../../core/byte_io.dart';
 import '../../core/state_machine.dart' as core;
 import '../../core/types.dart';
+import '../../crypto/constant_time.dart';
 import '../../crypto/csprng.dart';
 import '../../crypto/ecdh.dart';
 import '../../crypto/ecdsa.dart';
@@ -345,7 +347,8 @@ abstract base class DtlsV13Endpoint implements core.ProtocolStateMachine {
   /// matches the legacy v1.2 path and is well under WebRTC ICE-consent
   /// freshness.
   static const int _maxHandshakeRetransmits = 6;
-  static const int _initialHandshakeRetransmitMs = 1000;
+  static const _handshakeBackoff =
+      ExponentialBackoff(baseMs: 1000, maxMs: 60000);
 
   // ─── Role hooks ───────────────────────────────────────────────────────
 
@@ -432,9 +435,7 @@ abstract base class DtlsV13Endpoint implements core.ProtocolStateMachine {
   /// (RFC 9147 §5.7 / RFC 6347 §4.2.4.1). Base 1s, doubling per attempt,
   /// capped at 60s.
   Timeout _nextHandshakeRetransmitTimeout() {
-    final delayMs = (_initialHandshakeRetransmitMs *
-            (1 << _handshakeRetransmitCount))
-        .clamp(0, 60000);
+    final delayMs = _handshakeBackoff.delayMs(_handshakeRetransmitCount);
     return Timeout(
       at: DateTime.now().add(Duration(milliseconds: delayMs)),
       token: DtlsRetransmitToken(0),
@@ -675,16 +676,6 @@ abstract base class DtlsV13Endpoint implements core.ProtocolStateMachine {
   /// Wrap a handshake fragment in a DTLSPlaintext (epoch 0) record.
   OutputPacket _emitPlaintextHandshake(Uint8List handshakeFragment) =>
       _records.emitPlaintextHandshake(handshakeFragment);
-
-  /// Constant-time comparison used for Finished verify_data. Lengths must
-  /// already be equal.
-  static bool _constantTimeEquals(Uint8List a, Uint8List b) {
-    var diff = 0;
-    for (var i = 0; i < a.length; i++) {
-      diff |= a[i] ^ b[i];
-    }
-    return diff == 0;
-  }
 
   /// Fire [onConnected] with the SRTP keying material exported from
   /// `exporter_master_secret`, sized to the negotiated SRTP profile

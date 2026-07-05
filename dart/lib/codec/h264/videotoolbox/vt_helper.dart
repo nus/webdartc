@@ -955,6 +955,8 @@ int wvtDecoderDecode(
   return 0;
 }
 
+// Plain equality for SPS/PPS change detection — not a MAC compare, so an
+// early exit is fine (and cheaper than a constant-time scan).
 bool _bytesEqual(
     ffi.Pointer<ffi.Uint8> a, ffi.Pointer<ffi.Uint8> b, int n) {
   for (int i = 0; i < n; i++) {

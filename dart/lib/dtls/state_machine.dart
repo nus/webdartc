@@ -1,7 +1,10 @@
 import 'dart:typed_data';
 
+import '../core/backoff.dart';
+import '../core/hex.dart';
 import '../core/log.dart';
 import '../core/state_machine.dart';
+import '../crypto/constant_time.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdh.dart';
 import '../crypto/ecdsa.dart';
@@ -14,6 +17,7 @@ import 'record.dart';
 import 'srtp_profiles.dart';
 import 'version_detect.dart';
 import 'v13/endpoint.dart' as v13;
+import 'v13/handshake.dart' as v13hs;
 
 export 'cipher_suite.dart' show CipherSuite;
 
@@ -80,6 +84,9 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   List<Uint8List>? _lastFlight;
   int _retransmitCount = 0;
   static const int _maxRetransmit = 7;
+  // Flight retransmit backoff: 500ms * 2^count, capped at 60s
+  static const _retransmitBackoff =
+      ExponentialBackoff(baseMs: 500, maxMs: 60000);
 
   /// Expected remote fingerprint (set from SDP a=fingerprint before connecting).
   String? expectedRemoteFingerprint;
@@ -521,27 +528,22 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     // Skip compression method (1 byte)
     if (offset < body.length) offset += 1;
 
-    // Parse extensions
-    if (offset + 2 <= body.length) {
-      final extTotalLen = (body[offset] << 8) | body[offset + 1];
-      offset += 2;
-      final extEnd = (offset + extTotalLen).clamp(0, body.length);
-      while (offset + 4 <= extEnd) {
-        final extType = (body[offset] << 8) | body[offset + 1];
-        final extLen = (body[offset + 2] << 8) | body[offset + 3];
-        offset += 4;
-        if (extType == 0x000E && extLen >= 3 && offset + extLen <= extEnd) {
-          // use_srtp: 2-byte profile list length + profiles + mki_length
-          final profileId = (body[offset + 2] << 8) | body[offset + 3];
-          _selectedSrtpProfile = [(profileId >> 8) & 0xFF, profileId & 0xFF];
-          if (_debug) {
-            webdartcLog(
-              '[dtls] ServerHello use_srtp profile: '
-              '0x${profileId.toRadixString(16).padLeft(4, "0")}',
-            );
-          }
-        }
-        offset += extLen;
+    // Parse extensions with the shared TLS extensions-block parser (which
+    // handles short/absent blocks by returning null); the use_srtp payload
+    // is the same struct in DTLS 1.2 and 1.3 (RFC 5764 §4.1.1), so reuse
+    // the v13 codec for it too.
+    for (final ext in v13hs.parseTlsExtensionsBlock(body, offset) ??
+        const <v13hs.TlsExtension>[]) {
+      if (ext.type != v13hs.TlsV13ExtensionType.useSrtp) continue;
+      final profiles = v13hs.parseUseSrtpExtData(ext.data);
+      if (profiles == null || profiles.isEmpty) continue;
+      final profileId = profiles.first;
+      _selectedSrtpProfile = [(profileId >> 8) & 0xFF, profileId & 0xFF];
+      if (_debug) {
+        webdartcLog(
+          '[dtls] ServerHello use_srtp profile: '
+          '0x${profileId.toRadixString(16).padLeft(4, "0")}',
+        );
       }
     }
 
@@ -755,11 +757,8 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       isClient: false,
     );
     if (body.length < 12) return Err(const ParseError('DTLS: short Finished'));
-    var mismatch = 0;
-    for (var i = 0; i < 12; i++) {
-      mismatch |= body[i] ^ expectedVerifyData[i];
-    }
-    if (mismatch != 0) {
+    if (!constantTimeEquals(
+        Uint8List.sublistView(body, 0, 12), expectedVerifyData)) {
       return Err(const CryptoError('DTLS: Finished verify_data mismatch'));
     }
 
@@ -910,8 +909,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     for (var i = 0; i < suitesLen; i += 2) {
       if (suitesStart + i + 1 < body.length) {
         suites.add(
-          '0x${body[suitesStart + i].toRadixString(16).padLeft(2, "0")}'
-          '${body[suitesStart + i + 1].toRadixString(16).padLeft(2, "0")}',
+          '0x${hex([body[suitesStart + i], body[suitesStart + i + 1]])}',
         );
       }
     }
@@ -934,44 +932,32 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     // compression_methods: 1 byte length + methods
     final compLen = body[off];
     off += 1 + compLen;
-    if (off + 2 > body.length) return;
-    // extensions_length
-    final extLen = (body[off] << 8) | body[off + 1];
-    off += 2;
-    final extEnd = off + extLen;
-    while (off + 4 <= extEnd && off + 4 <= body.length) {
-      final extType = (body[off] << 8) | body[off + 1];
-      final extDataLen = (body[off + 2] << 8) | body[off + 3];
-      off += 4;
-      if (extType == 0x000E &&
-          extDataLen >= 4 &&
-          off + extDataLen <= body.length) {
-        // use_srtp: pick per the DTLS 1.2 preference order (see
-        // SrtpProfileNegotiation.v12Preference for the rationale).
-        final profilesLen = (body[off] << 8) | body[off + 1];
-        final offered = <int>[];
-        for (var i = 0; i < profilesLen; i += 2) {
-          offered.add((body[off + 2 + i] << 8) | body[off + 2 + i + 1]);
-        }
+    // Extensions: shared block parser + use_srtp payload codec
+    // (RFC 5764 §4.1.1) — short input yields null → no-op. Pick per the
+    // DTLS 1.2 preference order (see SrtpProfileNegotiation.v12Preference
+    // for the rationale).
+    for (final ext in v13hs.parseTlsExtensionsBlock(body, off) ??
+        const <v13hs.TlsExtension>[]) {
+      if (ext.type != v13hs.TlsV13ExtensionType.useSrtp) continue;
+      final offered = v13hs.parseUseSrtpExtData(ext.data);
+      if (offered == null) continue;
+      if (_debug) {
+        webdartcLog(
+          '[dtls] use_srtp profiles offered: ${offered.map((p) => "0x${p.toRadixString(16).padLeft(4, "0")}").join(", ")}',
+        );
+      }
+      final picked = SrtpProfileNegotiation.pick(
+        offered,
+        preference: SrtpProfileNegotiation.v12Preference,
+      );
+      if (picked != null) {
+        _selectedSrtpProfile = [(picked >> 8) & 0xFF, picked & 0xFF];
         if (_debug) {
           webdartcLog(
-            '[dtls] use_srtp profiles offered: ${offered.map((p) => "0x${p.toRadixString(16).padLeft(4, "0")}").join(", ")}',
+            '[dtls] selected SRTP profile: 0x${picked.toRadixString(16).padLeft(4, "0")}',
           );
         }
-        final picked = SrtpProfileNegotiation.pick(
-          offered,
-          preference: SrtpProfileNegotiation.v12Preference,
-        );
-        if (picked != null) {
-          _selectedSrtpProfile = [(picked >> 8) & 0xFF, picked & 0xFF];
-          if (_debug) {
-            webdartcLog(
-              '[dtls] selected SRTP profile: 0x${picked.toRadixString(16).padLeft(4, "0")}',
-            );
-          }
-        }
       }
-      off += extDataLen;
     }
   }
 
@@ -1186,11 +1172,8 @@ final class DtlsStateMachine implements ProtocolStateMachine {
       isClient: true, // verifying CLIENT's Finished
     );
     if (body.length < 12) return Err(const ParseError('DTLS: short Finished'));
-    var mismatch = 0;
-    for (var i = 0; i < 12; i++) {
-      mismatch |= body[i] ^ expectedVerifyData[i];
-    }
-    if (mismatch != 0) {
+    if (!constantTimeEquals(
+        Uint8List.sublistView(body, 0, 12), expectedVerifyData)) {
       return Err(const CryptoError('DTLS: Finished verify_data mismatch'));
     }
 
@@ -1326,8 +1309,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         )
         .toList();
 
-    // Exponential backoff: 500ms * 2^count, capped at 60s
-    final delayMs = (500 * (1 << _retransmitCount)).clamp(0, 60000);
+    final delayMs = _retransmitBackoff.delayMs(_retransmitCount);
     final timeout = Timeout(
       at: DateTime.now().add(Duration(milliseconds: delayMs)),
       token: DtlsRetransmitToken(epoch),

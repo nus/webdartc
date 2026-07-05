@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../../crypto/constant_time.dart';
 import '../../crypto/hmac_sha256.dart';
 import '../../crypto/sha256.dart';
 
@@ -82,13 +83,9 @@ abstract final class DtlsV13Cookie {
       clientPort: clientPort,
     );
     final expected = HmacSha256.compute(macKey, input);
-    var diff = 0;
-    for (var i = 0; i < expected.length; i++) {
-      diff |= expected[i] ^ tag[i];
-    }
     return DtlsV13CookieParse(
       transcriptHashCh1: transcriptHash,
-      isValid: diff == 0,
+      isValid: constantTimeEquals(expected, tag),
     );
   }
 
