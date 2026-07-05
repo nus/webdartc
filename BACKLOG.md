@@ -635,19 +635,6 @@ Each item:
 - **Acceptance:** v1.2 reuses the shared extension parser at least for
   use_srtp.
 
-### STUN transaction bookkeeping duplicated between ICE and TURN
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** ICE keys txIds as hex (`_txIdString`,
-  [ice/state_machine.dart](dart/lib/ice/state_machine.dart) ~L1200) while TURN
-  uses `String.fromCharCodes` (`_txIdKey`); both keep the same
-  "pending request with sentAt + retransmit budget/TTL pruning" table shape
-  (`_PendingCheck`/`_StunServerRequest` vs `_PendingRequest`).
-- **Why deferred:** Behavior-neutral consolidation, but touches two FSMs.
-- **Acceptance:** A `StunTransactionTable` in `lib/stun/` (txId normalization,
-  sentAt, pruning) used by both. (`StunMessageBuilder` is already shared —
-  only the pending-table is missing.)
-
 ### Over-long methods (>80 lines) to split
 
 - **Found:** 2026-07-03, refactoring audit
