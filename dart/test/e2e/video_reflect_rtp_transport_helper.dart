@@ -4,88 +4,13 @@
 /// that server.dart and ayame_client.dart use, to verify that code path works.
 library;
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:webdartc/webdartc.dart';
 
 import 'e2e_settings.dart';
-
-// ── Minimal WebSocket client (same as video_reflect_helper.dart) ────────────
-
-final class _WsClient {
-  final Socket _socket;
-  final _buf = <int>[];
-  // Single-subscription buffers messages that arrive before `.listen` (a
-  // signal can land between registering and wiring the handler); a broadcast
-  // controller would drop them.
-  final _messages = StreamController<String>();
-  _WsClient._(this._socket);
-
-  static Future<_WsClient> connect(int port) async {
-    final socket = await Socket.connect('127.0.0.1', port);
-    final client = _WsClient._(socket);
-    final key = base64.encode(Csprng.randomBytes(16));
-    socket.add(utf8.encode(
-      'GET / HTTP/1.1\r\nHost: 127.0.0.1:$port\r\nUpgrade: websocket\r\n'
-      'Connection: Upgrade\r\nSec-WebSocket-Key: $key\r\n'
-      'Sec-WebSocket-Version: 13\r\n\r\n',
-    ));
-    final completer = Completer<_WsClient>();
-    final httpBuf = StringBuffer();
-    bool done = false;
-    socket.listen((data) {
-      if (!done) {
-        httpBuf.write(utf8.decode(data, allowMalformed: true));
-        if (httpBuf.toString().contains('\r\n\r\n')) {
-          done = true;
-          if (!completer.isCompleted) completer.complete(client);
-        }
-      } else {
-        client._buf.addAll(data);
-        client._drainFrames();
-      }
-    }, onError: (_) { client._messages.close(); if (!completer.isCompleted) completer.completeError('err'); },
-       onDone: () { client._messages.close(); if (!completer.isCompleted) completer.complete(client); });
-    return completer.future;
-  }
-
-  void _drainFrames() { while (true) { final m = _tryParse(); if (m == null) break; if (m.isNotEmpty) _messages.add(m); } }
-  String? _tryParse() {
-    if (_buf.length < 2) return null;
-    final masked = (_buf[1] & 0x80) != 0;
-    final lenByte = _buf[1] & 0x7F;
-    final opcode = _buf[0] & 0x0F;
-    int hLen = 2 + (masked ? 4 : 0); int pLen;
-    if (lenByte < 126) { pLen = lenByte; }
-    else if (lenByte == 126) { if (_buf.length < 4) return null; pLen = (_buf[2] << 8) | _buf[3]; hLen += 2; }
-    else { if (_buf.length < 10) return null; pLen = 0; for (var i = 0; i < 8; i++) pLen = (pLen << 8) | _buf[2+i]; hLen += 8; }
-    if (_buf.length < hLen + pLen) return null;
-    final mk = masked ? _buf.sublist(hLen - 4, hLen) : null;
-    final raw = _buf.sublist(hLen, hLen + pLen);
-    _buf.removeRange(0, hLen + pLen);
-    if (opcode != 1) return '';
-    final p = masked ? List<int>.generate(raw.length, (i) => raw[i] ^ mk![i % 4]) : raw;
-    return utf8.decode(p, allowMalformed: true);
-  }
-
-  void sendJson(Map<String, dynamic> msg) {
-    final payload = utf8.encode(jsonEncode(msg));
-    final len = payload.length;
-    final mk = Csprng.randomBytes(4);
-    late List<int> h;
-    if (len < 126) { h = [0x81, 0x80 | len]; }
-    else if (len < 65536) { h = [0x81, 0xFE, (len >> 8) & 0xFF, len & 0xFF]; }
-    else { h = [0x81, 0xFF]; for (var i = 7; i >= 0; i--) h.add((len >> (i*8)) & 0xFF); }
-    h.addAll(mk);
-    final m = List<int>.generate(len, (i) => payload[i] ^ mk[i % 4]);
-    _socket.add(Uint8List.fromList([...h, ...m]));
-  }
-
-  Stream<String> get messages => _messages.stream;
-  Future<void> close() async => _socket.destroy();
-}
+import 'helper_ws_client.dart';
 
 // ── VP8 keyframe detection (RFC 7741) ───────────────────────────────────────
 
@@ -121,7 +46,7 @@ void main(List<String> args) async {
 }
 
 Future<int> _run(int sigPort) async {
-  final ws = await _WsClient.connect(sigPort);
+  final ws = await HelperWsClient.connect(sigPort);
   ws.sendJson({'type': 'register', 'role': 'answerer'});
 
   final pc = PeerConnection(

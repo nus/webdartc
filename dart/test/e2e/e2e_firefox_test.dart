@@ -201,9 +201,11 @@ void main() {
       final sig = sigServer!;
 
       // Start webdartc answerer FIRST so it's connected to signaling before
-      // Firefox sends the offer (otherwise the offer would be dropped).
+      // Firefox sends the offer (otherwise the offer would be dropped). A
+      // fixed sleep races against the helper's build-hook startup — wait for
+      // its register instead. See SignalingServer.firstPeerRegistered.
       final answererFuture = _runWebdartcAnswerer(sig.port);
-      await Future<void>.delayed(const Duration(seconds: 3));
+      await sig.firstPeerRegistered.timeout(const Duration(seconds: 90));
 
       final url =
           'http://127.0.0.1:$htmlPort/?port=${sig.port}'
@@ -450,9 +452,12 @@ void main() {
       final d = driver!;
       final sig = sigServer!;
 
-      // Start echo helper first (answerer).
+      // Start echo helper first (answerer) and wait for its register — a
+      // fixed sleep races against the helper's build-hook startup and the
+      // offer would relay to no peer and vanish. See
+      // SignalingServer.firstPeerRegistered.
       final echoFuture = _runWebdartcEcho(sig.port);
-      await Future<void>.delayed(const Duration(seconds: 3));
+      await sig.firstPeerRegistered.timeout(const Duration(seconds: 90));
 
       // Firefox as offerer with audio.
       final url =
@@ -520,9 +525,12 @@ void main() {
       final d = driver!;
       final sig = sigServer!;
 
-      // Start reflect helper (answerer) first.
+      // Start reflect helper (answerer) first and wait for its register — a
+      // fixed sleep races against the helper's build-hook startup and the
+      // offer would relay to no peer and vanish. See
+      // SignalingServer.firstPeerRegistered.
       final reflectProc = await _startWebdartcReflect(sig.port);
-      await Future<void>.delayed(const Duration(seconds: 3));
+      await sig.firstPeerRegistered.timeout(const Duration(seconds: 90));
 
       // Firefox as offerer with video.
       final url =
