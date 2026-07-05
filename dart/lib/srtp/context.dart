@@ -140,6 +140,27 @@ final class SrtpContext {
   static int srtpKeyMaterialLength(SrtpProfile profile) =>
       2 * (_masterKeyLength(profile) + _masterSaltLength(profile));
 
+  /// Whether [profile] is an AEAD-GCM profile (RFC 7714) rather than
+  /// AES-CM + HMAC-SHA1 (RFC 3711). Exhaustive switch so adding a profile
+  /// forces the cipher-path decision here.
+  bool get _isGcm {
+    switch (profile) {
+      case SrtpProfile.aesCm128HmacSha1_80:
+      case SrtpProfile.aesCm128HmacSha1_32:
+        return false;
+      case SrtpProfile.aesGcm128:
+      case SrtpProfile.aesGcm256:
+        return true;
+    }
+  }
+
+  /// SRTP HMAC-SHA1 auth-tag length: 10 bytes for the `_80` profile, 4 for
+  /// `_32` (RFC 3711 §5.2). Only meaningful on the AES-CM paths — GCM
+  /// carries its own 16-byte AEAD tag. (SRTCP always authenticates with the
+  /// full 80-bit tag regardless, RFC 3711 §3.4.)
+  int get _rtpAuthTagLen =>
+      profile == SrtpProfile.aesCm128HmacSha1_80 ? 10 : 4;
+
   /// Derive SRTP context from exported DTLS key material.
   ///
   /// [keyMaterial] layout (RFC 5764 §4.2): the per-direction master keys
@@ -237,7 +258,7 @@ final class SrtpContext {
     tracker.update(seq);
 
     final Uint8List encPayload;
-    if (profile == SrtpProfile.aesGcm128 || profile == SrtpProfile.aesGcm256) {
+    if (_isGcm) {
       // RFC 7714 §8.1: SRTP-GCM IV layout differs from RFC 3711's AES-CM
       // IV — SSRC sits at bytes 2..5, ROC at 6..9, SEQ at 10..11 — and
       // gets XORed with a 12-byte salt.
@@ -259,7 +280,7 @@ final class SrtpContext {
     withoutAuth.setRange(0, headerLen, rtpPacket.sublist(0, headerLen));
     withoutAuth.setRange(headerLen, withoutAuth.length, encPayload);
 
-    final authTagLen = profile == SrtpProfile.aesCm128HmacSha1_80 ? 10 : 4;
+    final authTagLen = _rtpAuthTagLen;
     final tag = _computeAuthTag(_authKey, withoutAuth, index, authTagLen);
 
     final out = Uint8List(withoutAuth.length + authTagLen);
@@ -285,7 +306,7 @@ final class SrtpContext {
       return Err(const CryptoError('SRTP: replay detected'));
     }
 
-    if (profile == SrtpProfile.aesGcm128 || profile == SrtpProfile.aesGcm256) {
+    if (_isGcm) {
       if (srtpPacket.length < headerLen + 16) {
         return Err(const CryptoError('SRTP: GCM packet too short'));
       }
@@ -305,7 +326,7 @@ final class SrtpContext {
     }
 
     // AES-CM with HMAC auth
-    final authTagLen = profile == SrtpProfile.aesCm128HmacSha1_80 ? 10 : 4;
+    final authTagLen = _rtpAuthTagLen;
     if (srtpPacket.length < headerLen + authTagLen) {
       return Err(const CryptoError('SRTP: packet too short for auth tag'));
     }
@@ -342,12 +363,9 @@ final class SrtpContext {
     final payload = rtcpPacket.sublist(8);
 
     final srtcpIndexBytes = Uint8List(4);
-    srtcpIndexBytes[0] = (srtcpIndex >> 24) & 0xFF;
-    srtcpIndexBytes[1] = (srtcpIndex >> 16) & 0xFF;
-    srtcpIndexBytes[2] = (srtcpIndex >>  8) & 0xFF;
-    srtcpIndexBytes[3] = srtcpIndex & 0xFF;
+    writeU32(srtcpIndexBytes, 0, srtcpIndex);
 
-    if (profile == SrtpProfile.aesGcm128 || profile == SrtpProfile.aesGcm256) {
+    if (_isGcm) {
       // RFC 7714 §9.1: SRTCP-GCM IV is `0x00 0x00 || SSRC || 0x00 0x00 ||
       // SRTCP_index` XORed with the 12-byte master salt. AAD =
       // RTCP-header || E-bit-tagged-SRTCP-index.
@@ -384,7 +402,7 @@ final class SrtpContext {
   }
 
   Result<Uint8List, CryptoError> decryptRtcp(Uint8List srtcpPacket) {
-    if (profile == SrtpProfile.aesGcm128 || profile == SrtpProfile.aesGcm256) {
+    if (_isGcm) {
       // AES-GCM: [header 8B][ciphertext][GCM tag 16B][srtcpIndex 4B]
       if (srtcpPacket.length < 8 + 16 + 4) {
         return Err(const CryptoError('SRTCP: GCM packet too short'));
@@ -484,23 +502,28 @@ final class SrtpContext {
   /// IV = (k_s * 2^16) XOR (SSRC * 2^64) XOR (i * 2^16)
   /// where i * 2^16 = ROC * 2^32 + SEQ * 2^16
   static Uint8List _computeIv(Uint8List salt, int ssrc, int index) {
-    final roc = index >> 16;
-    final seq = index & 0xFFFF;
-    final iv = Uint8List(16);
-    iv.setRange(0, 14, salt);
-    // SSRC at bytes 4-7 (bits 95-64)
-    iv[4] ^= (ssrc >> 24) & 0xFF;
-    iv[5] ^= (ssrc >> 16) & 0xFF;
-    iv[6] ^= (ssrc >>  8) & 0xFF;
-    iv[7] ^= ssrc & 0xFF;
-    // ROC at bytes 8-11 (bits 63-32)
-    iv[8]  ^= (roc >> 24) & 0xFF;
-    iv[9]  ^= (roc >> 16) & 0xFF;
-    iv[10] ^= (roc >>  8) & 0xFF;
-    iv[11] ^= roc & 0xFF;
-    // SEQ at bytes 12-13 (bits 31-16)
-    iv[12] ^= (seq >> 8) & 0xFF;
-    iv[13] ^= seq & 0xFF;
+    final iv = _ivFromSalt(salt, ivLen: 16, saltLen: 14);
+    _xorBe(iv, 4, ssrc, 4); // SSRC at bytes 4-7 (bits 95-64)
+    _xorBe(iv, 8, index >> 16, 4); // ROC at bytes 8-11 (bits 63-32)
+    _xorBe(iv, 12, index & 0xFFFF, 2); // SEQ at bytes 12-13 (bits 31-16)
+    return iv;
+  }
+
+  /// All four IV layouts share one skeleton — copy the session salt in,
+  /// then XOR SSRC/index fields at layout-specific offsets. [_xorBe] XORs
+  /// the low [width] big-endian bytes of [value] into [iv] at [offset].
+  static void _xorBe(Uint8List iv, int offset, int value, int width) {
+    for (var i = 0; i < width; i++) {
+      iv[offset + i] ^= (value >> (8 * (width - 1 - i))) & 0xFF;
+    }
+  }
+
+  /// Fresh [ivLen]-byte IV pre-loaded with the first [saltLen] bytes of
+  /// [salt] (AES-CM: 16-byte IV / 14-byte salt; AEAD-GCM: 12/12).
+  static Uint8List _ivFromSalt(Uint8List salt,
+      {required int ivLen, required int saltLen}) {
+    final iv = Uint8List(ivLen);
+    iv.setRange(0, saltLen, salt);
     return iv;
   }
 
@@ -510,20 +533,9 @@ final class SrtpContext {
   Uint8List _computeRtcpIv(int ssrc, int index, {bool remote = false}) {
     final salt = remote ? _remoteRtcpEncSalt : _rtcpEncSalt;
     // IV = k_s XOR (SSRC * 2^64) XOR (SRTCP_index * 2^16)
-    // SSRC occupies bytes 4-7 (bits 95-64).
-    // SRTCP index (31-bit) shifted left 16 occupies bytes 10-13 (bits 47-16).
-    final iv = Uint8List(16);
-    iv.setRange(0, 14, salt);
-    // SSRC at bytes 4-7
-    iv[4] ^= (ssrc >> 24) & 0xFF;
-    iv[5] ^= (ssrc >> 16) & 0xFF;
-    iv[6] ^= (ssrc >>  8) & 0xFF;
-    iv[7] ^= ssrc & 0xFF;
-    // SRTCP index << 16: occupies bytes 10-13
-    iv[10] ^= (index >> 24) & 0xFF;
-    iv[11] ^= (index >> 16) & 0xFF;
-    iv[12] ^= (index >>  8) & 0xFF;
-    iv[13] ^= index & 0xFF;
+    final iv = _ivFromSalt(salt, ivLen: 16, saltLen: 14);
+    _xorBe(iv, 4, ssrc, 4); // SSRC at bytes 4-7 (bits 95-64)
+    _xorBe(iv, 10, index, 4); // SRTCP index << 16: bytes 10-13 (bits 47-16)
     return iv;
   }
 
@@ -537,25 +549,10 @@ final class SrtpContext {
   /// [salt] is the session encryption salt (≥ 12 bytes — the KDF returns
   /// 14, of which only the first 12 are XORed in for AEAD-GCM).
   static Uint8List _computeGcmRtpIv(Uint8List salt, int ssrc, int index) {
-    final roc = index >> 16;
-    final seq = index & 0xFFFF;
-    final iv = Uint8List(12);
-    for (var i = 0; i < 12; i++) {
-      iv[i] = salt[i];
-    }
-    // SSRC at bytes 2..5
-    iv[2] ^= (ssrc >> 24) & 0xFF;
-    iv[3] ^= (ssrc >> 16) & 0xFF;
-    iv[4] ^= (ssrc >>  8) & 0xFF;
-    iv[5] ^=  ssrc        & 0xFF;
-    // ROC at bytes 6..9
-    iv[6] ^= (roc >> 24) & 0xFF;
-    iv[7] ^= (roc >> 16) & 0xFF;
-    iv[8] ^= (roc >>  8) & 0xFF;
-    iv[9] ^=  roc        & 0xFF;
-    // SEQ at bytes 10..11
-    iv[10] ^= (seq >> 8) & 0xFF;
-    iv[11] ^=  seq       & 0xFF;
+    final iv = _ivFromSalt(salt, ivLen: 12, saltLen: 12);
+    _xorBe(iv, 2, ssrc, 4); // SSRC at bytes 2..5
+    _xorBe(iv, 6, index >> 16, 4); // ROC at bytes 6..9
+    _xorBe(iv, 10, index & 0xFFFF, 2); // SEQ at bytes 10..11
     return iv;
   }
 
@@ -568,20 +565,9 @@ final class SrtpContext {
   ///
   /// [index] is the 31-bit SRTCP index (without the E-bit).
   static Uint8List _computeGcmRtcpIv(Uint8List salt, int ssrc, int index) {
-    final iv = Uint8List(12);
-    for (var i = 0; i < 12; i++) {
-      iv[i] = salt[i];
-    }
-    // SSRC at bytes 2..5
-    iv[2] ^= (ssrc >> 24) & 0xFF;
-    iv[3] ^= (ssrc >> 16) & 0xFF;
-    iv[4] ^= (ssrc >>  8) & 0xFF;
-    iv[5] ^=  ssrc        & 0xFF;
-    // SRTCP index at bytes 8..11 (with E-bit cleared)
-    iv[8]  ^= (index >> 24) & 0xFF;
-    iv[9]  ^= (index >> 16) & 0xFF;
-    iv[10] ^= (index >>  8) & 0xFF;
-    iv[11] ^=  index        & 0xFF;
+    final iv = _ivFromSalt(salt, ivLen: 12, saltLen: 12);
+    _xorBe(iv, 2, ssrc, 4); // SSRC at bytes 2..5
+    _xorBe(iv, 8, index, 4); // SRTCP index at bytes 8..11 (E-bit cleared)
     return iv;
   }
 

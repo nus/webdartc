@@ -607,19 +607,6 @@ Each item:
 - **Acceptance:** A common stream-backed track base class;
   `AudioData.silenceLike(src)` replaces the inline silence builders.
 
-### SRTP context: cipher-path duplication
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [srtp/context.dart](dart/lib/srtp/context.dart): four IV
-  builders (`_computeIv`/`_computeRtcpIv`/`_computeGcmRtpIv`/`_computeGcmRtcpIv`)
-  share one skeleton (copy salt → XOR SSRC → XOR index, offsets differ);
-  GCM-vs-CM branching and the `authTagLen = …? 10 : 4` ternary repeat across
-  all four encrypt/decrypt methods.
-- **Why deferred:** Crypto code — wants the fuzz/vector tests run per step.
-- **Acceptance:** `_isGcm`/tag-length as profile-derived getters, one
-  XOR-salt IV helper (or a per-profile cipher strategy object); adding a new
-  profile touches one place.
-
 ### SDP parser/builder cleanups
 
 - **Found:** 2026-07-03, refactoring audit
