@@ -11,7 +11,6 @@ import 'common_crypto.dart';
 import 'constant_time.dart';
 import 'crypto_backend.dart';
 import 'security_framework.dart';
-import 'sha256.dart';
 import 'x509_der.dart';
 
 // ── AES-CM (AES-ECB single block) ──────────────────────────────────────────
@@ -347,12 +346,13 @@ final class MacosEcdsaBackend implements EcdsaBackend, Finalizable {
           if (pubDataRef == nullptr) throw StateError('SecKeyCopyExternalRepresentation failed');
           final pubKeyBytes = s.cfDataToBytes(pubDataRef);
 
-          final tbs = X509Der.buildTbsCertificate(pubKeyBytes);
-          final signature = _signRaw(privateKey, tbs, digest: false);
-          final cert = X509Der.buildCertificate(tbs, signature);
-          final fp = Sha256.fingerprint(cert);
+          final cert = X509Der.buildSelfSignedCert(
+              pubKeyBytes, (tbs) => _signRaw(privateKey, tbs, digest: false));
 
-          return MacosEcdsaBackend._(derBytes: cert, sha256Fingerprint: fp, privateKeyRef: privateKey);
+          return MacosEcdsaBackend._(
+              derBytes: cert.der,
+              sha256Fingerprint: cert.sha256Fingerprint,
+              privateKeyRef: privateKey);
         } finally {
           s.cfRelease(publicKey.cast());
         }

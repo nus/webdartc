@@ -661,18 +661,6 @@ Each item:
   sentAt, pruning) used by both. (`StunMessageBuilder` is already shared —
   only the pending-table is missing.)
 
-### ECDSA self-signed cert sequence duplicated across 3 crypto backends
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** `buildTbsCertificate → sign → buildCertificate → fingerprint`
-  appears in [macos_backend.dart](dart/lib/crypto/macos_backend.dart) (~L351),
-  [windows_backend.dart](dart/lib/crypto/windows_backend.dart) (~L434),
-  [boringssl_backend.dart](dart/lib/crypto/boringssl_backend.dart) (~L342);
-  only the TBS-signing step differs.
-- **Why deferred:** Small; batch with other crypto cleanups.
-- **Acceptance:** `X509Der.buildSelfSignedCert(pub, signTbs)` takes a signing
-  closure; backends shrink to one call each.
-
 ### Over-long methods (>80 lines) to split
 
 - **Found:** 2026-07-03, refactoring audit

@@ -339,12 +339,11 @@ final class BoringSslEcdsaBackend implements EcdsaBackend, Finalizable {
     ssl.ecKeyFree(ecKey); // pkey now holds a ref
 
     // Build certificate
-    final tbs = X509Der.buildTbsCertificate(pubKeyBytes);
-    final signature = _signWithPkey(pkey, tbs);
-    final cert = X509Der.buildCertificate(tbs, signature);
-    final fp = Sha256.fingerprint(cert);
+    final cert = X509Der.buildSelfSignedCert(
+        pubKeyBytes, (tbs) => _signWithPkey(pkey, tbs));
 
-    return BoringSslEcdsaBackend._(derBytes: cert, sha256Fingerprint: fp, pkey: pkey);
+    return BoringSslEcdsaBackend._(
+        derBytes: cert.der, sha256Fingerprint: cert.sha256Fingerprint, pkey: pkey);
   }
 
   @override
