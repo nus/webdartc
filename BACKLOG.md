@@ -607,21 +607,6 @@ Each item:
 - **Acceptance:** A common stream-backed track base class;
   `AudioData.silenceLike(src)` replaces the inline silence builders.
 
-### Duplicate small utilities → lib/core
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** Three utilities are re-implemented across modules:
-  - **Exponential backoff** (`base * 2^n`, clamped): ICE, DTLS 1.2, v13
-    client, v13 server, SCTP (T3-rtx) — 5 sites.
-  - **hex encoding** (`toRadixString(16).padLeft(2,'0')` join, with
-    case/separator variants): 10+ sites across crypto/ice/pc/transport.
-  - **Constant-time byte compare:** srtp/context (×2 identical),
-    macos_backend, windows_backend, vt_helper `_bytesEqual`.
-- **Why deferred:** Trivial individually; batched here so they land as one
-  sweep.
-- **Acceptance:** `ExponentialBackoff`, `hex()`, and `constantTimeEquals()`
-  defined once (core / crypto) and all call sites converted.
-
 ### SRTP context: cipher-path duplication
 
 - **Found:** 2026-07-03, refactoring audit

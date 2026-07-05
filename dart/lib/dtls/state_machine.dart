@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../core/backoff.dart';
 import '../core/log.dart';
 import '../core/state_machine.dart';
 import '../crypto/csprng.dart';
@@ -80,6 +81,9 @@ final class DtlsStateMachine implements ProtocolStateMachine {
   List<Uint8List>? _lastFlight;
   int _retransmitCount = 0;
   static const int _maxRetransmit = 7;
+  // Flight retransmit backoff: 500ms * 2^count, capped at 60s
+  static const _retransmitBackoff =
+      ExponentialBackoff(baseMs: 500, maxMs: 60000);
 
   /// Expected remote fingerprint (set from SDP a=fingerprint before connecting).
   String? expectedRemoteFingerprint;
@@ -1326,8 +1330,7 @@ final class DtlsStateMachine implements ProtocolStateMachine {
         )
         .toList();
 
-    // Exponential backoff: 500ms * 2^count, capped at 60s
-    final delayMs = (500 * (1 << _retransmitCount)).clamp(0, 60000);
+    final delayMs = _retransmitBackoff.delayMs(_retransmitCount);
     final timeout = Timeout(
       at: DateTime.now().add(Duration(milliseconds: delayMs)),
       token: DtlsRetransmitToken(epoch),

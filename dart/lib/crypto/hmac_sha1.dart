@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as pkg_crypto;
 
+import 'constant_time.dart';
+
 /// HMAC-SHA1 using package:crypto.
 abstract final class HmacSha1 {
   HmacSha1._();
@@ -23,23 +25,14 @@ abstract final class HmacSha1 {
 
   /// Constant-time HMAC-SHA1 verification against a stored MAC.
   static bool verify(Uint8List key, Uint8List data, Uint8List mac) {
-    final expected = compute(key, data);
-    if (expected.length != mac.length) return false;
-    var result = 0;
-    for (var i = 0; i < expected.length; i++) {
-      result |= expected[i] ^ mac[i];
-    }
-    return result == 0;
+    return constantTimeEquals(compute(key, data), mac);
   }
 
   /// Constant-time 80-bit HMAC-SHA1 verification.
   static bool verify80(Uint8List key, Uint8List data, Uint8List mac) {
     if (mac.length != digest80BitLength) return false;
     final full = compute(key, data);
-    var result = 0;
-    for (var i = 0; i < digest80BitLength; i++) {
-      result |= full[i] ^ mac[i];
-    }
-    return result == 0;
+    return constantTimeEquals(
+        Uint8List.sublistView(full, 0, digest80BitLength), mac);
   }
 }

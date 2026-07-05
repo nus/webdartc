@@ -1,6 +1,8 @@
 import 'dart:math';
 import 'dart:typed_data';
 
+import '../core/hex.dart';
+
 /// Cryptographically secure random byte generation.
 ///
 /// Uses Dart's [Random.secure()] which delegates to the OS CSPRNG.
@@ -19,11 +21,7 @@ abstract final class Csprng {
   }
 
   /// Returns a hex string of [n] random bytes (2n characters).
-  static String randomHex(int n) {
-    return randomBytes(n)
-        .map((b) => b.toRadixString(16).padLeft(2, '0'))
-        .join();
-  }
+  static String randomHex(int n) => hex(randomBytes(n));
 
   /// 12-byte STUN transaction ID (RFC 5389 §6).
   static Uint8List randomTransactionId() => randomBytes(12);

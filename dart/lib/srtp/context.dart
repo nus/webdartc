@@ -4,6 +4,7 @@ import '../core/byte_io.dart';
 import '../core/result.dart';
 import '../core/state_machine.dart' show CryptoError;
 import '../crypto/aes_cm.dart';
+import '../crypto/constant_time.dart';
 import '../crypto/aes_gcm.dart';
 import '../crypto/hmac_sha1.dart';
 
@@ -313,11 +314,7 @@ final class SrtpContext {
     final receivedTag = srtpPacket.sublist(srtpPacket.length - authTagLen);
     final expectedTag = _computeAuthTag(_remoteAuthKey, packetBody, index, authTagLen);
 
-    var tagMismatch = 0;
-    for (var i = 0; i < authTagLen; i++) {
-      tagMismatch |= receivedTag[i] ^ expectedTag[i];
-    }
-    if (tagMismatch != 0) {
+    if (!constantTimeEquals(receivedTag, expectedTag)) {
       return Err(const CryptoError('SRTP: authentication failed'));
     }
 
@@ -423,11 +420,7 @@ final class SrtpContext {
     final receivedTag = srtcpPacket.sublist(srtcpPacket.length - authTagLen);
     final expectedTag = HmacSha1.compute80(_remoteRtcpAuthKey, forAuth);
 
-    var tagMismatch = 0;
-    for (var i = 0; i < authTagLen; i++) {
-      tagMismatch |= receivedTag[i] ^ expectedTag[i];
-    }
-    if (tagMismatch != 0) {
+    if (!constantTimeEquals(receivedTag, expectedTag)) {
       return Err(const CryptoError('SRTCP: authentication failed'));
     }
 

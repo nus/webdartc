@@ -28,6 +28,7 @@ import 'dart:io' show Platform;
 
 import 'package:ffi/ffi.dart' as pkgffi;
 
+import '../../../crypto/constant_time.dart';
 import 'bindings.g.dart';
 
 // ── Apple SDK constants not emitted by ffigen ─────────────────────────────
@@ -957,10 +958,7 @@ int wvtDecoderDecode(
 
 bool _bytesEqual(
     ffi.Pointer<ffi.Uint8> a, ffi.Pointer<ffi.Uint8> b, int n) {
-  for (int i = 0; i < n; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
+  return constantTimeEquals(a.asTypedList(n), b.asTypedList(n));
 }
 
 ffi.Pointer<WvtDecodedFrame> wvtDecoderDrainOne(

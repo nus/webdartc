@@ -7,6 +7,7 @@ import '../api/setting_engine.dart';
 import '../api/stats.dart';
 import '../codec/default_codecs.dart';
 import '../core/byte_io.dart';
+import '../core/hex.dart';
 import '../core/log.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
@@ -618,8 +619,8 @@ final class PeerConnection {
   void _onDtlsApplicationData(Uint8List data) {
     // Forward decrypted SCTP data to the SCTP state machine
     if (_debug) {
-      final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-      webdartcLog('[pc] onDtlsAppData len=${data.length} hex=$hex');
+      final dump = hex(data, separator: ' ');
+      webdartcLog('[pc] onDtlsAppData len=${data.length} hex=$dump');
     }
     final pair = _ice.selectedPair;
     if (pair == null) {
@@ -633,8 +634,8 @@ final class PeerConnection {
         if (_debug) webdartcLog('[pc] sctp output: ${result.value.outputPackets.length} pkts');
         for (final pkt in result.value.outputPackets) {
           if (_debug) {
-            final hex = pkt.data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-            webdartcLog('[pc] sctp TX len=${pkt.data.length} hex=$hex');
+            final dump = hex(pkt.data, separator: ' ');
+            webdartcLog('[pc] sctp TX len=${pkt.data.length} hex=$dump');
           }
           _transport.sendSctp(pkt.data);
         }

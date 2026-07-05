@@ -10,6 +10,9 @@
 // correct on the VM).
 import 'dart:typed_data';
 
+import '../core/hex.dart';
+import 'constant_time.dart';
+
 const int _mask32 = 0xFFFFFFFF;
 
 // ── ChaCha20 block function (RFC 8439 §2.3) ────────────────────────────────
@@ -111,8 +114,8 @@ Uint8List poly1305Mac(Uint8List key, Uint8List msg) {
 
   // r is the first 16 bytes, clamped per RFC 8439 §2.5. s is the next 16.
   // Use BigInt arithmetic — clean and correct, if not blazing fast.
-  final r = BigInt.parse(_hex(_clampR(key.sublist(0, 16))), radix: 16);
-  final s = BigInt.parse(_hex(_reverseBytes(key.sublist(16, 32))), radix: 16);
+  final r = BigInt.parse(hex(_clampR(key.sublist(0, 16))), radix: 16);
+  final s = BigInt.parse(hex(_reverseBytes(key.sublist(16, 32))), radix: 16);
   // Note: _reverseBytes converts little-endian bytes to a hex string usable
   // with BigInt.parse (which expects big-endian hex).
 
@@ -129,7 +132,7 @@ Uint8List poly1305Mac(Uint8List key, Uint8List msg) {
       block[i] = msg[off + i];
     }
     block[blockLen] = 0x01;
-    final n = BigInt.parse(_hex(_reverseBytes(block)), radix: 16);
+    final n = BigInt.parse(hex(_reverseBytes(block)), radix: 16);
     acc = ((acc + n) * r) % p;
     off += blockLen;
   }
@@ -167,14 +170,6 @@ Uint8List _reverseBytes(Uint8List src) {
   return out;
 }
 
-String _hex(Uint8List bytes) {
-  final sb = StringBuffer();
-  for (final b in bytes) {
-    sb.write(b.toRadixString(16).padLeft(2, '0'));
-  }
-  return sb.toString();
-}
-
 // ── AEAD construction (RFC 8439 §2.8) ──────────────────────────────────────
 
 /// Derive the per-message Poly1305 key from the AEAD key and nonce.
@@ -203,13 +198,7 @@ Uint8List? aeadDecrypt(Uint8List key, Uint8List nonce, Uint8List ciphertext,
   final macData = _macInput(aad, ciphertext);
   final tag = poly1305Mac(otk, macData);
 
-  // Constant-time-ish comparison.
-  if (tag.length != expectedTag.length) return null;
-  var diff = 0;
-  for (var i = 0; i < tag.length; i++) {
-    diff |= tag[i] ^ expectedTag[i];
-  }
-  if (diff != 0) return null;
+  if (!constantTimeEquals(tag, expectedTag)) return null;
 
   return chacha20Xor(key, 1, nonce, ciphertext);
 }

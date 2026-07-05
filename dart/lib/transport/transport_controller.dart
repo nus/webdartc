@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../api/setting_engine.dart';
+import '../core/hex.dart';
 import '../core/log.dart';
 import '../core/state_machine.dart';
 import '../dtls/state_machine.dart';

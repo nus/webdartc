@@ -267,8 +267,8 @@ final class SocketPool {
             ' on local=$bindIp'
             ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
         if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
-          final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-          webdartcLog('[transport] RX hex: $hex');
+          final dump = hex(data, separator: ' ');
+          webdartcLog('[transport] RX hex: $dump');
         }
       }
 
@@ -327,8 +327,8 @@ final class SocketPool {
             ' from local=${localIp ?? "?"}'
             ' b0=${data.isNotEmpty ? data[0].toRadixString(16) : "?"}');
         if (data.isNotEmpty && (data[0] == 0x00 || data[0] == 0x01)) {
-          final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-          webdartcLog('[transport] TX hex: $hex');
+          final dump = hex(data, separator: ' ');
+          webdartcLog('[transport] TX hex: $dump');
         }
       }
       final socket = _selectSocket(localIp);

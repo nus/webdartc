@@ -1,6 +1,8 @@
 import 'dart:collection';
 import 'dart:typed_data';
 
+import '../core/backoff.dart';
+import '../core/hex.dart';
 import '../core/state_machine.dart';
 import '../crypto/csprng.dart';
 import '../stun/builder.dart';
@@ -109,6 +111,10 @@ final class IceStateMachine implements ProtocolStateMachine {
 
   // Connectivity check retransmit timeout: 500ms base (RFC 8445 §14.3)
   static const Duration _checkTimeout = Duration(milliseconds: 500);
+
+  // Connectivity check retransmit backoff: 500ms * 2^Rc, capped at 16s
+  // (RFC 8445 §14.3).
+  static const _checkBackoff = ExponentialBackoff(baseMs: 500, maxMs: 16000);
 
   // STUN server gathering timeout
   static const Duration _stunGatherTimeout = Duration(seconds: 3);
@@ -982,7 +988,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     final now = DateTime.now();
     for (final txId in _pendingChecks.keys.toList()) {
       final check = _pendingChecks[txId]!;
-      final rtoMs = (500 * (1 << check.retransmitCount)).clamp(0, 16000);
+      final rtoMs = _checkBackoff.delayMs(check.retransmitCount);
       if (now.difference(check.sentAt) >= Duration(milliseconds: rtoMs)) {
         if (check.retransmitCount >= 7) {
           // RFC 8445 §14.3: max Rc=7 retransmits — fail the pair
@@ -1015,7 +1021,7 @@ final class IceStateMachine implements ProtocolStateMachine {
         minRc = check.retransmitCount;
       }
     }
-    final delayMs = (500 * (1 << minRc)).clamp(0, 16000);
+    final delayMs = _checkBackoff.delayMs(minRc);
     final nextTimeout = Timeout(
       at: DateTime.now().add(Duration(milliseconds: delayMs)),
       token: IceTimerToken(++_timerIdCounter),
@@ -1197,8 +1203,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     onStateChange?.call(newState);
   }
 
-  static String _txIdString(Uint8List id) =>
-      id.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  static String _txIdString(Uint8List id) => hex(id);
 }
 
 class _PendingCheck {

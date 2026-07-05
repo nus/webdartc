@@ -8,6 +8,7 @@ import 'aes_gcm.dart' show AesGcmResult;
 import 'chacha20_poly1305.dart' show AeadResult;
 import 'chacha20_poly1305_pure.dart' as cc20p1305;
 import 'common_crypto.dart';
+import 'constant_time.dart';
 import 'crypto_backend.dart';
 import 'security_framework.dart';
 import 'sha256.dart';
@@ -128,11 +129,9 @@ final class MacosAesGcmBackend implements AesGcmBackend {
       );
       if (status != kCCSuccess) throw StateError('CCCryptorGCM decrypt failed: $status');
 
-      var tagMismatch = 0;
-      for (var i = 0; i < _tagLength; i++) {
-        tagMismatch |= tagPtr[i] ^ expectedTag[i];
+      if (!constantTimeEquals(tagPtr.asTypedList(_tagLength), expectedTag)) {
+        return null;
       }
-      if (tagMismatch != 0) return null;
 
       return fromNative(dataOutPtr, ciphertext.length);
     } finally {
