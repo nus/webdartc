@@ -4,12 +4,21 @@
 /// (https://github.com/OpenAyame/ayame-spec) and runs a bidirectional
 /// H.264 video call against a browser or another Flutter peer.
 ///
-/// On launch the app shows a small form for the WebSocket URL, the room
-/// id, and the optional signaling key; defaults can be pre-filled via
-/// `--dart-define=AYAME_URL=...` (likewise `AYAME_ROOM`, `AYAME_SIGNALING_KEY`).
-/// Setting `WEBDARTC_PORT=N` in the environment skips the form and
-/// auto-joins the local `dart/example/signaling/server.dart` running on
-/// that port (room defaults to `webdartc-demo`) — used by the
+/// On launch the app starts an embedded signaling relay on port 8080
+/// (see `embedded_signaling.dart`), so `flutter run` alone is enough:
+/// open the URL shown on the form (`http://127.0.0.1:8080/`) in a
+/// browser and press **Join**. If port 8080 is already taken (an
+/// external `dart/example/signaling/server.dart`, or another instance
+/// of this app), the embedded relay is skipped and the app just joins
+/// the existing one.
+///
+/// The form pre-fills the WebSocket URL, the room id, and the optional
+/// signaling key from `--dart-define=AYAME_URL=...` (likewise
+/// `AYAME_ROOM`, `AYAME_SIGNALING_KEY`).
+/// Setting `WEBDARTC_PORT=N` in the environment skips both the form and
+/// the embedded relay, and auto-joins the local
+/// `dart/example/signaling/server.dart` running on that port (room
+/// defaults to `webdartc-demo`) — used by the
 /// `flutter_video_call_bidir_test.dart` e2e harness.
 ///
 /// Run (macOS):
@@ -30,6 +39,8 @@ import 'package:flutter/material.dart';
 import 'package:webdartc/rtp/packetizer.dart'; // H264Packetizer (send path)
 import 'package:webdartc/webdartc.dart';
 import 'package:webdartc_flutter/webdartc_flutter.dart';
+
+import 'embedded_signaling.dart';
 
 void main() => runApp(const _App());
 
@@ -58,12 +69,24 @@ class _HomeState extends State<_Home> {
   /// re-entry.
   _AyameConfig? _lastConfig;
 
+  /// In-app relay so `flutter run` alone suffices. `null` while
+  /// starting, or when port 8080 was taken / `WEBDARTC_PORT` is set.
+  EmbeddedSignalingServer? _server;
+
+  /// Browser-reachable URLs of [_server]; empty means "not serving".
+  List<String> _serverUrls = const [];
+
+  /// Form pre-fill pointing at [_server] when it landed on a fallback
+  /// port (8080 was taken) and no explicit `AYAME_URL` was given.
+  _AyameConfig? _embeddedDefault;
+
   @override
   void initState() {
     super.initState();
     // `WEBDARTC_PORT=N` in the environment auto-joins the local
     // signaling server on port N, room defaults to `webdartc-demo`.
-    // Used by the e2e harness, which can't drive the form UI.
+    // Used by the e2e harness, which can't drive the form UI and
+    // brings its own relay — don't start the embedded one.
     final portEnv = Platform.environment['WEBDARTC_PORT'];
     if (portEnv != null && portEnv.isNotEmpty) {
       _activeConfig = _AyameConfig(
@@ -71,7 +94,46 @@ class _HomeState extends State<_Home> {
         room: 'webdartc-demo',
         signalingKey: '',
       );
+      return;
     }
+    unawaited(_startEmbeddedServer());
+  }
+
+  Future<void> _startEmbeddedServer() async {
+    final server = await EmbeddedSignalingServer.start();
+    if (server == null) {
+      stdout.writeln('[signaling] all candidate ports busy — '
+          'assuming an external relay on ws://127.0.0.1:8080/signaling');
+      return;
+    }
+    final urls = await server.urls();
+    stdout.writeln('[signaling] embedded relay on ${urls.join(' ')}');
+    if (!mounted) {
+      await server.close();
+      return;
+    }
+    setState(() {
+      _server = server;
+      _serverUrls = urls;
+      // 8080 was taken by something else (e.g. an unrelated dev server
+      // holding only loopback) — point the form at the port we got,
+      // unless the user explicitly chose a URL via --dart-define.
+      const explicitUrl =
+          String.fromEnvironment('AYAME_URL', defaultValue: '');
+      if (server.port != 8080 && explicitUrl.isEmpty) {
+        _embeddedDefault = _AyameConfig(
+          url: 'ws://127.0.0.1:${server.port}/signaling',
+          room: 'webdartc-demo',
+          signalingKey: '',
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    unawaited(_server?.close());
+    super.dispose();
   }
 
   @override
@@ -79,7 +141,11 @@ class _HomeState extends State<_Home> {
     final active = _activeConfig;
     if (active == null) {
       return _ConfigForm(
-        initial: _lastConfig,
+        // Re-key when the embedded relay settles on a fallback port so
+        // the pre-filled URL field picks it up.
+        key: ValueKey(_embeddedDefault?.url),
+        initial: _lastConfig ?? _embeddedDefault,
+        serverUrls: _serverUrls,
         onSubmit: (cfg) => setState(() => _activeConfig = cfg),
       );
     }
@@ -109,12 +175,22 @@ class _AyameConfig {
 // ── Connection form ──────────────────────────────────────────────────────
 
 class _ConfigForm extends StatefulWidget {
-  const _ConfigForm({required this.onSubmit, this.initial});
+  const _ConfigForm({
+    super.key,
+    required this.onSubmit,
+    this.initial,
+    this.serverUrls = const [],
+  });
   final ValueChanged<_AyameConfig> onSubmit;
 
   /// Pre-filled values (e.g. the last submitted config). Falls back to
   /// `--dart-define` defaults when null.
   final _AyameConfig? initial;
+
+  /// URLs of the embedded signaling relay, shown so the user knows what
+  /// to open in a browser. Empty when the relay isn't serving (port
+  /// taken by an external one).
+  final List<String> serverUrls;
   @override
   State<_ConfigForm> createState() => _ConfigFormState();
 }
@@ -174,6 +250,29 @@ class _ConfigFormState extends State<_ConfigForm> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  if (widget.serverUrls.isNotEmpty) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.white24),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Embedded signaling relay is running.\n'
+                              'Open in a browser (grant camera), then Join:'),
+                          const SizedBox(height: 6),
+                          for (final url in widget.serverUrls)
+                            SelectableText(url,
+                                style: const TextStyle(
+                                    fontFamily: 'Menlo',
+                                    color: Colors.lightGreenAccent)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   TextFormField(
                     controller: _urlCtl,
                     decoration: const InputDecoration(

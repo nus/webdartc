@@ -31,6 +31,53 @@ Flutter SDK.
 > Only need the protocol library? Depend on `webdartc` from your own
 > project — you don't have to clone this repo.
 
+## Try it against a browser
+
+### Flutter video call (macOS / Android)
+
+The fastest way to see the whole stack working is the Flutter demo app
+calling a browser. The app embeds its own signaling relay, so one command is
+enough:
+
+```bash
+cd flutter/example
+flutter run -d macos        # or: flutter run -d <android-device>
+```
+
+Then open the URL the app shows on its launch screen (normally
+`http://127.0.0.1:8080/`) in a browser, grant camera permission, and press
+**Join** in the app. The two peers negotiate H.264 over real
+ICE / DTLS / SRTP: the browser shows the Flutter app's generated test
+pattern, and the Flutter app's `remote` tile shows your camera, with `sent` /
+`recv` frame counters advancing on both sides.
+
+Prereqs on macOS: Xcode + CocoaPods (`brew install cocoapods`). For Android
+devices, hosted [OpenAyame](https://github.com/OpenAyame/ayame) servers, and
+`--dart-define` options, see
+[`flutter/example/README.md`](flutter/example/README.md).
+
+### Dart only (no Flutter SDK)
+
+The protocol library alone can also call a browser — each example is a
+self-contained `dart run` entrypoint that serves its own browser page:
+
+```bash
+cd dart
+
+# Dart → browser: streams a generated test pattern
+dart run example/video_sender/server.dart --port=8080 --codec=h264
+# open http://127.0.0.1:8080 in Chrome
+
+# browser camera → Dart decoder
+dart run example/video_receiver/server.dart --port=8080 --codec=h264
+
+# browser camera echoed back through a Dart RTP forwarder
+dart run example/video_echo/server.dart --port=8080
+```
+
+More examples (audio send/receive, getUserMedia call, ICE gathering) are
+listed in [`dart/README.md#examples`](dart/README.md#examples).
+
 ## Layout
 
 ```
@@ -71,7 +118,7 @@ flutter analyze
 
 # Flutter macOS demo — a full Flutter ↔ browser WebRTC call
 cd flutter/example
-flutter run -d macos      # pair with dart/example/signaling (OpenAyame) + a browser
+flutter run -d macos      # embeds the signaling relay; open the shown URL in a browser
 ```
 
 Because `flutter` depends on `dart` via `path:`, edits in `dart/` are picked up
