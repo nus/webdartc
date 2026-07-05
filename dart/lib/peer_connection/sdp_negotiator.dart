@@ -67,19 +67,32 @@ final class SdpNegotiator {
   /// [AudioCodecName], which are already lower-case).
   String? _codecForPt(int payloadType) => _ptCodecMap[payloadType];
 
+  // RFC 3551 §6: PTs 0–34 are statically assigned to audio codecs.
+  static const int _staticAudioPtMax = 34;
+  // RFC 3551 §3: PTs 96–127 are the dynamic assignment range.
+  static const int _dynamicPtMin = 96;
+  static const int _dynamicPtMax = 127;
+
   String _resolveTrackKind(int payloadType) {
     // Check dynamically negotiated PTs first (populated from SDP).
     final fromSdp = _ptKindMap[payloadType];
     if (fromSdp != null) return fromSdp;
     // Fallback heuristics for well-known static PTs.
-    if (payloadType <= 34) return 'audio'; // RFC 3551 static audio range
-    if (payloadType >= 96 && payloadType <= 127) {
-      // Dynamic range — check unmatched transceivers
-      for (final t in _pc._transceivers) {
-        if (!_pc._receivers.values.any((r) => r.kind == t.kind)) return t.kind;
-      }
+    if (payloadType <= _staticAudioPtMax) return 'audio';
+    if (payloadType >= _dynamicPtMin && payloadType <= _dynamicPtMax) {
+      final kind = _kindOfUnmatchedTransceiver();
+      if (kind != null) return kind;
     }
     return 'audio';
+  }
+
+  /// Kind of the first transceiver that has no receiver of its kind yet, or
+  /// null if every transceiver's kind is already receiving.
+  String? _kindOfUnmatchedTransceiver() {
+    for (final t in _pc._transceivers) {
+      if (!_pc._receivers.values.any((r) => r.kind == t.kind)) return t.kind;
+    }
+    return null;
   }
 
   // ── Offer / answer builders ───────────────────────────────────────────────

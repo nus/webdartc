@@ -117,13 +117,13 @@ abstract final class RtpParser {
 
   static RtcpPacket? _parseOneRtcp(int pt, int rc, Uint8List body) {
     switch (pt) {
-      case 200: return _parseSr(body, rc);
-      case 201: return _parseRr(body, rc);
-      case 202: return _parseSdes(body, rc);
-      case 203: return _parseBye(body, rc);
-      case 205: return _parseFb(body, rc, pt);  // RTPFB
-      case 206: return _parseFb(body, rc, pt);  // PSFB
-      default:  return null;
+      case RtcpPacketType.sr: return _parseSr(body, rc);
+      case RtcpPacketType.rr: return _parseRr(body, rc);
+      case RtcpPacketType.sdes: return _parseSdes(body, rc);
+      case RtcpPacketType.bye: return _parseBye(body, rc);
+      case RtcpPacketType.rtpfb: return _parseFb(body, rc, pt);
+      case RtcpPacketType.psfb: return _parseFb(body, rc, pt);
+      default: return null;
     }
   }
 
@@ -211,7 +211,7 @@ abstract final class RtpParser {
     final senderSsrc = readU32(body, 4);
     final mediaSsrc  = readU32(body, 8);
 
-    if (pt == 205 && fmt == 1) {
+    if (pt == RtcpPacketType.rtpfb && fmt == 1) {
       // Generic NACK
       final nacks = <RtcpNackEntry>[];
       var offset = 12;
@@ -228,7 +228,7 @@ abstract final class RtpParser {
         nacks: nacks,
       );
     }
-    if (pt == 206 && fmt == 1) {
+    if (pt == RtcpPacketType.psfb && fmt == 1) {
       return RtcpPli(senderSsrc: senderSsrc, mediaSourceSsrc: mediaSsrc);
     }
     return null;

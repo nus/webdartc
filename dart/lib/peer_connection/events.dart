@@ -373,7 +373,6 @@ final class RtpSender {
   /// The payload is wrapped in an RTP header, SRTP-encrypted, and sent.
   /// [marker] should be true for the first packet of a talkspurt (audio) or
   /// the last packet of a video frame.
-  /// Send raw RTP payload.
   ///
   /// If [timestamp] is provided, it is used directly (for reflect/echo).
   /// Otherwise, timestamp is auto-incremented.

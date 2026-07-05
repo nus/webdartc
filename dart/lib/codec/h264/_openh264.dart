@@ -9,14 +9,14 @@
 /// Only the four `WelsCreate*` / `WelsDestroy*` constructors plus
 /// `WelsGetCodecVersion` are bound here. Every other call goes through
 /// the `ISVCEncoderVtbl` / `ISVCDecoderVtbl` returned by those
-/// constructors, defined in [openh264_bindings.g.dart]; vtable methods
+/// constructors, defined in [openh264/bindings.g.dart]; vtable methods
 /// are reached via `Pointer.asFunction`, not @Native.
 @ffi.DefaultAsset('package:webdartc/codec/h264/_openh264.dart')
 library;
 
 import 'dart:ffi' as ffi;
 
-import 'openh264_bindings.g.dart' as oh;
+import 'openh264/bindings.g.dart' as oh;
 
 @ffi.Native<ffi.Int Function(ffi.Pointer<ffi.Pointer<oh.ISVCEncoder>>)>(
     symbol: 'WelsCreateSVCEncoder')

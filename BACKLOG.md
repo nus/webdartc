@@ -611,36 +611,13 @@ Each item:
   `_sendServerFlight` (~170 lines), v13 client `_handleServerFinished`
   (~113), v1.2 `_handleClientHello` (~95) / `_sendServerFlight` /
   `_sendClientFlight`, ICE `_handleIceTimer` / `_handleBindingRequest`,
-  `RtcpTransportCc.build` (~100, classify→chunk→serialize in one),
-  [rtp/packet.dart:368-465](dart/lib/rtp/packet.dart#L368-L465).
+  ~~`RtcpTransportCc.build` (~100, classify→chunk→serialize in one)~~
+  (split 2026-07-05 with the C-class consistency batch).
 - **Why deferred:** Pure readability; fold into whichever branch touches each
   file next rather than a dedicated pass.
 - **Acceptance:** Opportunistic, method-by-method — split into phase-named
   private helpers (no behavior change) when a branch touches the file; strike
   through as they land. Not a single-PR item.
-
-### Small consistency items (batch)
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** Cheap, independent fixes:
-  - `sendRtp` doc comment has a pasted-in duplicate summary line mid-comment
-    ([events.dart:371-376](dart/lib/peer_connection/events.dart#L371-L376)).
-  - `core`'s `StateError` shadows Dart's built-in — rename to
-    `ProtocolStateError` (also update the sealed-error list in CLAUDE.md,
-    which documents `StateError` by name).
-  - `IceStateMachine.processInput` adds a `localIp` param not in the
-    `ProtocolStateMachine` signature it `@override`s.
-  - RTCP packet types 200–206 as bare literals in both `packet.dart` and
-    `parser.dart`; VP8/H264 descriptor bit masks; `payloadType <= 34` static
-    ranges in `_resolveTrackKind` — name the constants.
-  - `openh264_bindings.g.dart` sits beside hand-written code while other
-    codecs keep generated bindings in subdirectories — move under
-    `h264/openh264/`.
-  - (The inline raw-byte FIR builder moved to the "FIR command sequence
-    number hard-coded to 1" entry in RTP / RTCP / SDP, where it ships with
-    the seq-number fix.)
-- **Why deferred:** Each is minutes of work; recorded so they aren't lost.
-- **Acceptance:** Item-by-item; strike through as they land.
 
 ### Public barrel exports internal protocol types
 

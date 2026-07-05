@@ -65,7 +65,7 @@ STUN   Crypto (CommonCrypto / BoringSSL / CNG via FFI)
 
 - **No RTC prefix**: W3C types use short names (`PeerConnection`, `DataChannel`, not `RTCPeerConnection`)
 - **Result type**: Protocol methods return `Result<T, ProtocolError>` (lib/core/result.dart), not exceptions
-- **Sealed error types**: `ParseError`, `StateError`, `CryptoError`, `InternalError` (all extend `ProtocolError`)
+- **Sealed error types**: `ParseError`, `ProtocolStateError`, `CryptoError`, `InternalError` (all extend `ProtocolError`)
 - **Timer tokens**: Each protocol has its own `TimerToken` subclass (e.g., `IceTimerToken`, `DtlsRetransmitToken`, `SctpT3RtxToken`)
 - **I/O isolation**: Verify with `grep -rn "RawDatagramSocket\|RawSocket" lib/crypto/ lib/media/ lib/codec/ lib/core/ lib/peer_connection/` (should produce no output)
 - **Receive media path (W3C)**: `onTrack` → `TrackEvent.track` is a decoded `MediaStreamTrack` (`onVideoFrame`/`onAudioData`). The decode pipeline (jitter buffer → depacketize → decode) lives in `lib/media/receive_pipeline.dart`, owned by `RtpReceiver`, pumped from PeerConnection's 100 ms RTCP tick. It builds lazily on the first track listener; the decoder's native lib loads only then. `PeerConnection` auto-registers bundled codec backends (`autoRegisterCodecs`, default true); `track` is null when the codec has no decoder+depacketizer, in which case use `RtpReceiver.onRtp` (raw RTP, always available regardless of codec registration).

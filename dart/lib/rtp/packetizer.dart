@@ -39,6 +39,17 @@ abstract interface class AudioPayloadDepacketizer {
 
 // ── VP8 Packetizer (RFC 7741) ───────────────────────────────────────────────
 
+// VP8 payload descriptor bits (RFC 7741 §4.2).
+const int _vp8XBit = 0x80; // X: extension byte present
+const int _vp8SBit = 0x10; // S: start of VP8 partition
+// Extension-byte flags.
+const int _vp8IBit = 0x80; // I: PictureID present
+const int _vp8LBit = 0x40; // L: TL0PICIDX present
+const int _vp8TBit = 0x20; // T: TID present
+const int _vp8KBit = 0x10; // K: KEYIDX present
+// PictureID leading bit: 1 → 16-bit PictureID, 0 → 8-bit.
+const int _vp8MBit = 0x80;
+
 /// VP8 RTP payload format packetizer (RFC 7741 §4).
 ///
 /// VP8 payload descriptor (minimal, 1 byte):
@@ -70,8 +81,7 @@ final class Vp8Packetizer implements PayloadPacketizer {
       final isLast = (offset + chunkSize) >= encodedData.length;
 
       // VP8 payload descriptor (1 byte, no extensions)
-      // Bit 4 (S): 1 if this is the start of a VP8 partition
-      final descriptor = isFirst ? 0x10 : 0x00; // S=1 for first fragment
+      final descriptor = isFirst ? _vp8SBit : 0x00; // S=1 for first fragment
 
       final payload = Uint8List(1 + chunkSize);
       payload[0] = descriptor;
@@ -102,21 +112,19 @@ final class Vp8Depacketizer implements VideoPayloadDepacketizer {
     final firstByte = rtpPayload[0];
     offset++; // skip descriptor byte
 
-    // X bit (bit 7) — extended fields present
-    if ((firstByte & 0x80) != 0 && rtpPayload.length > offset) {
+    if ((firstByte & _vp8XBit) != 0 && rtpPayload.length > offset) {
       final xByte = rtpPayload[offset++];
-      // I bit — PictureID present
-      if ((xByte & 0x80) != 0 && rtpPayload.length > offset) {
-        if ((rtpPayload[offset] & 0x80) != 0) {
+      if ((xByte & _vp8IBit) != 0 && rtpPayload.length > offset) {
+        if ((rtpPayload[offset] & _vp8MBit) != 0) {
           offset += 2; // 16-bit PictureID
         } else {
           offset += 1; // 8-bit PictureID
         }
       }
-      // L bit — TL0PICIDX present
-      if ((xByte & 0x40) != 0 && rtpPayload.length > offset) offset++;
-      // T/K bits — TID/KEYIDX present
-      if (((xByte & 0x20) != 0 || (xByte & 0x10) != 0) && rtpPayload.length > offset) {
+      if ((xByte & _vp8LBit) != 0 && rtpPayload.length > offset) offset++;
+      // TID and KEYIDX share one byte when either is present.
+      if (((xByte & _vp8TBit) != 0 || (xByte & _vp8KBit) != 0) &&
+          rtpPayload.length > offset) {
         offset++;
       }
     }
@@ -292,6 +300,11 @@ final class Vp9Depacketizer implements VideoPayloadDepacketizer {
 
 // ── H.264 Packetizer (RFC 6184) ─────────────────────────────────────────────
 
+// H.264 NAL unit types (ITU-T H.264 §7.4.1; RFC 6184 §5.4).
+const int _h264NalIdr = 5;    // IDR (keyframe) slice
+const int _h264NalStapA = 24; // STAP-A aggregation packet
+const int _h264NalFuA = 28;   // FU-A fragmentation unit
+
 /// Splits an Annex B H.264 byte-stream into individual NAL units.
 ///
 /// Start codes `00 00 01` or `00 00 00 01` delimit NAL units; this function
@@ -357,7 +370,7 @@ final class H264Packetizer implements PayloadPacketizer {
       } else {
         // FU-A fragmentation.
         final header = nal[0];
-        final fuIndicator = (header & 0xE0) | 28; // preserve F/NRI, type = FU-A
+        final fuIndicator = (header & 0xE0) | _h264NalFuA; // preserve F/NRI
         final nalType = header & 0x1F;
         final body = Uint8List.sublistView(nal, 1);
         final chunkSize = maxPayloadSize - 2; // minus FU ind + FU header
@@ -405,7 +418,7 @@ final class H264Depacketizer implements VideoPayloadDepacketizer {
 
     if (type >= 1 && type <= 23) {
       _nals.add(Uint8List.fromList(payload));
-    } else if (type == 24) {
+    } else if (type == _h264NalStapA) {
       // STAP-A (RFC 6184 §5.7.1): a single RTP payload carrying multiple
       // NAL units. Layout after the STAP-A header byte:
       //   [ 2-byte BE size | N bytes NAL unit ]  repeated
@@ -417,7 +430,7 @@ final class H264Depacketizer implements VideoPayloadDepacketizer {
         _nals.add(Uint8List.sublistView(payload, off, off + size));
         off += size;
       }
-    } else if (type == 28) {
+    } else if (type == _h264NalFuA) {
       if (payload.length < 2) return null;
       final fuHeader = payload[1];
       final start = (fuHeader & 0x80) != 0;
@@ -447,7 +460,7 @@ final class H264Depacketizer implements VideoPayloadDepacketizer {
     for (final n in _nals) {
       size += _startCode.length + n.length;
       final t = n[0] & 0x1F;
-      if (t == 5) isKey = true; // IDR slice
+      if (t == _h264NalIdr) isKey = true;
     }
     final out = Uint8List(size);
     var w = 0;

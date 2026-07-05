@@ -19,7 +19,7 @@ import '../mediacodec/mime_types.dart';
 import '_openh264.dart' as wels;
 import 'h264_decoder_backend.dart';
 import 'mediacodec_encoder_backend.dart';
-import 'openh264_bindings.g.dart' as oh;
+import 'openh264/bindings.g.dart' as oh;
 import 'videotoolbox_decoder_backend.dart';
 import 'videotoolbox_encoder_backend.dart';
 

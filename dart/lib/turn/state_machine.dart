@@ -183,7 +183,7 @@ final class TurnAllocation implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> start() {
     if (_state != TurnState.idle) {
-      return Err(StateError('TURN: start() called in state $_state'));
+      return Err(ProtocolStateError('TURN: start() called in state $_state'));
     }
     _state = TurnState.allocating;
     final txId = Csprng.randomTransactionId();
@@ -203,7 +203,7 @@ final class TurnAllocation implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> createPermission(IpAddress peerIp) {
     if (_state != TurnState.allocated) {
-      return Err(StateError('TURN: createPermission requires allocated state'));
+      return Err(ProtocolStateError('TURN: createPermission requires allocated state'));
     }
     return Ok(_sendCreatePermission(peerIp));
   }
@@ -211,7 +211,7 @@ final class TurnAllocation implements ProtocolStateMachine {
   Result<ProcessResult, ProtocolError> bindChannel(
       IpAddress peerIp, int peerPort) {
     if (_state != TurnState.allocated) {
-      return Err(StateError('TURN: bindChannel requires allocated state'));
+      return Err(ProtocolStateError('TURN: bindChannel requires allocated state'));
     }
     final channel = _peerToChannel[(peerIp, peerPort)] ??
         _allocateChannel(peerIp, peerPort);
@@ -224,7 +224,7 @@ final class TurnAllocation implements ProtocolStateMachine {
   Result<OutputPacket, ProtocolError> wrapSend(
       IpAddress peerIp, int peerPort, Uint8List payload) {
     if (_state != TurnState.allocated) {
-      return Err(StateError('TURN: wrapSend requires allocated state'));
+      return Err(ProtocolStateError('TURN: wrapSend requires allocated state'));
     }
     final channel = _peerToChannel[(peerIp, peerPort)];
     if (channel != null) {
@@ -232,7 +232,7 @@ final class TurnAllocation implements ProtocolStateMachine {
           buildChannelData(channel, payload, pad: padChannelData)));
     }
     if (!_permissions.contains(peerIp)) {
-      return Err(StateError(
+      return Err(ProtocolStateError(
           'TURN: no permission for $peerIp — call createPermission first'));
     }
     final msg = StunMessage(
@@ -248,7 +248,7 @@ final class TurnAllocation implements ProtocolStateMachine {
 
   Result<ProcessResult, ProtocolError> close() {
     if (_state != TurnState.allocated) {
-      return Err(StateError('TURN: close() requires allocated state'));
+      return Err(ProtocolStateError('TURN: close() requires allocated state'));
     }
     _state = TurnState.closing;
     return Ok(_sendRefresh(lifetime: 0));
@@ -261,9 +261,10 @@ final class TurnAllocation implements ProtocolStateMachine {
     Uint8List packet, {
     required IpAddress remoteIp,
     required int remotePort,
+    IpAddress? localIp,
   }) {
     if (remoteIp != serverIp || remotePort != serverPort) {
-      return Err(StateError(
+      return Err(ProtocolStateError(
           'TURN: packet from unexpected peer $remoteIp:$remotePort'));
     }
 

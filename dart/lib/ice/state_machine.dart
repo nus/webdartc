@@ -170,7 +170,7 @@ final class IceStateMachine implements ProtocolStateMachine {
     required List<HostBinding> hosts,
   }) {
     if (hosts.isEmpty) {
-      return Err(const StateError('ICE: startGathering requires at least one host binding'));
+      return Err(const ProtocolStateError('ICE: startGathering requires at least one host binding'));
     }
     _localParams = localParams;
     _localKey = Uint8List.fromList(localParams.password.codeUnits);
@@ -412,7 +412,7 @@ final class IceStateMachine implements ProtocolStateMachine {
   Result<ProcessResult, ProtocolError> sendData(Uint8List payload) {
     final pair = _selectedPair;
     if (pair == null) {
-      return Err(const StateError('ICE: no selected pair — cannot send data'));
+      return Err(const ProtocolStateError('ICE: no selected pair — cannot send data'));
     }
     return Ok(ProcessResult(
       outputPackets: [

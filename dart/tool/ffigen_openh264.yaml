@@ -2,7 +2,7 @@ name: OpenH264Bindings
 description: |
   Bindings for OpenH264 (Cisco's software H.264 encoder/decoder).
   Generated via: dart run ffigen --config tool/ffigen_openh264.yaml
-output: '../lib/codec/h264/openh264_bindings.g.dart'
+output: '../lib/codec/h264/openh264/bindings.g.dart'
 llvm-path:
   - '/usr/lib/llvm-18/lib'
 headers:

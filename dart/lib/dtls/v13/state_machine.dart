@@ -114,7 +114,7 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
       _state == DtlsV13ServerState.waitClientCertificateVerify;
 
   @override
-  core.ProtocolError get _retransmitLimitError => const core.StateError(
+  core.ProtocolError get _retransmitLimitError => const core.ProtocolStateError(
         'DTLS 1.3: server flight retransmit limit exceeded',
       );
 
@@ -768,7 +768,7 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
     final peerPub = _peerCertPubKey;
     if (peerPub == null) {
       return core.Err(
-        const core.StateError(
+        const core.ProtocolStateError(
             'DTLS 1.3: client CertificateVerify before Certificate'),
       );
     }
@@ -802,7 +802,7 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
     final keys = _records.rxHandshakeKeys;
     if (keys == null) {
       return core.Err(
-        const core.StateError('DTLS 1.3: client Finished before keys'),
+        const core.ProtocolStateError('DTLS 1.3: client Finished before keys'),
       );
     }
     // The client computes verify_data over CH..server-Finished, which is

@@ -224,7 +224,7 @@ void main() {
       expect(serverRx.first, equals([0xCC]));
     });
 
-    test('requestKeyUpdate before CONNECTED returns StateError', () {
+    test('requestKeyUpdate before CONNECTED returns ProtocolStateError', () {
       final c = DtlsV13ClientStateMachine(
         localCert: EcdsaCertificate.selfSigned(),
       );

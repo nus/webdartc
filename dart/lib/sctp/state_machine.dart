@@ -150,7 +150,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
     String protocol = '',
   }) {
     if (_state != SctpState.established) {
-      return Err(const StateError('SCTP: not established'));
+      return Err(const ProtocolStateError('SCTP: not established'));
     }
     final dcepType = ordered
         ? DcepChannelType.reliable
@@ -178,7 +178,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
     int ppid = SctpPpid.webrtcBinary,
   }) {
     if (_state != SctpState.established) {
-      return Err(const StateError('SCTP: not established'));
+      return Err(const ProtocolStateError('SCTP: not established'));
     }
 
     final ssn = _sendSsn[streamId] ?? 0;
@@ -238,6 +238,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
     Uint8List packet, {
     required IpAddress remoteIp,
     required int remotePort,
+    IpAddress? localIp,
   }) {
     _remoteIp = remoteIp;
     _remotePort = remotePort;
@@ -697,7 +698,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
   /// [onStreamReset] once it completes in both directions.
   Result<ProcessResult, ProtocolError> resetStreams(List<int> streamIds) {
     if (_state != SctpState.established) {
-      return Err(const StateError('SCTP: not established'));
+      return Err(const ProtocolStateError('SCTP: not established'));
     }
     _queueOutgoingReset(streamIds);
     return Ok(_maybeSendReconfig());
@@ -885,7 +886,7 @@ final class SctpStateMachine implements ProtocolStateMachine {
 
     if (_retransmitCount >= _maxRetransmit) {
       _state = SctpState.closed;
-      return Err(const StateError('SCTP: max retransmissions exceeded'));
+      return Err(const ProtocolStateError('SCTP: max retransmissions exceeded'));
     }
     _retransmitCount++;
     // Retransmit ALL pending (un-ACKed) chunks, not just the triggered one.

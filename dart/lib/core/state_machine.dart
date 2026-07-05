@@ -20,12 +20,12 @@ final class ParseError extends ProtocolError {
   String toString() => 'ParseError($message)';
 }
 
-final class StateError extends ProtocolError {
+final class ProtocolStateError extends ProtocolError {
   @override
   final String message;
-  const StateError(this.message);
+  const ProtocolStateError(this.message);
   @override
-  String toString() => 'StateError($message)';
+  String toString() => 'ProtocolStateError($message)';
 }
 
 final class CryptoError extends ProtocolError {
@@ -51,10 +51,15 @@ final class InternalError extends ProtocolError {
 /// scheduled by [TransportController].
 abstract interface class ProtocolStateMachine {
   /// Process an incoming UDP packet.
+  ///
+  /// [localIp] is the address of the local socket the packet arrived on, when
+  /// the caller knows it. ICE uses it to identify the receiving host
+  /// candidate; other state machines may ignore it.
   Result<ProcessResult, ProtocolError> processInput(
     Uint8List packet, {
     required IpAddress remoteIp,
     required int remotePort,
+    IpAddress? localIp,
   });
 
   /// Handle a previously scheduled timeout.

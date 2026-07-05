@@ -129,6 +129,18 @@ final class RtpExtensionElement {
 
 // ── RTCP packets ─────────────────────────────────────────────────────────────
 
+/// RTCP packet type values (RFC 3550 §12.1, RFC 4585 §6.1).
+abstract final class RtcpPacketType {
+  RtcpPacketType._();
+
+  static const int sr = 200;    // Sender Report
+  static const int rr = 201;    // Receiver Report
+  static const int sdes = 202;  // Source Description
+  static const int bye = 203;   // Goodbye
+  static const int rtpfb = 205; // Transport-layer feedback (NACK, TWCC)
+  static const int psfb = 206;  // Payload-specific feedback (PLI, REMB)
+}
+
 sealed class RtcpPacket {}
 
 /// RTCP Sender Report (SR) — PT=200.
@@ -156,7 +168,7 @@ final class RtcpSenderReport extends RtcpPacket {
     final len = 28 + reportBlocks.length * 24;
     final out = Uint8List(len);
     out[0] = 0x80 | (reportBlocks.length & 0x1F); // V=2, RC
-    out[1] = 200; // PT=SR
+    out[1] = RtcpPacketType.sr;
     writeU16(out, 2, (len ~/ 4) - 1);
     writeU32(out, 4, ssrc);
     writeU32(out, 8, ntpTimestampHigh);
@@ -190,7 +202,7 @@ final class RtcpReceiverReport extends RtcpPacket {
     final len = 8 + reportBlocks.length * 24;
     final out = Uint8List(len);
     out[0] = 0x80 | (reportBlocks.length & 0x1F); // V=2, RC
-    out[1] = 201; // PT=RR
+    out[1] = RtcpPacketType.rr;
     writeU16(out, 2, (len ~/ 4) - 1);
     writeU32(out, 4, ssrc);
     var off = 8;
@@ -233,7 +245,7 @@ final class RtcpSdes extends RtcpPacket {
     final len = 4 + bodyBytes.length;
     final out = Uint8List(len);
     out[0] = 0x80 | (chunks.length & 0x1F); // V=2, SC
-    out[1] = 202; // PT=SDES
+    out[1] = RtcpPacketType.sdes;
     writeU16(out, 2, (len ~/ 4) - 1);
     out.setRange(4, len, bodyBytes);
     return out;
@@ -268,7 +280,7 @@ final class RtcpPli extends RtcpPacket {
   Uint8List build() {
     final out = Uint8List(12);
     out[0] = 0x80 | 1; // V=2, FMT=1
-    out[1] = 206; // PT=PSFB
+    out[1] = RtcpPacketType.psfb;
     writeU16(out, 2, 2); // length=2 (words)
     writeU32(out, 4, senderSsrc);
     writeU32(out, 8, mediaSourceSsrc);
@@ -288,7 +300,7 @@ final class RtcpRemb extends RtcpPacket {
     final len = 20 + numSsrcs * 4; // header(4)+sender(4)+media(4)+REMB(4)+bw(4)+SSRCs
     final out = Uint8List(len);
     out[0] = 0x80 | 15; // V=2, FMT=15 (AFB)
-    out[1] = 206; // PT=PSFB
+    out[1] = RtcpPacketType.psfb;
     writeU16(out, 2, (len ~/ 4) - 1);
     writeU32(out, 4, senderSsrc);
     writeU32(out, 8, 0); // media SSRC = 0 for REMB
@@ -342,9 +354,13 @@ final class RtcpTransportCc extends RtcpPacket {
   static const _largeDelta = 2;  // 10: signed 2-byte (±8191.75ms)
 
   Uint8List build() {
-    final statusCount = recvDeltasUs.length;
+    final (symbols, deltaBytes) = _classifyDeltas();
+    final statusChunks = _encodeStatusChunks(symbols);
+    return _serialize(statusChunks, deltaBytes);
+  }
 
-    // 1. Classify each packet's symbol and encode its delta.
+  /// Classify each packet's symbol and encode its delta.
+  (List<int> symbols, List<int> deltaBytes) _classifyDeltas() {
     final symbols = <int>[];
     final deltaBytes = <int>[];
     for (final d in recvDeltasUs) {
@@ -363,10 +379,14 @@ final class RtcpTransportCc extends RtcpPacket {
         }
       }
     }
+    return (symbols, deltaBytes);
+  }
 
-    // 2. Encode status chunks.
-    //    Use run-length when all symbols in a run are the same,
-    //    otherwise use 2-bit status vector (7 symbols per chunk).
+  /// Encode status chunks.
+  ///
+  /// Use run-length when all symbols in a run are the same,
+  /// otherwise use 2-bit status vector (7 symbols per chunk).
+  static List<int> _encodeStatusChunks(List<int> symbols) {
     final statusChunks = <int>[];
     var i = 0;
     while (i < symbols.length) {
@@ -391,8 +411,12 @@ final class RtcpTransportCc extends RtcpPacket {
         i += 7;
       }
     }
+    return statusChunks;
+  }
 
-    // 3. Compute total size and serialize.
+  /// Compute total size and serialize.
+  Uint8List _serialize(List<int> statusChunks, List<int> deltaBytes) {
+    final statusCount = recvDeltasUs.length;
     final headerLen = 20;
     final chunksLen = statusChunks.length * 2;
     final totalLen = headerLen + chunksLen + deltaBytes.length;
@@ -402,7 +426,7 @@ final class RtcpTransportCc extends RtcpPacket {
     final out = Uint8List(paddedTotal);
     // V=2, P=(1 if padded), FMT=15
     out[0] = (padBytes > 0 ? 0xA0 : 0x80) | 15;
-    out[1] = 205; // PT=RTPFB
+    out[1] = RtcpPacketType.rtpfb;
     writeU16(out, 2, (paddedTotal ~/ 4) - 1);
     writeU32(out, 4, senderSsrc);
     writeU32(out, 8, mediaSsrc);

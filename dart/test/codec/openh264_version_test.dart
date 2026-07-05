@@ -21,7 +21,7 @@ import 'dart:ffi' as ffi;
 import 'package:ffi/ffi.dart' as pkgffi;
 import 'package:test/test.dart';
 import 'package:webdartc/codec/h264/_openh264.dart' as wels;
-import 'package:webdartc/codec/h264/openh264_bindings.g.dart' as oh;
+import 'package:webdartc/codec/h264/openh264/bindings.g.dart' as oh;
 
 void main() {
   test('bundled OpenH264 reports the pinned version (2.5.1)', () {

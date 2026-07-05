@@ -100,7 +100,7 @@ final class DtlsV13ClientStateMachine extends DtlsV13Endpoint {
       _state != DtlsV13ClientState.initial;
 
   @override
-  core.ProtocolError get _retransmitLimitError => const core.StateError(
+  core.ProtocolError get _retransmitLimitError => const core.ProtocolStateError(
         'DTLS 1.3: client flight retransmit limit exceeded',
       );
 
@@ -173,7 +173,7 @@ final class DtlsV13ClientStateMachine extends DtlsV13Endpoint {
   }) {
     if (_state != DtlsV13ClientState.initial) {
       return core.Err(
-        const core.StateError('DTLS 1.3: startHandshake from non-initial state'),
+        const core.ProtocolStateError('DTLS 1.3: startHandshake from non-initial state'),
       );
     }
     _records.remoteIp = remoteIp;
@@ -597,7 +597,7 @@ final class DtlsV13ClientStateMachine extends DtlsV13Endpoint {
     final peerPub = _peerCertPubKey;
     if (peerPub == null) {
       return core.Err(
-        const core.StateError(
+        const core.ProtocolStateError(
             'DTLS 1.3: CertificateVerify before Certificate'),
       );
     }
@@ -631,7 +631,7 @@ final class DtlsV13ClientStateMachine extends DtlsV13Endpoint {
     final keys = _records.rxHandshakeKeys;
     if (keys == null) {
       return core.Err(
-        const core.StateError('DTLS 1.3: server Finished before keys'),
+        const core.ProtocolStateError('DTLS 1.3: server Finished before keys'),
       );
     }
     final expected = HmacSha256.compute(keys.finishedKey, _transcript.hash);
