@@ -44,7 +44,7 @@ final class RtcpSession {
     if (result.isErr) return;
     for (final pkt in result.value) {
       if (PeerConnection._debug) {
-        PeerConnection._log('[pc] RTCP received: ${pkt.runtimeType}');
+        webdartcLog('[pc] RTCP received: ${pkt.runtimeType}');
       }
       if (pkt is RtcpSenderReport) {
         // Update stats with SR info and send RR back. The SR describes the
@@ -106,17 +106,17 @@ final class RtcpSession {
           final twccSeq = readU16(ext.data, 0);
           _twccRecvLog.add(_TwccEntry(twccSeq, arrivalUs));
           if (PeerConnection._debug && _twccRecvLog.length <= 3) {
-            PeerConnection._log(
+            webdartcLog(
                 '[pc] twcc seq=$twccSeq (ext elements=${elements.length})');
           }
         }
       }
       if (elements.isEmpty && PeerConnection._debug) {
-        PeerConnection._log(
+        webdartcLog(
             '[pc] headerExt present but 0 elements (profile=0x${rtp.headerExtension!.profile.toRadixString(16)}, dataLen=${rtp.headerExtension!.data.length})');
       }
     } else if (PeerConnection._debug && _pc._receivers.length <= 1) {
-      PeerConnection._log(
+      webdartcLog(
           '[pc] no headerExtension on RTP pt=${rtp.payloadType} ext=${rtp.extension}');
     }
   }
@@ -131,7 +131,7 @@ final class RtcpSession {
     // in that compound and Chrome accepts those, so PLI rides along.
     _pendingPliSsrcs.add(mediaSourceSsrc);
     if (PeerConnection._debug) {
-      PeerConnection._log('[pc] queued PLI for ssrc=$mediaSourceSsrc');
+      webdartcLog('[pc] queued PLI for ssrc=$mediaSourceSsrc');
     }
   }
 
@@ -260,7 +260,7 @@ final class RtcpSession {
         compound.addAll(fir);
       }
       if (PeerConnection._debug) {
-        PeerConnection._log(
+        webdartcLog(
             '[pc] PLI+FIR for ssrcs=$_pendingPliSsrcs (sender=$compoundSsrc)');
       }
     }
@@ -284,7 +284,7 @@ final class RtcpSession {
 
     _pc._transport.sendRtp(srtp.encryptRtcp(Uint8List.fromList(compound)));
     if (PeerConnection._debug) {
-      PeerConnection._log(
+      webdartcLog(
           '[pc] sent compound RTCP (${compound.length}b): RR(${blocks.length})');
     }
   }
@@ -340,7 +340,7 @@ final class RtcpSession {
 
     final rawFb = fb.build();
     if (PeerConnection._debug) {
-      PeerConnection._log(
+      webdartcLog(
           '[pc] transport-cc fb: base=$baseSeq count=$statusCount recv=${seqs.length}');
     }
     return rawFb;

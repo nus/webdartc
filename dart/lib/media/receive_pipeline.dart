@@ -10,6 +10,7 @@ library;
 
 import '../codec/audio_codec.dart';
 import '../codec/codec_registry.dart';
+import '../codec/codec_support.dart';
 import '../codec/video_codec.dart';
 import '../crypto/csprng.dart';
 import '../rtp/jitter_buffer.dart';
@@ -69,13 +70,10 @@ final class ReceivePipeline {
     void Function(Object error)? onError,
   }) {
     final ReceiverTrack<Object> track;
+    if (!CodecSupport.canReceive(kind, codecKey)) return null;
     if (kind == 'video') {
-      if (!CodecRegistry.hasVideoDecoder(codecKey)) return null;
-      if (videoDepacketizerFor(codecKey) == null) return null;
       track = ReceiverVideoTrack(id: Csprng.randomHex(16));
     } else if (kind == 'audio') {
-      if (!CodecRegistry.hasAudioDecoder(codecKey)) return null;
-      if (audioDepacketizerFor(codecKey) == null) return null;
       track = ReceiverAudioTrack(id: Csprng.randomHex(16));
     } else {
       return null;

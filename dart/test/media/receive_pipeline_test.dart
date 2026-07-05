@@ -12,6 +12,7 @@ import 'package:webdartc/codec/vp8/vp8_codec.dart';
 import 'package:webdartc/codec/vp9/vp9_codec.dart';
 import 'package:webdartc/media/audio_data.dart';
 import 'package:webdartc/media/fake_audio_source.dart';
+import 'package:webdartc/codec/codec_support.dart';
 import 'package:webdartc/media/fake_video_source.dart';
 import 'package:webdartc/media/receive_pipeline.dart';
 import 'package:webdartc/media/receiver_track.dart';

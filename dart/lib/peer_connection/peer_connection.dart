@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform, stderr;
 import 'dart:typed_data';
 
 import '../api/media_engine.dart';
@@ -8,8 +7,10 @@ import '../api/setting_engine.dart';
 import '../api/stats.dart';
 import '../codec/default_codecs.dart';
 import '../core/byte_io.dart';
+import '../core/log.dart';
 import '../crypto/csprng.dart';
 import '../crypto/ecdsa.dart';
+import '../dtls/srtp_profiles.dart';
 import '../dtls/state_machine.dart';
 import '../ice/state_machine.dart';
 import '../media/media_stream.dart';
@@ -618,36 +619,34 @@ final class PeerConnection {
     // Forward decrypted SCTP data to the SCTP state machine
     if (_debug) {
       final hex = data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-      _log('[pc] onDtlsAppData len=${data.length} hex=$hex');
+      webdartcLog('[pc] onDtlsAppData len=${data.length} hex=$hex');
     }
     final pair = _ice.selectedPair;
     if (pair == null) {
-      if (_debug) _log('[pc] no selected pair for SCTP');
+      if (_debug) webdartcLog('[pc] no selected pair for SCTP');
       return;
     }
     try {
       final result = _sctp.processInput(
           data, remoteIp: pair.remote.ip, remotePort: pair.remote.port);
       if (result.isOk) {
-        if (_debug) _log('[pc] sctp output: ${result.value.outputPackets.length} pkts');
+        if (_debug) webdartcLog('[pc] sctp output: ${result.value.outputPackets.length} pkts');
         for (final pkt in result.value.outputPackets) {
           if (_debug) {
             final hex = pkt.data.map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
-            _log('[pc] sctp TX len=${pkt.data.length} hex=$hex');
+            webdartcLog('[pc] sctp TX len=${pkt.data.length} hex=$hex');
           }
           _transport.sendSctp(pkt.data);
         }
       } else {
-        if (_debug) _log('[pc] sctp error: ${result.error}');
+        if (_debug) webdartcLog('[pc] sctp error: ${result.error}');
       }
     } catch (e, st) {
-      if (_debug) _log('[pc] sctp EXCEPTION: $e\n$st');
+      if (_debug) webdartcLog('[pc] sctp EXCEPTION: $e\n$st');
     }
   }
 
-  static final bool _debug = Platform.environment['WEBDARTC_DEBUG'] == '1';
-  static void _log(String msg) => stderr.writeln(msg);
-
+  static final bool _debug = webdartcDebug;
   void _onDtlsConnected(Uint8List keyMaterial) {
     // W3C: connectionState = "connected" when BOTH ICE and DTLS are up.
     _setConnectionState(PeerConnectionState.connected);
@@ -656,17 +655,17 @@ final class PeerConnection {
     final profileId = _dtls.selectedSrtpProfileId;
     final SrtpProfile srtpProfile;
     switch (profileId) {
-      case 0x0008:
+      case SrtpProfileNegotiation.aeadAes256Gcm:
         srtpProfile = SrtpProfile.aesGcm256;
-      case 0x0007:
+      case SrtpProfileNegotiation.aeadAes128Gcm:
         srtpProfile = SrtpProfile.aesGcm128;
-      case 0x0002:
+      case SrtpProfileNegotiation.aes128CmHmacSha132:
         srtpProfile = SrtpProfile.aesCm128HmacSha1_32;
-      case 0x0001:
+      case SrtpProfileNegotiation.aes128CmHmacSha180:
       default:
         srtpProfile = SrtpProfile.aesCm128HmacSha1_80;
     }
-    if (_debug) _log('[pc] DTLS connected: role=$role srtpProfile=0x${(profileId ?? 0).toRadixString(16)}');
+    if (_debug) webdartcLog('[pc] DTLS connected: role=$role srtpProfile=0x${(profileId ?? 0).toRadixString(16)}');
     // Derive SRTP context
     final isClient = role == DtlsRole.client;
     _srtp = SrtpContext.fromKeyMaterial(
@@ -681,7 +680,7 @@ final class PeerConnection {
 
     // Skip SCTP if this is a media-only session (no data channels).
     if (_transceivers.isNotEmpty && _dataChannels.isEmpty) {
-      if (_debug) _log('[pc] media-only session — skipping SCTP');
+      if (_debug) webdartcLog('[pc] media-only session — skipping SCTP');
       // Send periodic RTCP RR to kick-start and sustain Chrome's video encoder.
       // Chrome won't send VP8 until it receives RTCP RR.
       _rtcp._startTimer();
@@ -696,7 +695,7 @@ final class PeerConnection {
       // case the SCTP state machine already yielded to the peer's INIT
       // and is handling the handshake as server.
       if (_sctp.receivedRemoteInit) {
-        if (_debug) _log('[pc] peer already sent SCTP INIT — skipping connect');
+        if (_debug) webdartcLog('[pc] peer already sent SCTP INIT — skipping connect');
       } else {
         // Delay slightly to let the peer's INIT arrive first when the peer
         // also initiates (Firefox ignores RFC 8841 §5 and always sends INIT).
@@ -728,11 +727,11 @@ final class PeerConnection {
   DtlsRole get role => _dtls.role;
 
   void _onRemoteDataChannelOpen(int streamId, String label, bool ordered) {
-    if (_debug) _log('[pc] onDataChannelOpen streamId=$streamId label=$label');
+    if (_debug) webdartcLog('[pc] onDataChannelOpen streamId=$streamId label=$label');
     // Check if this is a locally-created channel receiving DCEP ACK
     final existing = _dataChannels[streamId];
     if (existing != null) {
-      if (_debug) _log('[pc] opening existing channel id=$streamId');
+      if (_debug) webdartcLog('[pc] opening existing channel id=$streamId');
       existing._open();
       return;
     }
@@ -793,7 +792,7 @@ final class PeerConnection {
     if (result.isErr) return;
     final rtp = result.value;
     final ssrc = rtp.ssrc;
-    if (_debug) _log('[pc] RTP received: ssrc=$ssrc pt=${rtp.payloadType} seq=${rtp.sequenceNumber}');
+    if (_debug) webdartcLog('[pc] RTP received: ssrc=$ssrc pt=${rtp.payloadType} seq=${rtp.sequenceNumber}');
 
     // Update reception stats for RTCP RR + getStats inboundRtp. Resolve the
     // codec (kind + clock rate) once, on first bind — not per packet.
@@ -846,7 +845,7 @@ final class PeerConnection {
       _trackController.add(TrackEvent(
           kind: kind, ssrc: ssrc, receiver: receiver, track: receiver.track));
       receiver._deliver(rtp, arrivalUs);
-      if (_debug) _log('[pc] onTrack fired: kind=$kind ssrc=$ssrc');
+      if (_debug) webdartcLog('[pc] onTrack fired: kind=$kind ssrc=$ssrc');
       // Send initial RTCP RR after first packet (triggers Chrome video encoder)
       _rtcp._sendRtcpRR();
       // Send PLI for video to request an immediate keyframe (RFC 4585 §6.3.1).

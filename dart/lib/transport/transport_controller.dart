@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../api/setting_engine.dart';
+import '../core/log.dart';
 import '../core/state_machine.dart';
 import '../dtls/state_machine.dart';
 import '../ice/state_machine.dart';
@@ -278,7 +279,7 @@ final class TransportController {
           : await Socket.connect(server.host, server.port);
     } catch (e) {
       if (_debug) {
-        stderr.writeln(
+        webdartcLog(
             '[transport] TURN-${server.secure ? "TLS" : "TCP"} connect'
             ' ${server.host}:${server.port} failed: $e');
       }
@@ -430,7 +431,7 @@ final class TransportController {
   // ── Internal ──────────────────────────────────────────────────────────────
 
   // Debug logging — set WEBDARTC_DEBUG=1 env var to trace packet flow.
-  static final bool _debug = Platform.environment['WEBDARTC_DEBUG'] == '1';
+  static final bool _debug = webdartcDebug;
 
   /// Sends each packet as a raw UDP datagram. Callers must pass packets
   /// whose [OutputPacket.data] is already wire-ready — STUN messages,

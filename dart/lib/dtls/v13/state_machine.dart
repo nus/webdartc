@@ -78,10 +78,10 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
 
   /// Persistent server secret used to MAC stateless HRR cookies (RFC 9147
   /// §5.1). Generated once per `DtlsV13ServerStateMachine` instance — the
-  /// DtlsServerDispatcher in front of us is process-scoped, so a single
-  /// key covers every connection it handles. Tests inject deterministic
-  /// keys via the [DtlsV13ServerStateMachine.cookieMacKey] constructor
-  /// parameter.
+  /// server-side v1.2 `DtlsStateMachine` that delegates to us spins up one
+  /// instance per connection, so the key covers that connection's whole
+  /// HRR exchange. Tests inject deterministic keys via the
+  /// [DtlsV13ServerStateMachine.cookieMacKey] constructor parameter.
   final Uint8List _cookieMacKey;
 
   DtlsV13ServerStateMachine({
@@ -319,7 +319,10 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
     if (useSrtp != null) {
       final offered = parseUseSrtpExtData(useSrtp.data);
       if (offered != null) {
-        _selectedSrtpProfile = _pickSrtpProfile(offered);
+        _selectedSrtpProfile = SrtpProfileNegotiation.pick(
+          offered,
+          preference: SrtpProfileNegotiation.v13Preference,
+        );
       }
     }
   }
@@ -484,26 +487,6 @@ final class DtlsV13ServerStateMachine extends DtlsV13Endpoint {
       peerKeyShare: selected.keyExchange,
       fullDtls: fullDtls,
     );
-  }
-
-  /// SRTP profiles webdartc supports, in server-preference order. Matches
-  /// the DTLS 1.2 path's `_parseSrtpExtension` ordering: AEAD-GCM is
-  /// preferred because it provides authenticated encryption in a single
-  /// pass and is what current browsers prefer; AES-CM-HMAC-SHA1 is kept
-  /// as an interop fallback (RFC 5764 §4.1.2 leaves profile choice to the
-  /// server).
-  static const List<int> _supportedSrtpProfiles = <int>[
-    0x0007, // SRTP_AEAD_AES_128_GCM
-    0x0008, // SRTP_AEAD_AES_256_GCM
-    0x0001, // SRTP_AES128_CM_HMAC_SHA1_80
-    0x0002, // SRTP_AES128_CM_HMAC_SHA1_32
-  ];
-
-  static int? _pickSrtpProfile(List<int> offered) {
-    for (final id in _supportedSrtpProfiles) {
-      if (offered.contains(id)) return id;
-    }
-    return null;
   }
 
   core.Result<ProcessResult, core.ProtocolError> _sendServerFlight() {

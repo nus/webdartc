@@ -1,10 +1,21 @@
 /// Bulk registration of the codec backends webdartc bundles.
 library;
 
-import 'h264/h264_encoder_backend.dart' show registerH264Codec;
-import 'opus/opus_codec.dart' show registerOpusCodec;
-import 'vp8/vp8_codec.dart' show registerVp8Codec;
-import 'vp9/vp9_codec.dart' show registerVp9Codec;
+import 'codec_descriptor.dart';
+import 'h264/h264_encoder_backend.dart' show h264Descriptor;
+import 'opus/opus_codec.dart' show opusDescriptor;
+import 'vp8/vp8_codec.dart' show vp8Descriptor;
+import 'vp9/vp9_codec.dart' show vp9Descriptor;
+
+/// Descriptors for every codec webdartc bundles, in registration order. The
+/// declarative table behind [registerDefaultCodecs] and `codec_support.dart`'s
+/// capability probes / RTP payload-format factories.
+final List<CodecDescriptor> bundledCodecDescriptors = [
+  vp8Descriptor,
+  vp9Descriptor,
+  h264Descriptor,
+  opusDescriptor,
+];
 
 /// Registers every codec backend bundled with webdartc (VP8, VP9, H.264, Opus)
 /// in one call.
@@ -27,10 +38,9 @@ import 'vp9/vp9_codec.dart' show registerVp9Codec;
 void registerDefaultCodecs() {
   if (_registered) return;
   _registered = true;
-  registerVp8Codec();
-  registerVp9Codec();
-  registerH264Codec();
-  registerOpusCodec();
+  for (final descriptor in bundledCodecDescriptors) {
+    registerCodec(descriptor);
+  }
 }
 
 bool _registered = false;

@@ -35,7 +35,10 @@ Each item:
   shared util) exposing `openNativeLibrary({macos, linux, windows, label})`.
   All four callers reduce to one-liners. Apple-framework absolute-path loaders
   in `crypto/macos_backend.dart` and `crypto/security_framework.dart` stay as
-  they are.
+  they are. The platform-dispatch half of this shape already exists as
+  `forPlatform` in [dart/lib/core/platform_dispatch.dart](dart/lib/core/platform_dispatch.dart)
+  (landed with the 2026-07-04 crypto-factory dedup) — build the loader on top
+  of or alongside it rather than adding a second dispatch helper.
 
 ### Android H.264 codec (MediaCodec via NDK FFI) — DONE (2026-06-27)
 
@@ -269,7 +272,12 @@ Each item:
   [dart/lib/srtp/context.dart](dart/lib/srtp/context.dart).
 - **Why deferred:** The 80-bit profile is the common case and works.
 - **Acceptance:** Advertise the full set the SRTP layer supports; an SRTP-GCM
-  interop path is exercised by a test.
+  interop path is exercised by a test. While here, settle the server-side
+  preference-order divergence now centralized (2026-07-04) as
+  `SrtpProfileNegotiation.v12Preference` (AES-CM first) vs `v13Preference`
+  (GCM first) in [dart/lib/dtls/srtp_profiles.dart](dart/lib/dtls/srtp_profiles.dart)
+  — unifying the order changes negotiation results, so it was deliberately
+  left as-is by the profile-table dedup.
 
 ---
 
@@ -583,95 +591,6 @@ Each item:
 > classes, and convention drift. Suggested order: ByteReader/ByteWriter
 > first (it unlocks several others), then the DTLS v13 merge, then the god
 > class splits.
-
-### Crypto per-platform dispatch copy-pasted six times
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [crypto_backend.dart:66-108](dart/lib/crypto/crypto_backend.dart#L66-L108) —
-  ECDH/ECDSA/verify/AES-CM/AES-GCM/ChaCha20 factories each repeat the same
-  `if (Platform.isMacOS)… isLinux||isAndroid… isWindows… throw` chain.
-- **Why deferred:** Cosmetic; safe any time.
-- **Acceptance:** One `_forPlatform<T>({macos, posix, windows})` helper; each
-  factory becomes a one-liner. New-backend additions can't miss a branch.
-  Same shape as the "Shared dynamic-library loader helper" entry (Codec / FFI
-  section) — consider one shared platform-dispatch helper serving both, rather
-  than landing two same-shaped helpers.
-
-### Video/Audio codec frontends are type-parameter twins
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [video_codec.dart:110-221](dart/lib/codec/video_codec.dart#L110-L221)
-  and [audio_codec.dart:96-207](dart/lib/codec/audio_codec.dart#L96-L207):
-  Encoder/Decoder `configure`/`encode`/`flush`/`reset`/`close` +
-  `CodecState` transitions are identical except for the frame/chunk types
-  (~200 lines duplicated twice).
-- **Why deferred:** Needs a generic base without disturbing the W3C-named
-  public classes.
-- **Acceptance:** A generic `_CodecFrontend<Input, Chunk, Config, Backend>`
-  base (or mixin); the four public classes shrink to thin typed wrappers.
-
-### Codec capability + registration: single source of truth
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** "Which codec can we send/receive" is answered in several places:
-  three parallel `switch(codecKey)` factories in
-  [packetizer.dart](dart/lib/rtp/packetizer.dart) (`videoDepacketizerFor` /
-  `videoPacketizerFor` / `audioDepacketizerFor`, ~L512–537), the
-  decoder+depacketizer probe in
-  [receive_pipeline.dart](dart/lib/media/receive_pipeline.dart) (~L72), and
-  each `registerXxxCodec()` hand-rolling its own platform branch (VP8/Opus
-  near-identical, H.264 three-way, VP9 none).
-- **Why deferred:** Registration-shape change; ties into `autoRegisterCodecs`.
-- **Acceptance:** A declarative `CodecDescriptor` table drives registration,
-  and a `CodecSupport.canSend/canReceive(kind, codecKey)` helper is the one
-  probe the receive pipeline calls.
-
-### dart:io isolation violations + injectable debug logger
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** 14 files outside `lib/transport/` import `dart:io`, against the
-  stated convention. Two independently shippable work items: (a) `stderr.writeln`
-  debug logging (~36 call sites) with a per-module
-  `Platform.environment['WEBDARTC_DEBUG']` flag re-invented in
-  [dtls/state_machine.dart](dart/lib/dtls/state_machine.dart),
-  [sctp/state_machine.dart](dart/lib/sctp/state_machine.dart),
-  [transport_controller.dart](dart/lib/transport/transport_controller.dart),
-  and [peer_connection.dart](dart/lib/peer_connection/peer_connection.dart);
-  (b) [core/ip_address.dart](dart/lib/core/ip_address.dart) using
-  `InternetAddress` for parsing/normalization. The DTLS 1.3 SMs are already
-  `dart:io`-free and show the target shape.
-- **Why deferred:** Broad but mechanical; logging behavior must not change.
-- **Acceptance:** (a) A `lib/core/log.dart` injectable logger owns the
-  env-flag + sink, and state machines lose their `dart:io` imports;
-  (b) `ip_address.dart` parses/normalizes IPv4/IPv6 itself. The CLAUDE.md
-  grep check extended to these dirs passes.
-
-### SRTP profile tables defined thrice, preference order diverges
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** The SRTP key-export-length table (0x0001→60, 0x0007→56, …)
-  exists in DTLS v1.2 (`_srtpExportLengthForSelectedProfile`), v13 server, and
-  v13 client. Worse, profile *selection* disagrees: v1.2's
-  `_parseSrtpExtension` prefers AES-CM first, v13's `_pickSrtpProfile` prefers
-  GCM — an interop-consistency risk, not just duplication. (Related but
-  distinct from the existing "use_srtp offers only one SRTP profile" entry.)
-- **Why deferred:** Needs a decision on the canonical preference order.
-- **Acceptance:** One `SrtpProfileNegotiation` module (supported set,
-  `pick(offered)`, `exportLength(id)`) used by v1.2 and v13; one documented
-  preference order.
-
-### DTLS 1.2/1.3 version dispatch duplicated
-
-- **Found:** 2026-07-03, refactoring audit
-- **Detail:** [dispatcher.dart](dart/lib/dtls/dispatcher.dart) `_selectVariant`
-  (~L102) and [state_machine.dart](dart/lib/dtls/state_machine.dart)'s embedded
-  `_isDtls13ClientHello` + `_v13Inner` forwarding both sniff the ClientHello
-  `supported_versions` and delegate to the v13 SM — the v1.2 SM re-implements
-  the dispatcher's job internally.
-- **Why deferred:** Requires confirming all v13 entry paths go through the
-  dispatcher before deleting the embedded fallback.
-- **Acceptance:** Version detection lives in one `detectDtlsVersion(packet)`
-  near `record.dart`; `DtlsStateMachine` loses `_v13Inner` and its forwards.
 
 ### Media layer: track-class duplication
 
