@@ -5,8 +5,9 @@ library;
 
 import 'dart:typed_data';
 
-import '../codec/video_codec.dart';
 import '../codec/audio_codec.dart';
+import '../codec/h264/nal_unit_types.dart';
+import '../codec/video_codec.dart';
 import '../crypto/csprng.dart';
 
 // ── Interfaces ──────────────────────────────────────────────────────────────
@@ -300,10 +301,9 @@ final class Vp9Depacketizer implements VideoPayloadDepacketizer {
 
 // ── H.264 Packetizer (RFC 6184) ─────────────────────────────────────────────
 
-// H.264 NAL unit types (ITU-T H.264 §7.4.1; RFC 6184 §5.4).
-const int _h264NalIdr = 5;    // IDR (keyframe) slice
-const int _h264NalStapA = 24; // STAP-A aggregation packet
-const int _h264NalFuA = 28;   // FU-A fragmentation unit
+// FU header S (start) / E (end) bits (RFC 6184 §5.8).
+const int _h264FuStartBit = 0x80;
+const int _h264FuEndBit = 0x40;
 
 /// Splits an Annex B H.264 byte-stream into individual NAL units.
 ///
@@ -370,8 +370,9 @@ final class H264Packetizer implements PayloadPacketizer {
       } else {
         // FU-A fragmentation.
         final header = nal[0];
-        final fuIndicator = (header & 0xE0) | _h264NalFuA; // preserve F/NRI
-        final nalType = header & 0x1F;
+        final fuIndicator =
+            (header & H264NalType.fnriMask) | H264NalType.fuA; // preserve F/NRI
+        final nalType = header & H264NalType.mask;
         final body = Uint8List.sublistView(nal, 1);
         final chunkSize = maxPayloadSize - 2; // minus FU ind + FU header
         var off = 0;
@@ -380,8 +381,9 @@ final class H264Packetizer implements PayloadPacketizer {
           final remaining = body.length - off;
           final take = remaining > chunkSize ? chunkSize : remaining;
           final last = (off + take) >= body.length;
-          final fuHeader =
-              (first ? 0x80 : 0) | (last ? 0x40 : 0) | nalType;
+          final fuHeader = (first ? _h264FuStartBit : 0) |
+              (last ? _h264FuEndBit : 0) |
+              nalType;
           final pkt = Uint8List(2 + take);
           pkt[0] = fuIndicator;
           pkt[1] = fuHeader;
@@ -414,11 +416,11 @@ final class H264Depacketizer implements VideoPayloadDepacketizer {
     required int timestamp,
   }) {
     if (payload.isEmpty) return null;
-    final type = payload[0] & 0x1F;
+    final type = payload[0] & H264NalType.mask;
 
     if (type >= 1 && type <= 23) {
       _nals.add(Uint8List.fromList(payload));
-    } else if (type == _h264NalStapA) {
+    } else if (type == H264NalType.stapA) {
       // STAP-A (RFC 6184 §5.7.1): a single RTP payload carrying multiple
       // NAL units. Layout after the STAP-A header byte:
       //   [ 2-byte BE size | N bytes NAL unit ]  repeated
@@ -430,15 +432,15 @@ final class H264Depacketizer implements VideoPayloadDepacketizer {
         _nals.add(Uint8List.sublistView(payload, off, off + size));
         off += size;
       }
-    } else if (type == _h264NalFuA) {
+    } else if (type == H264NalType.fuA) {
       if (payload.length < 2) return null;
       final fuHeader = payload[1];
-      final start = (fuHeader & 0x80) != 0;
-      final end = (fuHeader & 0x40) != 0;
-      final nalType = fuHeader & 0x1F;
+      final start = (fuHeader & _h264FuStartBit) != 0;
+      final end = (fuHeader & _h264FuEndBit) != 0;
+      final nalType = fuHeader & H264NalType.mask;
       if (start) {
         _fuBuffer.clear();
-        _fuHeaderByte = (payload[0] & 0xE0) | nalType;
+        _fuHeaderByte = (payload[0] & H264NalType.fnriMask) | nalType;
         _fuBuffer.add(_fuHeaderByte);
         _fuStarted = true;
       }
@@ -459,8 +461,8 @@ final class H264Depacketizer implements VideoPayloadDepacketizer {
     var size = 0;
     for (final n in _nals) {
       size += _startCode.length + n.length;
-      final t = n[0] & 0x1F;
-      if (t == _h264NalIdr) isKey = true;
+      final t = n[0] & H264NalType.mask;
+      if (t == H264NalType.idr) isKey = true;
     }
     final out = Uint8List(size);
     var w = 0;

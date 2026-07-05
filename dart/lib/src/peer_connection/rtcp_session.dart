@@ -251,7 +251,7 @@ final class RtcpSession {
         // FIR (RFC 5104 §4.3.1) — some implementations respond to FIR but not PLI
         final fir = Uint8List(20);
         fir[0] = 0x80 | 4; // V=2, FMT=4
-        fir[1] = 206; // PT=PSFB
+        fir[1] = RtcpPacketType.psfb;
         writeU16(fir, 2, 4); // length=4
         writeU32(fir, 4, compoundSsrc); // sender SSRC
         writeU32(fir, 8, 0); // media source (unused in FIR)

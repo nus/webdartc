@@ -28,6 +28,7 @@ import 'dart:io' show Platform;
 
 import 'package:ffi/ffi.dart' as pkgffi;
 
+import '../nal_unit_types.dart';
 import 'bindings.g.dart';
 
 // ── Apple SDK constants not emitted by ffigen ─────────────────────────────
@@ -46,9 +47,6 @@ const int _kVTDecodeInfo_FrameDropped = 1 << 1;
 // H.264 / AVCC tunables.
 const int _maxNalsPerFrame = 64;
 const int _avccLengthSize = 4;
-const int _h264NalTypeMask = 0x1F;
-const int _h264NalTypeSps = 7;
-const int _h264NalTypePps = 8;
 // CMTimeMake denominator for microsecond PTS.
 const int _usPerSecond = 1000000;
 
@@ -849,11 +847,11 @@ int wvtDecoderDecode(
     int ppsSize = 0;
     int sliceCount = 0;
     for (int i = 0; i < nalCount; i++) {
-      final type = annexB[nalOff[i]] & _h264NalTypeMask;
-      if (type == _h264NalTypeSps) {
+      final type = annexB[nalOff[i]] & H264NalType.mask;
+      if (type == H264NalType.sps) {
         sps = annexB + nalOff[i];
         spsSize = nalSz[i];
-      } else if (type == _h264NalTypePps) {
+      } else if (type == H264NalType.pps) {
         pps = annexB + nalOff[i];
         ppsSize = nalSz[i];
       } else {

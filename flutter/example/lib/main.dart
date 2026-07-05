@@ -36,8 +36,6 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
-// ignore: implementation_imports — H264Packetizer (send path) is internal API
-import 'package:webdartc/src/rtp/packetizer.dart';
 import 'package:webdartc/webdartc.dart';
 import 'package:webdartc_flutter/webdartc_flutter.dart';
 

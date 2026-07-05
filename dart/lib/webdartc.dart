@@ -17,10 +17,10 @@
 /// contract — import `package:webdartc/src/...` directly at your own risk.
 library;
 
-// Core types
-export 'src/core/ip_address.dart';
-export 'src/core/result.dart';
-export 'src/core/types.dart';
+// Core types — state_machine.dart re-exports result.dart and types.dart
+// (which re-exports ip_address.dart). The ProtocolError hierarchy it defines
+// appears in the exported ICE/SCTP state machines' signatures.
+export 'src/core/state_machine.dart';
 
 // W3C PeerConnection API (data_channel.dart and events.dart are parts of peer_connection.dart)
 export 'src/peer_connection/peer_connection.dart';
@@ -34,17 +34,18 @@ export 'src/api/stats.dart';
 // SDP
 export 'src/sdp/parser.dart';
 
-// ICE
-export 'src/ice/candidate.dart';
+// ICE (state_machine.dart re-exports candidate.dart)
 export 'src/ice/state_machine.dart';
 
-// SCTP
+// SCTP (state_machine.dart re-exports dcep.dart)
 export 'src/sctp/state_machine.dart';
-export 'src/sctp/dcep.dart';
 
-// RTP packet types — surfaced by the raw-RTP escape hatches on the W3C API
-// (`RtpReceiver.onRtp`, `RtpSender.replacePacketSender`).
+// RTP packet types and payload packetizers — surfaced by the raw-RTP escape
+// hatches on the W3C API (`RtpReceiver.onRtp`, `RtpSender.sendRtp`,
+// `RtpSender.replacePacketSender`).
 export 'src/rtp/packet.dart';
+export 'src/rtp/packetizer.dart';
+export 'src/rtp/rtp_transport.dart' show RtpPacketSender;
 
 // Media (W3C Media Capture & Streams)
 export 'src/media/video_frame.dart';

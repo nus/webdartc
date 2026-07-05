@@ -438,7 +438,7 @@ final class RtcpTransportCc extends RtcpPacket {
     out[19] = fbPktCount & 0xFF;
 
     // Status chunks
-    var off = 20;
+    var off = headerLen;
     for (final chunk in statusChunks) {
       writeU16(out, off, chunk);
       off += 2;

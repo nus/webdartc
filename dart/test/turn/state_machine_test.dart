@@ -1,7 +1,6 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:webdartc/src/core/state_machine.dart' show ParseError;
 import 'package:webdartc/src/turn/channel_data.dart';
 import 'package:webdartc/src/turn/state_machine.dart';
 import 'package:webdartc/webdartc.dart';
