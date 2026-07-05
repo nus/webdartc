@@ -619,19 +619,6 @@ Each item:
 - **Acceptance:** `parse` validates or loses the `Result` wrapper; callers
   updated accordingly.
 
-### DTLS v1.2 SM hand-parses extension blocks v13/handshake.dart covers
-
-- **Found:** 2026-07-03, refactoring audit (v13-client half shipped 2026-07-04
-  with the v13 client/server merge — ClientHello builders now live in
-  [v13/handshake.dart](dart/lib/dtls/v13/handshake.dart))
-- **Detail:** The v1.2 SM hand-parses extension blocks that
-  `parseTlsExtensionsBlock` / `parseUseSrtpExtData` already cover.
-- **Why deferred:** Touches v1.2 SRTP-profile selection code, which also has
-  the preference-order divergence tracked in "SRTP profile tables defined
-  thrice" — coordinate with that entry.
-- **Acceptance:** v1.2 reuses the shared extension parser at least for
-  use_srtp.
-
 ### Over-long methods (>80 lines) to split
 
 - **Found:** 2026-07-03, refactoring audit

@@ -15,6 +15,7 @@ import 'record.dart';
 import 'srtp_profiles.dart';
 import 'version_detect.dart';
 import 'v13/endpoint.dart' as v13;
+import 'v13/handshake.dart' as v13hs;
 
 export 'cipher_suite.dart' show CipherSuite;
 
@@ -525,27 +526,23 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     // Skip compression method (1 byte)
     if (offset < body.length) offset += 1;
 
-    // Parse extensions
+    // Parse extensions with the shared TLS extensions-block parser; the
+    // use_srtp payload is the same struct in DTLS 1.2 and 1.3
+    // (RFC 5764 §4.1.1), so reuse the v13 codec for it too.
     if (offset + 2 <= body.length) {
-      final extTotalLen = (body[offset] << 8) | body[offset + 1];
-      offset += 2;
-      final extEnd = (offset + extTotalLen).clamp(0, body.length);
-      while (offset + 4 <= extEnd) {
-        final extType = (body[offset] << 8) | body[offset + 1];
-        final extLen = (body[offset + 2] << 8) | body[offset + 3];
-        offset += 4;
-        if (extType == 0x000E && extLen >= 3 && offset + extLen <= extEnd) {
-          // use_srtp: 2-byte profile list length + profiles + mki_length
-          final profileId = (body[offset + 2] << 8) | body[offset + 3];
-          _selectedSrtpProfile = [(profileId >> 8) & 0xFF, profileId & 0xFF];
-          if (_debug) {
-            webdartcLog(
-              '[dtls] ServerHello use_srtp profile: '
-              '0x${profileId.toRadixString(16).padLeft(4, "0")}',
-            );
-          }
+      for (final ext in v13hs.parseTlsExtensionsBlock(body, offset) ??
+          const <v13hs.TlsExtension>[]) {
+        if (ext.type != v13hs.TlsV13ExtensionType.useSrtp) continue;
+        final profiles = v13hs.parseUseSrtpExtData(ext.data);
+        if (profiles == null || profiles.isEmpty) continue;
+        final profileId = profiles.first;
+        _selectedSrtpProfile = [(profileId >> 8) & 0xFF, profileId & 0xFF];
+        if (_debug) {
+          webdartcLog(
+            '[dtls] ServerHello use_srtp profile: '
+            '0x${profileId.toRadixString(16).padLeft(4, "0")}',
+          );
         }
-        offset += extLen;
       }
     }
 
@@ -939,43 +936,31 @@ final class DtlsStateMachine implements ProtocolStateMachine {
     final compLen = body[off];
     off += 1 + compLen;
     if (off + 2 > body.length) return;
-    // extensions_length
-    final extLen = (body[off] << 8) | body[off + 1];
-    off += 2;
-    final extEnd = off + extLen;
-    while (off + 4 <= extEnd && off + 4 <= body.length) {
-      final extType = (body[off] << 8) | body[off + 1];
-      final extDataLen = (body[off + 2] << 8) | body[off + 3];
-      off += 4;
-      if (extType == 0x000E &&
-          extDataLen >= 4 &&
-          off + extDataLen <= body.length) {
-        // use_srtp: pick per the DTLS 1.2 preference order (see
-        // SrtpProfileNegotiation.v12Preference for the rationale).
-        final profilesLen = (body[off] << 8) | body[off + 1];
-        final offered = <int>[];
-        for (var i = 0; i < profilesLen; i += 2) {
-          offered.add((body[off + 2 + i] << 8) | body[off + 2 + i + 1]);
-        }
+    // Extensions: shared block parser + use_srtp payload codec
+    // (RFC 5764 §4.1.1), then pick per the DTLS 1.2 preference order (see
+    // SrtpProfileNegotiation.v12Preference for the rationale).
+    for (final ext in v13hs.parseTlsExtensionsBlock(body, off) ??
+        const <v13hs.TlsExtension>[]) {
+      if (ext.type != v13hs.TlsV13ExtensionType.useSrtp) continue;
+      final offered = v13hs.parseUseSrtpExtData(ext.data);
+      if (offered == null) continue;
+      if (_debug) {
+        webdartcLog(
+          '[dtls] use_srtp profiles offered: ${offered.map((p) => "0x${p.toRadixString(16).padLeft(4, "0")}").join(", ")}',
+        );
+      }
+      final picked = SrtpProfileNegotiation.pick(
+        offered,
+        preference: SrtpProfileNegotiation.v12Preference,
+      );
+      if (picked != null) {
+        _selectedSrtpProfile = [(picked >> 8) & 0xFF, picked & 0xFF];
         if (_debug) {
           webdartcLog(
-            '[dtls] use_srtp profiles offered: ${offered.map((p) => "0x${p.toRadixString(16).padLeft(4, "0")}").join(", ")}',
+            '[dtls] selected SRTP profile: 0x${picked.toRadixString(16).padLeft(4, "0")}',
           );
         }
-        final picked = SrtpProfileNegotiation.pick(
-          offered,
-          preference: SrtpProfileNegotiation.v12Preference,
-        );
-        if (picked != null) {
-          _selectedSrtpProfile = [(picked >> 8) & 0xFF, picked & 0xFF];
-          if (_debug) {
-            webdartcLog(
-              '[dtls] selected SRTP profile: 0x${picked.toRadixString(16).padLeft(4, "0")}',
-            );
-          }
-        }
       }
-      off += extDataLen;
     }
   }
 
