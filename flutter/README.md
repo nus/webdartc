@@ -32,23 +32,27 @@ VideoRendererWidget(renderer: renderer)
 
 ## Example
 
-A runnable macOS / Android demo acting as a full WebRTC peer against a browser
-(Flutter ↔ browser bidirectional video over real DTLS/SRTP/ICE) lives
-at [`example/`](example). It shows `local` (FakeVideoSource preview) and
-`remote` (decoded browser camera) tiles side-by-side. Both macOS and Android
-negotiate H.264 (macOS via VideoToolbox, Android via MediaCodec).
+A runnable macOS / Windows / Linux / Android demo acting as a full WebRTC
+peer against a browser (Flutter ↔ browser bidirectional video over real
+DTLS/SRTP/ICE) lives at [`example/`](example). It shows `local`
+(FakeVideoSource preview) and `remote` (decoded browser camera) tiles
+side-by-side. Every platform negotiates H.264 (macOS via VideoToolbox,
+Windows / Linux via OpenH264, Android via MediaCodec).
+
+The app embeds its own signaling relay (OpenAyame protocol) and serves
+the browser peer page, so a single command suffices:
 
 ```bash
-# Terminal 1 — from dart/: signaling + static HTTP server
-dart run example/signaling/server.dart --port=8080
+# from flutter/example/:
+flutter run -d macos        # or: -d windows / -d linux / -d <android-device>
 
-# Terminal 2 — open http://127.0.0.1:8080/ in Chrome
-
-# Terminal 3 — from flutter/example/:
-flutter run -d macos        # or: flutter run -d <android-device>
+# then open the URL shown on the launch screen (normally
+# http://127.0.0.1:8080/) in Chrome and press Join in the app
 ```
 
-Prereqs: Xcode, CocoaPods (`brew install cocoapods`).
+Prereqs: the per-OS native toolchains listed in the root README's
+"Native requirements" (macOS additionally needs CocoaPods:
+`brew install cocoapods`).
 
 ## Tests
 
